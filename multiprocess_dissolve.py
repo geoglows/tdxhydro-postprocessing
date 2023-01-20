@@ -9,8 +9,15 @@ def merge_streams(upstream_ids: list, network_gdf: gpd.GeoDataFrame):
     return network_gdf[network_gdf["LINKNO"].isin(upstream_ids)].dissolve()
 
 
+network_gpkg = '/Users/rchales/Data/NGA_delineation/Caribbean/TDX_streamnet_7020065090_01.shp'
+output_gpkg_name = 'merged_carribean.gpkg'
+
 if __name__ == '__main__':
-    network_gpkg = '/Users/rchales/Data/NGA_delineation/Caribbean/TDX_streamnet_7020065090_01.shp'
+    # todo: make only 1 input which is the path to the geopackage/shapefile of the stream network
+    # todo: do not read json files, generate them in the script
+    # todo: make the output file name one of the parameters you can specify at the start of the script
+    # todo: make the readme.md file in the root of the repo
+
     gdf = gpd.read_file(network_gpkg)
 
     order2json = "./streamlink_json/carribean_order_2.json"
@@ -20,24 +27,12 @@ if __name__ == '__main__':
 
     allorderjson = "./streamlink_json/carribean_allorders.json"
 
-    with open (allorderjson) as f:
+    with open(allorderjson) as f:
         allorders_dict = json.load(f)
 
-    toporder2 = []
-    allorder = []
+    toporder2 = set([value[-1] for value in list(order_2_dict.values())])
 
-    for value in list(order_2_dict.values()):
-        toporder2.append(value[-1])
-
-    toporder2 = set(toporder2)
-
-    toporder_2s = gdf[gdf["LINKNO"].isin(toporder2)]
-    # order_2s = gdf[gdf["strmOrder"] == 2]
-    # order_2s.to_file("output_shps/allorder2s.shp")
-
-    # for each stream order 2 merge point/node, merge the corrects together, and create a big list
-
-    with Pool(15) as p:
+    with Pool() as p:
         merged_features = p.starmap(merge_streams, [(allorders_dict[str(rivid)], gdf) for rivid in toporder2])
 
     # list all ids that were merged
@@ -52,4 +47,4 @@ if __name__ == '__main__':
     # concat the merged features
     gdf = pd.concat([gdf, *merged_features])
 
-    gdf.to_file("merged_carribean.gpkg", driver="GPKG")
+    gdf.to_file(output_gpkg_name, driver="GPKG")
