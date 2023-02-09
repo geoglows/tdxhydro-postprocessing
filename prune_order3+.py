@@ -1,9 +1,7 @@
-from multiprocessing import Pool
-from tqdm import tqdm
-import geopandas as gpd
-import numpy as np
-import pandas as pd
 import json
+
+import geopandas as gpd
+
 from AdjoinUpdown import NpEncoder
 
 
@@ -18,10 +16,44 @@ from AdjoinUpdown import NpEncoder
 #         return super(NpEncoder, self).default(obj)
 
 
-def prune_network(network_gdf: gpd.GeoDataFrame):
-    network_gdf['_next_down_order'] = network_gdf[ds_id_col].apply(lambda x: network_gdf[network_gdf[riv_id_col] == x][order_col])
-    network_gdf.drop(network_gdf[(network_gdf[order_col] == 1) & (network_gdf['_next_down_order'] == 3)].index)
-    return
+def get_downstream_order(x, network_gdf: gpd.GeoDataFrame):
+    ord = 0
+    if x != -1:
+        orders = network_gdf.loc[network_gdf[riv_id_col] == x, order_col].values
+        if len(orders) > 0:
+            ord = orders[0]
+        # print(ord)
+    return ord
+
+
+def merge_catchments(row, network_gdf: gpd.GeoDataFrame, upstream_dict: dict):
+    print(row)
+    print(row[riv_id_col])
+    ids_to_merge = [row[ds_id_col], ] + list(upstream_dict[str(row[riv_id_col])])
+    return network_gdf.loc[network_gdf[riv_id_col].isin(ids_to_merge)].dissolve()
+
+
+def prune_network(network_gdf: gpd.GeoDataFrame, upstream_dict: dict) -> gpd.GeoDataFrame:
+    """
+    Finds all order ones that feed into a larger order river (without forming an order 2 with another river), joins
+    their area down onto the larger river, and drops their river segment from the network.
+
+    Args:
+        network_gdf: geodataframe containing the stream network
+        upstream_dict: dictionary containing all upstream stream ids for each stream segment
+
+    Returns: pruned network geodataframe
+
+    """
+    network_gdf['_next_down_order'] = network_gdf[ds_id_col].apply(get_downstream_order, network_gdf=network_gdf)
+
+    network_gdf.loc[(network_gdf[order_col] == 1) & (network_gdf['_next_down_order'] >= 3)] = \
+        network_gdf.loc[(network_gdf[order_col] == 1) & (network_gdf['_next_down_order'] >= 3)] \
+        .apply(merge_catchments, network_gdf=network_gdf, upstream_dict=upstream_dict, axis=1)
+
+    network_gdf.drop(network_gdf[(network_gdf[order_col] == 1) & (network_gdf['_next_down_order'] >= 3)].index,
+                     inplace=True)
+    return network_gdf
 
 
 def prune_stream(stream_id: int, upstream_list: list, streams_to_merge: list):
@@ -55,7 +87,6 @@ max_order = 2
 riv_id_col = 'LINKNO'
 ds_id_col = 'DSLINKNO'
 order_col = 'strmOrder'
-pbar = tqdm()
 
 if __name__ == '__main__':
     with open(all_order_json) as f:
@@ -66,17 +97,19 @@ if __name__ == '__main__':
     # order_3up = stream_net[stream_net[order_col] > 2]
     order_3up_ids = gdf[gdf[order_col] > 2][riv_id_col].to_list()
 
-    streams_to_merge = []
-    pbar = tqdm(total=len(order_3up_ids))
+    # streams_to_merge = []
+    # print()
+    gdf = prune_network(gdf, allorders_dict)
+
     # rivid = order_3up_ids[100]
     # prune_stream(rivid, allorders_dict[str(rivid)], streams_to_merge)
-    for rivid in order_3up_ids:
-        streams_to_merge = prune_stream(rivid, allorders_dict[str(rivid)], streams_to_merge)
+    # for rivid in order_3up_ids:
+    #     streams_to_merge = prune_stream(rivid, allorders_dict[str(rivid)], streams_to_merge)
     # with Pool() as p:
     #     gdf, streams_to_merge = p.starmap(prune_stream, [(rivid, max_order, allorders_dict[str(rivid)], stream_net, streams_to_merge) for rivid in order_3up_ids])
 
-    print(streams_to_merge)
-    with open(output_json_name, "w") as f:
-        json.dump(streams_to_merge, f, cls=NpEncoder)
+    # print(streams_to_merge)
+    # with open(output_json_name, "w") as f:
+    #     json.dump(streams_to_merge, f, cls=NpEncoder)
 
     gdf.to_file(output_gpkg_name, driver="GPKG")
