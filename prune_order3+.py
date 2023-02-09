@@ -1,18 +1,28 @@
 from multiprocessing import Pool
 from tqdm import tqdm
 import geopandas as gpd
+import numpy as np
 import pandas as pd
 import json
+from AdjoinUpdown import NpEncoder
 
-class NpEncoder(json.JSONEncoder):
-    def default(self, obj):
-        if isinstance(obj, np.integer):
-            return int(obj)
-        if isinstance(obj, np.floating):
-            return float(obj)
-        if isinstance(obj, np.ndarray):
-            return obj.tolist()
-        return super(NpEncoder, self).default(obj)
+
+# class NpEncoder(json.JSONEncoder):
+#     def default(self, obj):
+#         if isinstance(obj, np.integer):
+#             return int(obj)
+#         if isinstance(obj, np.floating):
+#             return float(obj)
+#         if isinstance(obj, np.ndarray):
+#             return obj.tolist()
+#         return super(NpEncoder, self).default(obj)
+
+
+def prune_network(network_gdf: gpd.GeoDataFrame):
+    network_gdf['_next_down_order'] = network_gdf[ds_id_col].apply(lambda x: network_gdf[network_gdf[riv_id_col] == x][order_col])
+    network_gdf.drop(network_gdf[(network_gdf[order_col] == 1) & (network_gdf['_next_down_order'] == 3)].index)
+    return
+
 
 def prune_stream(stream_id: int, upstream_list: list, streams_to_merge: list):
     """
@@ -33,6 +43,7 @@ def prune_stream(stream_id: int, upstream_list: list, streams_to_merge: list):
         streams_to_merge.append({stream_id: rows_to_delete[riv_id_col].to_list()})
         pbar.update(1)
     return streams_to_merge
+
 
 region = 'japan'
 all_order_json = f'output_jsons/{region}_allorders.json'
