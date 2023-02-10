@@ -1,5 +1,6 @@
 from multiprocessing import Pool
 from collections.abc import Iterable
+from itertools import chain
 
 import json
 import os
@@ -179,18 +180,41 @@ def create_adjoint_dict(network_shp, out_file: str = None, stream_id_col: str = 
     return upstream_lists_dict
 
 def merge_streams(upstream_ids: list, network_gdf: gpd.GeoDataFrame):
-    return network_gdf[network_gdf["LINKNO"].isin(upstream_ids)].dissolve()
+    network_gdf = network_gdf[network_gdf["LINKNO"].isin(upstream_ids)].dissolve(aggfunc={'DSLINKNO':'first',
+    'DSNODEID':'first','strmOrder':'first','Length':'sum','Magnitude':'first',"DSContArea":"sum",'strmDrop':'first',
+    'Slope':'first','StraightL':'first','USContArea':'sum','WSNO':'first','DOUTEND':'first','DOUTSTART':'first','DOUTMID':'first'})
+    network_gdf["LINKNO"] = upstream_ids[0] # Renames dissolved feature to order 2 ID
+    network_gdf['UPSTRMIDS'] = str(upstream_ids[1:]) # Add merged order 1 IDs 
+    # This feature is top stream segment; remove upstream IDs
+    network_gdf["USLINKNO1"] = -1
+    network_gdf["USLINKNO2"] = -1
+    
+    return network_gdf
+    
 
 
-def main(network_gpkg: str = '/Users/rchales/Data/NGA_delineation/Caribbean/TDX_streamnet_7020065090_01.shp', 
-         output_gpkg_name: str=None):
+
+def main(network_gpkg: str = '/Users/rchales/Data/NGA_delineation/Caribbean/TDX_streamnet_7020065090_01.shp',
+        output_gpkg_name: str = None):
+    """"
+    Ensure that shapely >= 2.0.1, otherwise you will get access violations
+
+    Dissolves order 1 streams with their downstream order 2 segments.
+
+    Parameters
+    ----------
+    network_gpkg : string
+        Path to delineation network.
+    output_gpkg_name : string, osoptional
+        Optional output path for new delineation network. If not specified, the name will be the same as the input + _connectivity.gpkg
+    """
     # DONE todo: make only 1 input which is the path to the geopackage/shapefile of the stream network
     # DONE todo: do not read json files, generate them in the script
     # DONE todo: make the output file name one of the parameters you can specify at the start of the script
     # DONE todo: make the readme.md file in the root of the repo
-    # Make sure shapely is at least 2.0.1 to avoid access errors
 
     gdf = gpd.read_file(network_gpkg)
+    gdf['UPSTRMIDS'] = np.nan
     out_json_path = os.path.splitext(network_gpkg)[0] + '_connectivity.json'
 
     allorders_dict = create_adjoint_dict(network_gpkg,
@@ -205,22 +229,20 @@ def main(network_gpkg: str = '/Users/rchales/Data/NGA_delineation/Caribbean/TDX_
                         order_col="strmOrder",
                         order_filter=2)
 
-    toporder2 = set([value[-1] for value in list(order_2_dict.values())])
+    toporder2 = {value[-1] for value in list(order_2_dict.values())}
 
     with Pool() as p:
         merged_features = p.starmap(merge_streams, [(allorders_dict[str(rivid)], gdf) for rivid in toporder2])
 
-    # list all ids that were merged
-    all_merged_rivids = [allorders_dict[str(rivid)] for rivid in toporder2]
-    # turn a list of lists into a flat list
-    all_merged_rivids = [item for sublist in all_merged_rivids for item in sublist]
-    # remove duplicates
-    all_merged_rivids = set(all_merged_rivids)
+    # list all ids that were merged, turn a list of lists into a flat list, remove duplicates by converting to a set (saves ~5 sec)
+    all_merged_rivids = set(chain.from_iterable([allorders_dict[str(rivid)] for rivid in toporder2]))
 
     # drop rivids that were merged
     gdf = gdf[~gdf["LINKNO"].isin(all_merged_rivids)]
+
     # concat the merged features
     gdf = pd.concat([gdf, *merged_features])
+  
 
     if output_gpkg_name is None:
         output_gpkg_name = os.path.splitext(network_gpkg)[0] + '_connectivity.gpkg'
