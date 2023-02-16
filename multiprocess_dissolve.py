@@ -59,7 +59,6 @@ def make_tree_up(df: pd.DataFrame, order: int = 0, stream_id_col: str = "COMID",
             df[df[order_col] == order][stream_id_col]}
     return tree
 
-
 def make_tree_down(df: pd.DataFrame, order: int = 0, stream_id_col: str = "COMID", next_down_id_col: str = "NextDownID", order_col: str = "order_") -> dict:
     """
     Performs the simpler task of pairing segment ids as keys with their next down ids as values.
@@ -85,7 +84,6 @@ def make_tree_down(df: pd.DataFrame, order: int = 0, stream_id_col: str = "COMID
     # tree = dict(zip(out.loc[out['NextDownID'] != -1, 'HydroID'], out.loc[out['NextDownID'] != -1, 'NextDownID']))
     tree = dict(zip(out[stream_id_col], out[next_down_id_col]))
     return tree
-
 
 def trace_tree(tree: dict, search_id: int, cuttoff_n: int = 200) -> list:
     """
@@ -180,42 +178,57 @@ def create_adjoint_dict(network_shp, out_file: str = None, stream_id_col: str = 
     return upstream_lists_dict
 
 def dissolve_network(network_gdf, upstream_ids):
-    return network_gdf[network_gdf["LINKNO"].isin(upstream_ids)].dissolve(aggfunc={
-        'DSNODEID':'first','strmOrder':'first','Length':'sum','Magnitude':'first',"DSContArea":"sum",'strmDrop':'first',
-        'Slope':'first','StraightL':'first','USContArea':'sum','WSNO':'first','DOUTEND':'first','DOUTSTART':'first','DOUTMID':'first'
-        })
+    return network_gdf[network_gdf["LINKNO"].isin(upstream_ids)].dissolve()
 
 def merge_streams(upstream_ids: list, network_gdf: gpd.GeoDataFrame, simplify: bool):
-    dwnstrm_id = network_gdf[network_gdf['LINKNO'] == upstream_ids[0]]['DSLINKNO'].values[0]
+    """
+    Most important variable is ids_to_use. Contains the top order 2, and the longest order 1.
+    """
+    this_strm_data = network_gdf[network_gdf['LINKNO'] == upstream_ids[0]]
+    dwnstrm_id = this_strm_data['DSLINKNO'].values[0]
+    DSCONTAREA = this_strm_data['DSContArea'].values[0]
+    ids_to_use = [upstream_ids[0],upstream_ids[2 if network_gdf[network_gdf["LINKNO"] == upstream_ids[1]]['Length'].values <= network_gdf[network_gdf["LINKNO"] == upstream_ids[2]]['Length'].values else 1]]
+    Length = sum(network_gdf[network_gdf["LINKNO"].isin(ids_to_use)]['Length'].values)
+    Magnitude = this_strm_data['Magnitude'].values[0]
+    strmDrop = sum(network_gdf[network_gdf["LINKNO"].isin(ids_to_use)]['strmDrop'].values)
+    WSNO = this_strm_data['WSNO'].values[0]
+    DOUTEND = this_strm_data['DOUTEND'].values[0]
+    DOUTSTART = network_gdf[network_gdf['LINKNO'] == ids_to_use[1]]["DOUTSTART"].values[0]
+    DSNODEID = this_strm_data['DSNODEID'].values[0]
+
+    if DSNODEID != -1:
+        print(f"    The stream {upstream_ids[0]} has a DSNODEID other than -1...")
+
     if not simplify:
         network_gdf = dissolve_network(network_gdf, upstream_ids)
     else:
         # Get rid of the shortest stream segment that isn't the order 2!!!
-        network_gdf = network_gdf[network_gdf["LINKNO"].isin(upstream_ids)]
-        ids_to_use = [upstream_ids[0],upstream_ids[2 if network_gdf[network_gdf["LINKNO"] == upstream_ids[1]]['Length'].values <= network_gdf[network_gdf["LINKNO"] == upstream_ids[2]]['Length'].values else 1]]
-        rejectedid = list(set(upstream_ids).difference(ids_to_use))[0]
-        rejected_gdf = network_gdf[network_gdf['LINKNO'] == rejectedid]
-
         network_gdf = dissolve_network(network_gdf, ids_to_use)
 
-        # Preserve area and length from rejected segment
-        network_gdf['Length'] += rejected_gdf['Length'].values
-        network_gdf['DSContArea'] += rejected_gdf['DSContArea'].values
-        network_gdf['USContArea'] += rejected_gdf['USContArea'].values
-
-    network_gdf["LINKNO"] = upstream_ids[0] # Renames dissolved feature to order 2 ID
-    network_gdf["DSLINKNO"] = dwnstrm_id # Ensure DSLINKNO is perserved
-    network_gdf['UPSTRMIDS'] = str(upstream_ids[1:]) # Add merged order 1 IDs 
-    # This feature is top stream segment; remove upstream IDs
+    network_gdf["LINKNO"] = upstream_ids[0] 
+    network_gdf["DSLINKNO"] = dwnstrm_id 
     network_gdf["USLINKNO1"] = -1
     network_gdf["USLINKNO2"] = -1
+    network_gdf["DSNODEID"] = DSNODEID
+    network_gdf["strmOrder"] = 1
+    network_gdf["Length"] = Length
+    network_gdf["Magnitude"] = Magnitude
+    network_gdf["DSContArea"] = DSCONTAREA
+    network_gdf["strmDrop"] = strmDrop
+    network_gdf["Slope"] = strmDrop / Length
+    network_gdf["StraightL"] = -1
+    network_gdf["USContArea"] = -1
+    network_gdf["WSNO"] = WSNO
+    network_gdf["DOUTEND"] = DOUTEND
+    network_gdf["DOUTSTART"] = DOUTSTART
+    network_gdf["DOUTMID"] = round((DOUTEND + DOUTSTART) / 2, 2)
+    network_gdf['UPSTRMIDS'] = ','.join(str(num) for num in upstream_ids[1:])
     
     return network_gdf
 
 
-
 def main(network_gpkg: str = '/Users/rchales/Data/NGA_delineation/Caribbean/TDX_streamnet_7020065090_01.shp',
-        output_gpkg_name: str = None, simplify: bool = False):
+        output_gpkg_name: str = None, model: bool = False):
     """"
     Ensure that shapely >= 2.0.1, otherwise you will get access violations
 
@@ -230,15 +243,10 @@ def main(network_gpkg: str = '/Users/rchales/Data/NGA_delineation/Caribbean/TDX_
     simplify : bool, optional
         If false, all upstream reaches are dissolved into one feature. If true, the features are dissolved, but the shortest geometry is discarded.
     """
-    # DONE todo: make only 1 input which is the path to the geopackage/shapefile of the stream network
-    # DONE todo: do not read json files, generate them in the script
-    # DONE todo: make the output file name one of the parameters you can specify at the start of the script
-    # todo: make the readme.md file in the root of the repo
-    # Check w/ Riley to see which attributes he cares about preserving (area and length done, others?)
 
     gdf = gpd.read_file(network_gpkg)
     gdf['UPSTRMIDS'] = np.nan
-    out_json_path = os.path.splitext(network_gpkg)[0] + '_connectivity.json'
+    out_json_path = os.path.splitext(network_gpkg)[0] + '_orders.json'
 
     allorders_dict = create_adjoint_dict(network_gpkg,
                     out_json_path,
@@ -255,7 +263,7 @@ def main(network_gpkg: str = '/Users/rchales/Data/NGA_delineation/Caribbean/TDX_
     toporder2 = {value[-1] for value in list(order_2_dict.values())}
 
     with Pool() as p:
-        merged_features = p.starmap(merge_streams, [(allorders_dict[str(rivid)], gdf, simplify) for rivid in toporder2])
+        merged_features = p.starmap(merge_streams, [(allorders_dict[str(rivid)], gdf, model) for rivid in toporder2])
 
     # list all ids that were merged, turn a list of lists into a flat list, remove duplicates by converting to a set (saves ~5 sec)
     all_merged_rivids = set(chain.from_iterable([allorders_dict[str(rivid)] for rivid in toporder2]))
@@ -267,8 +275,8 @@ def main(network_gpkg: str = '/Users/rchales/Data/NGA_delineation/Caribbean/TDX_
     gdf = pd.concat([gdf, *merged_features])
 
     if output_gpkg_name is None:
-        output_gpkg_name = os.path.splitext(network_gpkg)[0] + '_connectivity.gpkg'
-    if simplify:
+        output_gpkg_name = os.path.splitext(network_gpkg)[0] + '_mapping.gpkg'
+    if model:
         output_gpkg_name = os.path.splitext(network_gpkg)[0] + '_model.gpkg'
 
-    gdf.to_file(output_gpkg_name, driver="GPKG")
+    gdf.to_file(output_gpkg_name, driver="GPKG", index=False)
