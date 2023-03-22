@@ -78,7 +78,7 @@ def _CreateComidLatLonZ(network,out_dir,id_field,start):
             "z": 0}
     
     pd.DataFrame(data).to_csv(os.path.join(out_dir, "comid_lat_lon_z.csv"), index=False, header=True)
-    print(f"\tCreated comid_lat_lon_z.csv at {round((time() - start) / 60 ,2)}")
+    print(f"\tCreated comid_lat_lon_z.csv at {round((time() - start) / 60 ,2)} minutes.")
 
 def _CreateRivBasId(network, out_dir,downstream_field,id_field,start):
     network.sort_values([downstream_field, id_field], inplace=True, ascending=[False,False])
@@ -88,6 +88,7 @@ def _CreateRivBasId(network, out_dir,downstream_field,id_field,start):
 
 def _CalculateMuskingum(network,out_dir,k,x, id_field,start):
     network.sort_values(id_field, inplace=True)
+    network = network.to_crs(epsg=4326) # Calculation of geodesic lengths must occur in epsg 4326
     network["LENGTH_GEO"] = network.geometry.apply(_calculate_geodesic_length)
     network["Musk_kfac"] = network["LENGTH_GEO"] * 3600
     network["Musk_k"] = network["Musk_kfac"] * k
@@ -97,9 +98,9 @@ def _CalculateMuskingum(network,out_dir,k,x, id_field,start):
     network["Musk_kfac"].to_csv(os.path.join(out_dir, "kfac.csv"), index=False, header=False)
     network["Musk_k"].to_csv(os.path.join(out_dir, "k.csv"), index=False, header=False)
     network["Musk_x"].to_csv(os.path.join(out_dir, "x.csv"), index=False, header=False)
-    print(f"\tCreated muskingum parameters at {round((time() - start) / 60 ,2)}")
+    print(f"\tCreated muskingum parameters at {round((time() - start) / 60 ,2)} minutes.")
 
-def _calculate_geodesic_length(line,start):
+def _calculate_geodesic_length(line):
     geod = Geod(ellps='WGS84')
     length = geod.geometry_length(line) / 1000 # To convert to km
 
@@ -128,18 +129,20 @@ def _CreateRapidConnect(network, out_dir, id_field, downstream_field,start):
     with open(os.path.join(out_dir, "rapid_connect.csv"), 'w') as f:
         for row in list_all:
             out = np.concatenate([row, np.array([0 for i in range(max_count_Upstream - row[2])])])
-            for item in out:
-                f.write(f"{item},")
+            for i, item in enumerate(out):
+                if i + 1 != len(out):
+                    f.write(f"{item},")
+                else: f.write(f"{item}")
             f.write('\n')
 
-    print(f"\tCreated rapid_connect.csv at {round((time() - start) / 60 ,2)}")
+    print(f"\tCreated rapid_connect.csv at {round((time() - start) / 60 ,2)} minutes.")
 
 def _CreateWeightTable(out_dir, basins_file, nc_file, basin_id,start):
-    print(f"\tBeginning Weight Table Creation at {round((time() - start) / 60 ,2)}")
+    print(f"\tBeginning Weight Table Creation at {round((time() - start) / 60 ,2)} minutes.")
     basins_gdf = gpd.read_file(basins_file)
     if not basin_id in basins_gdf.columns:
         raise ValueError(f"The id field {basin_id} is not in the basins file in {out_dir}")
-    basins_gdf.set_crs(epsg=3857, allow_override=True)
+    basins_gdf = basins_gdf.to_crs('EPSG:4326')
 
     # Obtain catchment extent
     extent = basins_gdf.total_bounds
@@ -179,7 +182,8 @@ def _CreateWeightTable(out_dir, basins_file, nc_file, basin_id,start):
         lon_list.append(point.x)
         lat_list.append(point.y)
 
-    polygons_gdf = gpd.GeoDataFrame(geometry=[region for region in regions.geoms], crs='EPSG:3857')
+    polygons_gdf = gpd.GeoDataFrame(geometry=[region for region in regions.geoms], crs=4326)
+    #polygons_gdf = polygons_gdf.to_crs('EPSG:3857')
     polygons_gdf['POINT_X'] = polygons_gdf.geometry.centroid.x
     polygons_gdf['POINT_Y'] = polygons_gdf.geometry.centroid.y
     #polygons_gdf.to_crs(epsg=4326, inplace=True)
@@ -189,7 +193,7 @@ def _CreateWeightTable(out_dir, basins_file, nc_file, basin_id,start):
     intersect = gpd.overlay(basins_gdf, polygons_gdf, how='intersection')
 
     print("Calculating geodesic areas...")
-    intersect['AREA_GEO'] = intersect['geometry'].to_crs({'proj':'cea'}).area 
+    intersect['AREA_GEO'] = intersect['geometry'].to_crs('EPSG:3857').area 
     #intersect.to_file(os.path.join(out_dir, 'intersect.gpkg'), driver="GPKG")
 
     area_arr = pd.DataFrame(data={
@@ -248,4 +252,4 @@ def _CreateWeightTable(out_dir, basins_file, nc_file, basin_id,start):
                         csvfile.write(f'{streamID_unique},{area_geo_each},{index_lon_each},{index_lat_each},{num_ind_points},{lon_each},{lat_each}\n')
     
     
-    print(f"\tCreated rapid_connect.csv at {round((time() - start) / 60 ,2)}")
+    print(f"\tCreated weight table at {round((time() - start) / 60 ,2)} minutes.")
