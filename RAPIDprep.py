@@ -1,7 +1,7 @@
 from multiprocessing import Pool
 from collections.abc import Iterable
 from itertools import chain
-from shapely.ops import voronoi_diagram, unary_union
+from shapely.ops import voronoi_diagram
 from shapely import Point, MultiPoint
 from pyproj import Geod
 
@@ -13,8 +13,9 @@ import geopandas as gpd
 import pandas as pd
 import numpy as np
 import time
-import pyproj
 import netCDF4 as NET
+import warnings
+
 ################################################################
 #   Disolving functions:
 ################################################################
@@ -133,7 +134,7 @@ def _trace_tree(tree: dict, search_id: int, cuttoff_n: int = 200) -> list:
         i += 1
     return upstream
 
-def _create_adjoint_dict(network_shp, out_file: str = None, stream_id_col: str = "COMID",
+def _create_adjoint_dict(network_df: gpd.GeoDataFrame, out_file: str = None, stream_id_col: str = "COMID",
                         next_down_id_col: str = "NextDownID", order_col: str = "order_", trace_up: bool = True,
                         order_filter: int = 0):
     """
@@ -143,7 +144,7 @@ def _create_adjoint_dict(network_shp, out_file: str = None, stream_id_col: str =
     order. If filtered by stream order, the dictionary will only contain ids of the given stream order, with the
     upstream or downstream ids for the other streams in the chain that share that stream order.
     Args:
-        network_shp: path to  .shp file that contains the stream network. This file
+        network_shp: The stream network. This file
                      must contain attributes for a unique id and a next down id, and if filtering by order number is
                      specified, it must also contain a column with stream order values.
         out_file: a path to an output file to write the dictionary as a .json, if desired.
@@ -156,13 +157,12 @@ def _create_adjoint_dict(network_shp, out_file: str = None, stream_id_col: str =
                       stream order
     Returns:
     """
-    # Added to forgo computation on precreated json files, for testing
+    # Added to forgo computation on precreated json files
     if out_file is not None and os.path.exists(out_file):
         with open(out_file, 'r') as f:
             upstream_lists_dict = json.load(f)
         return upstream_lists_dict
 
-    network_df = gpd.read_file(network_shp)
     columns_to_search = [stream_id_col, next_down_id_col]
     if order_filter != 0:
         columns_to_search.append(order_col)
@@ -255,35 +255,6 @@ def _merge_streams(upstream_ids: list, network_gdf: gpd.GeoDataFrame, model: boo
     
     return network_gdf
 
-def _prune(linkno: int, gdf: gpd.GeoDataFrame, streamid, dsid) -> gpd.GeoDataFrame:
-    """
-    Prune the order 1's, adding the missing DSContArea and updating the UPSTRMIDS
-    """
-    linkgdf = gdf[gdf[streamid] == linkno]
-    dsconta = linkgdf['DSContArea'].values[0]
-    dwnstrm_linkno = linkgdf[dsid].values[0]
-    new_feature = gdf[gdf[streamid] == dwnstrm_linkno].copy()
-    new_feature['DSContArea'] += dsconta 
-    new_feature['UPSTRMIDS'] = str(linkno)
-    new_feature['USLINKNO2'] = -1 # It seems that every uslinko2 in this case is the order 1.
-    
-    return new_feature
-
-def _create_order_set(gdf: gpd.GeoDataFrame, order: int = 1, streamid: str = 'LINKNO', dsid: str = 'DSLINKNO') -> set:
-    """
-    Returns a set of all stream link numbers that are of the specified order and have a downstream magnitude greater than 2 
-    (Indicating that this is a small segment joining a larger river, not an order 1 that will me merged with a top order 2)
-    """
-    order1_gdf = gdf[gdf['strmOrder'] == order]
-    order1_list = []
-    for linkno in order1_gdf[streamid].values:
-        dslinkno = order1_gdf[order1_gdf[streamid] == linkno][dsid].values[0]
-        if dslinkno == -1:
-            continue
-        if gdf[gdf[streamid] == dslinkno]['Magnitude'].values[0] > 2:
-            order1_list.append(linkno)
-    return set(order1_list)
-
 def _merge_basins(upstream_ids: list, basin_gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     """
     Dissolves basins based on list of upstream river ids, and returns that feature. Ensure that id is the stream order 2 id
@@ -368,8 +339,8 @@ def _read_geopackage(filename: str, start: float) -> gpd.GeoDataFrame:
     print(f"--- Finished at {round((time.time() - start) / 60 ,2)} minutes to read {os.path.basename(filename)} ---")
     return pkcg
 
-def _main_dissolve(network_gpkg: str, basin_gpkg: str, output_gpkg_name: str = None, model: bool = False, 
-         streamid='LINKNO', dsid: str = 'DSLINKNO', length: str = 'Length', EPSG=3857) -> None:
+def _main_dissolve(network_gpkg: str, basin_gpkg: str, output_gpkg_name: str = None, out_dir:str = None, model: bool = False, 
+         streamid='LINKNO', dsid: str = 'DSLINKNO', length: str = 'Length', EPSG=4326, start=None) -> None:
     """"
     Ensure that shapely >= 2.0.1, otherwise you will get access violations
 
@@ -385,6 +356,8 @@ def _main_dissolve(network_gpkg: str, basin_gpkg: str, output_gpkg_name: str = N
     output_gpkg_name : string, optional
         Optional output path for new delineation network. If not specified, the name will be the same as the input + _connectivity.gpkg
         If specified, enter a path such as: "C:\\Users\\user\\Desktop\\output"; "_mapping.gpkg", "_model.gpkg", and "_basins.gpkg" will be added
+    out_dir : string, optional
+        Output directory to write files to. If specified, it will override output_gpkg_name
     model : bool, optional
         If true, the only files created will be the model and basins gpkg's. Otherwise, the mapping gpkg will also be made (default False)
     streamid : string, optional
@@ -396,18 +369,14 @@ def _main_dissolve(network_gpkg: str, basin_gpkg: str, output_gpkg_name: str = N
     EPSG : int, optional
         The projection that will be used to read and write the gpkgs.
     """
-    start = time.time()
+    if start is None:
+        start = time.time()
 
     with Pool(processes=2) as p:
         gdf, basin_gdf = p.starmap(_read_geopackage, zip([network_gpkg, basin_gpkg], [start]*2))
 
-    #EPSG = pyproj.CRS.from_epsg(EPSG)
     if not model:
         mapping_gdf = gdf.copy()
-        mapping_gdf = mapping_gdf.to_crs(EPSG)
-
-    gdf = gdf.to_crs(epsg=EPSG)
-    basin_gdf = basin_gdf.to_crs(EPSG)
 
     gdf['MERGEIDS'] = np.nan
     
@@ -415,37 +384,45 @@ def _main_dissolve(network_gpkg: str, basin_gpkg: str, output_gpkg_name: str = N
         gdf, basin_gdf = _fix_0_Length(gdf, basin_gdf, streamid, dsid, length)
         print(f"--- Segments of length 0 found. Finished at {round((time.time() - start) / 60 ,2)} minutes to fix ---")
 
-    out_json_path = os.path.splitext(network_gpkg)[0] + '_orders.json'
-    allorders_dict = _create_adjoint_dict(network_gpkg,
-                    out_json_path,
+    allorders_dict = _create_adjoint_dict(gdf,
                     stream_id_col=streamid,
                     next_down_id_col=dsid,
                     order_col="strmOrder")
 
-    order_2_dict = _create_adjoint_dict(network_gpkg,
+    order_2_dict = _create_adjoint_dict(gdf,
                         stream_id_col=streamid,
                         next_down_id_col=dsid,
                         order_col="strmOrder",
                         order_filter=2)
     
-    print(f"--- Finished at {round((time.time() - start) / 60 ,2)} minutes to create/read {os.path.basename(out_json_path)}. Dissolving... ---")
-
     toporder2 = {value[-1] for value in list(order_2_dict.values())}
 
+    print(f"--- Finished at {round((time.time() - start) / 60 ,2)} minutes to create order dicts. Dissolving... ---")
+    # Define the number of chunks
+    num_chunks = 3
+
+    # Split basin_gdf into num_chunks parts, for speed
+    basin_gdf_chunks = [basin_gdf[i:i + len(basin_gdf)//num_chunks] for i in range(0, len(basin_gdf), len(basin_gdf)//num_chunks)]
+
     with Pool() as p:
+        # Process each chunk of basin_gdf separately
         merged_streams = p.starmap(_merge_streams, [(allorders_dict[str(rivid)], gdf, True) for rivid in toporder2])
-        merged_basins = p.starmap(_merge_basins,[(allorders_dict[str(rivid)], basin_gdf) for rivid in toporder2])
         if not model:
-            merged_mapping = p.starmap(_merge_streams, [(allorders_dict[str(rivid)],basin_gdf, False) for rivid in toporder2])
-        #order1_features = p.starmap(prune, [(rivid, gdf) for rivid in order1_list])
+                merged_mapping = p.starmap(_merge_streams, [(allorders_dict[str(rivid)], gdf, False) for rivid in toporder2])
+        merged_basins = []
+        merged_basins += p.starmap(_merge_basins,[(allorders_dict[str(rivid)], basin_gdf_chunks[0]) for rivid in toporder2])
+        merged_basins += p.starmap(_merge_basins,[(allorders_dict[str(rivid)], basin_gdf_chunks[1]) for rivid in toporder2])
+        merged_basins += p.starmap(_merge_basins,[(allorders_dict[str(rivid)], basin_gdf_chunks[2]) for rivid in toporder2])
+            
+        # merged_streams = p.starmap(_merge_streams, [(allorders_dict[str(rivid)], gdf, True) for rivid in toporder2])
+        # merged_basins = p.starmap(_merge_basins,[(allorders_dict[str(rivid)], basin_gdf) for rivid in toporder2])
+        # if not model:
+        #     merged_mapping = p.starmap(_merge_streams, [(allorders_dict[str(rivid)],gdf, False) for rivid in toporder2])
 
     print(f"--- Finished dissolving at {round((time.time() - start) / 60 ,2)} minutes ---")
 
-    # Get downstream values of order 1s that must be removed 
-    #downstreams = set(pd.concat(order1_features)['LINKNO'].values)
-    
-    # list all ids that were merged, turn a list of lists into a flat list, remove duplicates by converting to a set (saves ~5 sec)
-    all_merged_rivids = set(chain.from_iterable([allorders_dict[str(rivid)] for rivid in toporder2])) #| order1_list | downstreams
+    # list all ids that were merged, turn a list of lists into a flat list, remove duplicates by converting to a set 
+    all_merged_rivids = set(chain.from_iterable([allorders_dict[str(rivid)] for rivid in toporder2])) 
 
     # drop rivids that were merged
     gdf = gdf[~gdf[streamid].isin(all_merged_rivids)]
@@ -456,34 +433,19 @@ def _main_dissolve(network_gpkg: str, basin_gpkg: str, output_gpkg_name: str = N
     # concat the merged features
     gdf = pd.concat([gdf, *merged_streams])
     basin_gdf = pd.concat([basin_gdf, *merged_basins])
-    #gdf = pd.concat([gdf, *order1_features])
     gdf['reach_id'] = gdf[streamid]
     basin_gdf['reach_id'] = basin_gdf['streamID']
     if not model:
         mapping_gdf = pd.concat([mapping_gdf, *merged_mapping])
+        mapping_gdf['reach_id'] = mapping_gdf[streamid]
+
     print(f"--- Finished at {round((time.time() - start) / 60 ,2)} minutes to drop and merge ---")
     
     gdf.sort_values('strmOrder', inplace=True)
 
-    if output_gpkg_name is None:
-        network_out_path = os.path.splitext(network_gpkg)[0] + '_model.gpkg'
-        basin_out_path = os.path.splitext(network_gpkg)[0] + '_basins.gpkg'
-        if not model:
-            mapping_path = os.path.splitext(network_gpkg)[0] + '_mapping.gpkg'
-    else:
-        network_out_path = output_gpkg_name + '_model.gpkg'
-        basin_out_path = output_gpkg_name + '_basins.gpkg'
-        if not model:
-            mapping_path = output_gpkg_name + '_mapping.gpkg'
-
-    files = [network_out_path, basin_out_path]
-    gdf_list = [gdf,basin_gdf]
-    if not model:
-        files.append(mapping_path)
-        gdf_list.append(mapping_gdf)
-
-    with Pool(processes=len(files)) as p:
-        p.starmap(_save_geopackage, zip(files, gdf_list, [start]*len(files), [EPSG]*len(files)))
+    if model:
+        return gdf, basin_gdf
+    else: return gdf, basin_gdf, mapping_gdf
 
 ################################################################
 #   RAPID Preprocessing functions
@@ -491,7 +453,7 @@ def _main_dissolve(network_gpkg: str, basin_gpkg: str, output_gpkg_name: str = N
         
 def _CreateComidLatLonZ(network,out_dir,id_field,start):
     network.sort_values(id_field, inplace=True)
-    gdf = gpd.GeoDataFrame.copy(network)
+    gdf = gpd.GeoDataFrame(network)
     gdf['lat'] = network.geometry.apply(lambda geom: geom.xy[1][0])
     gdf['lon'] = network.geometry.apply(lambda geom: geom.xy[0][0])
     data = {id_field: network[id_field].values,
@@ -509,18 +471,18 @@ def _CreateRivBasId(network, out_dir,downstream_field,id_field,start):
     print(f"\tCreated riv_bas_id.csv at {round((time.time() - start) / 60 ,2)}")
 
 def _CalculateMuskingum(network,out_dir,k,x, id_field,start):
+    # Calculation of geodesic lengths must occur in epsg 4326
     network.sort_values(id_field, inplace=True)
-    network = network.to_crs(epsg=4326) # Calculation of geodesic lengths must occur in epsg 4326
     network["LENGTH_GEO"] = network.geometry.apply(_calculate_geodesic_length)
     network["Musk_kfac"] = network["LENGTH_GEO"] * 3600
     network["Musk_k"] = network["Musk_kfac"] * k
     network["Musk_x"] = x * 0.1
-    network.to_file("C:\\Users\\lrr43\Desktop\\Lab\\GEOGLOWSData\\RAPID\\PythonV\\Test.gpkg")
 
     network["Musk_kfac"].to_csv(os.path.join(out_dir, "kfac.csv"), index=False, header=False)
     network["Musk_k"].to_csv(os.path.join(out_dir, "k.csv"), index=False, header=False)
     network["Musk_x"].to_csv(os.path.join(out_dir, "x.csv"), index=False, header=False)
     print(f"\tCreated muskingum parameters at {round((time.time() - start) / 60 ,2)} minutes.")
+    return network
 
 def _calculate_geodesic_length(line):
     geod = Geod(ellps='WGS84')
@@ -545,26 +507,27 @@ def _CreateRapidConnect(network, out_dir, id_field, downstream_field,start):
             max_count_Upstream = count_upstream
         nextDownID = network.loc[network[id_field] == hydroid, downstream_field].values[0]
 
-        # append the list of Stream HydroID, NextDownID, Count of Upstream ID, and  HydroID of each Upstream into a larger list
-        list_all.append(np.concatenate([np.array([hydroid, nextDownID, count_upstream]), list_upstreamID]))
+        row_dict = {'HydroID': hydroid, 'NextDownID': nextDownID, 'CountUpstreamID': count_upstream}
+        for i in range(count_upstream):
+            row_dict[f'UpstreamID{i+1}'] = list_upstreamID[i]
+        list_all.append(row_dict)
 
-    with open(os.path.join(out_dir, "rapid_connect.csv"), 'w') as f:
+    # Fill in NaN values for any missing upstream IDs
+    for i in range(max_count_Upstream):
+        col_name = f'UpstreamID{i+1}'
         for row in list_all:
-            out = np.concatenate([row, np.array([0 for i in range(max_count_Upstream - row[2])])])
-            for i, item in enumerate(out):
-                if i + 1 != len(out):
-                    f.write(f"{item},")
-                else: f.write(f"{item}")
-            f.write('\n')
+            if col_name not in row:
+                row[col_name] = 0
+        
+    df = pd.DataFrame(list_all)
+    df.to_csv(os.path.join(out_dir,'rapid_connect.csv'), index=False, header=None)
 
     print(f"\tCreated rapid_connect.csv at {round((time.time() - start) / 60 ,2)} minutes.")
 
-def _CreateWeightTable(out_dir, basins_file, nc_file, basin_id,start):
+def _CreateWeightTable(out_dir, basins_gdf, nc_file, basin_id,start):
     print(f"\tBeginning Weight Table Creation at {round((time.time() - start) / 60 ,2)} minutes.")
-    basins_gdf = gpd.read_file(basins_file)
     if not basin_id in basins_gdf.columns:
         raise ValueError(f"The id field {basin_id} is not in the basins file in {out_dir}")
-    basins_gdf = basins_gdf.to_crs('EPSG:4326')
 
     # Obtain catchment extent
     extent = basins_gdf.total_bounds
@@ -587,6 +550,7 @@ def _CreateWeightTable(out_dir, basins_file, nc_file, basin_id,start):
     # Create Thiessen polygons based on the points within the extent
     print("\tCreating Thiessen polygons")
     buffer = 2 * max(abs(lat[0]-lat[1]),abs(lon[0] - lon[1]))
+
     # Extract the lat and lon within buffered extent (buffer with 2* interval degree)
     lat0 = lat[(lat >= (extent[1] - buffer)) & (lat <= (extent[3] + buffer))]
     lon0 = lon[(lon >= (extent[0] - buffer)) & (lon <= (extent[2] + buffer))]
@@ -604,19 +568,18 @@ def _CreateWeightTable(out_dir, basins_file, nc_file, basin_id,start):
         lon_list.append(point.x)
         lat_list.append(point.y)
 
-    polygons_gdf = gpd.GeoDataFrame(geometry=[region for region in regions.geoms], crs=4326)
-    #polygons_gdf = polygons_gdf.to_crs('EPSG:3857')
-    polygons_gdf['POINT_X'] = polygons_gdf.geometry.centroid.x
-    polygons_gdf['POINT_Y'] = polygons_gdf.geometry.centroid.y
-    #polygons_gdf.to_crs(epsg=4326, inplace=True)
-    #polygons_gdf.to_file(os.path.join(out_dir, 'test.gpkg'), driver="GPKG")
+    # Supress the warning about finding the centroid of a geographic crs 
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        polygons_gdf = gpd.GeoDataFrame(geometry=[region for region in regions.geoms], crs=4326)
+        polygons_gdf['POINT_X'] = polygons_gdf.geometry.centroid.x
+        polygons_gdf['POINT_Y'] = polygons_gdf.geometry.centroid.y
 
     print("Intersecting Thiessen polygons with catchment...")
     intersect = gpd.overlay(basins_gdf, polygons_gdf, how='intersection')
 
     print("Calculating geodesic areas...")
-    intersect['AREA_GEO'] = intersect['geometry'].to_crs('EPSG:3857').area 
-    #intersect.to_file(os.path.join(out_dir, 'intersect.gpkg'), driver="GPKG")
+    intersect['AREA_GEO'] = intersect['geometry'].to_crs({'proj':'cea'}).area
 
     area_arr = pd.DataFrame(data={
         basin_id: intersect[basin_id].values,
@@ -643,93 +606,92 @@ def _CreateWeightTable(out_dir, basins_file, nc_file, basin_id,start):
         index_lat_dummy = int((np.abs(lat-lat_dummy)).argmin())
         pass
 
-    with open(os.path.join(out_dir, 'weight_table_py2.csv'), 'w') as csvfile:
-        csvfile.write(f'{basin_id},area_sqm,lon_index,lat_index,npoints,lon,lat\n')
+    df = pd.DataFrame(columns=[f'{basin_id}', "area_sqm", "lon_index", "lat_index", "npoints", "lon", "lat"])
 
-        for streamID_unique in streamID_unique_list:
-                ind_points = np.where(area_arr[basin_id]==streamID_unique)[0]
-                num_ind_points = len(ind_points)
-    
-                if num_ind_points <= 0:
-                    # if point not in array, append dummy data for one point of data
-                    # streamID, area_sqm, lon_index, lat_index, npoints
-                    csvfile.write(f'{streamID_unique},0,{index_lon_dummy},{index_lat_dummy},1,{lon_dummy},{lat_dummy}\n')
+    for streamID_unique in streamID_unique_list:
+        ind_points = np.where(area_arr[basin_id]==streamID_unique)[0]
+        num_ind_points = len(ind_points)
 
-                else:
-                    for ind_point in ind_points:
-                        area_geo_each = float(area_arr['AREA_GEO'].iloc[ind_point])
-                        lon_each = area_arr['POINT_X'].iloc[ind_point]
-                        lat_each = area_arr['POINT_Y'].iloc[ind_point]
-                        
-                        try:
-                            index_lon_each = int(np.where(lon == lon_each)[0])
-                        except:
-                            index_lon_each = int((np.abs(lon-lon_each)).argmin())
-                            pass
+        if num_ind_points <= 0:
+            # if point not in array, append dummy data for one point of data
+            # streamID, area_sqm, lon_index, lat_index, npoints
+            df.loc[len(df)] = [streamID_unique, 0, index_lon_dummy, index_lat_dummy, 1, lon_dummy, lat_dummy]
 
-                        try:
-                            index_lat_each = int(np.where(lat == lat_each)[0])
-                        except:
-                            index_lat_each = int((np.abs(lat-lat_each)).argmin())
-                        csvfile.write(f'{streamID_unique},{area_geo_each},{index_lon_each},{index_lat_each},{num_ind_points},{lon_each},{lat_each}\n')
-    
-    
+        else:
+            for ind_point in ind_points:
+                area_geo_each = float(area_arr['AREA_GEO'].iloc[ind_point])
+                lon_each = area_arr['POINT_X'].iloc[ind_point]
+                lat_each = area_arr['POINT_Y'].iloc[ind_point]
+
+                try:
+                    index_lon_each = int(np.where(lon == lon_each)[0])
+                except:
+                    index_lon_each = int((np.abs(lon-lon_each)).argmin())
+
+                try:
+                    index_lat_each = int(np.where(lat == lat_each)[0])
+                except:
+                    index_lat_each = int((np.abs(lat-lat_each)).argmin())
+
+                df.loc[len(df)] = [streamID_unique, area_geo_each, index_lon_each, index_lat_each, num_ind_points, lon_each, lat_each]
+
+    out_name = os.path.join(out_dir, "weight_era_t640.csv")
+    if '720' in nc_file:
+        out_name = os.path.join(out_dir, "weight_era_t720.csv")
+    elif '1800' in nc_file:
+        out_name = os.path.join(out_dir, "weight_era_t1800.csv")
+
+    df.to_csv(out_name, index=False)
     print(f"\tCreated weight table at {round((time.time() - start) / 60 ,2)} minutes.")
 
-def main(main_dir: str, nc_file: str, id_field: str = 'LINKNO', downstream_field: str = 'DSLINKNO', basin_id: str = 'streamID', 
-         k: float = 0.35, x: float = 3.0, overwrite: bool = False):
+
+def PreprocessForRAPID(stream_file: str, basins_file: str, nc_files: list, out_dir: str, 
+                       create_vis: bool = True, id_field: str = 'LINKNO', ds_field: str = 'DSLINKNO', 
+                       basin_id: str = 'streamID', k: float = 0.35, x: float = 3, EPSG: int = 4326):
     """
-    Fix stream network, dissolve network and cathcment gpkgs, create RAPID preprocessing files
+    Master function for preprocessing stream delineations and catchments and creating RAPID inputs. 
 
     Parameters
     ----------
-    main_dir : string
-        The overarching directory, containing subfolders, which each contain two geopackages, one with 'model' in its name and another with 'basin' in its name
-    nc_file : string
-        Path to the nc file.
+    stream_file : string
+        Path to stream network file
+    basins_file : string
+        Path to the basins/catchments file
+    nc_files : list
+        List of paths to ERA netCDF files
+    out_dir : string
+        Path to the output directory
+
+    create_vis : bool, optional
+        Default behavior is to create another stream network that has dissolved top order 1 streams, but with both order 1 streams still visible. If False this file is not created
     id_field : string, optional
         Field in network file that corresponds to the unique id of each stream segment
-    downstream_field : string, optional
+    ds_field : string, optional
         Field in network file that corresponds to the unique downstream id of each stream segment
     basin_id : string, optional
         Field in basins file that corresponds to the unique id of each catchment
-
-    overwrite : bool, optional
-        If set to True, will overwrite existing files. The default is False.
-
     """
     start = time.time()
-    job_list = []
-    for file in os.listdir(main_dir):
-        d = os.path.join(main_dir, file)
-        if os.path.isdir(d):
-            job_list.append(d)
-    for folder in job_list:
-        print(f'In {folder}')
-        files = os.listdir(folder)
-        basins_file = None
-        stream_ntwk_file = None
-        for file in files:
-            if 'basin' in file:
-                basins_file = os.path.join(folder,file)
-            if 'model' in file:
-                stream_ntwk_file = os.path.join(folder,file)
-        if basins_file is not None and stream_ntwk_file is not None:
-            out_dir = folder
-            network = gpd.read_file(stream_ntwk_file)
-            network.set_crs(epsg=3857, allow_override=True)
 
-            # Some checks: 
-            if not id_field in network.columns:
-                raise ValueError(f"The id field {id_field} is not in the network file in {out_dir}")
-            if not downstream_field in network.columns:
-                raise ValueError(f"The downstream field {downstream_field} is not in the network file in {out_dir}")
-            
-            # Run main functions
-            _CreateComidLatLonZ(network, out_dir, id_field,start)
-            _CreateRivBasId(network, out_dir, downstream_field,id_field,start)
-            _CalculateMuskingum(network,out_dir,k,x, id_field,start)
-            _CreateRapidConnect(network, out_dir, id_field, downstream_field,start)
-            _CreateWeightTable(out_dir, basins_file, nc_file, basin_id,start)
-            print('\tFinished successfully!\n')
-            return
+    if create_vis:
+        streams, basins, vis_streams = _main_dissolve(stream_file, basins_file, out_dir=out_dir, model=False, start=start, EPSG=EPSG)
+    else:
+        streams, basins = _main_dissolve(stream_file, basins_file, out_dir=out_dir, model=True, start=start, EPSG=EPSG)
+
+    _CreateComidLatLonZ(streams, out_dir, id_field,start)
+    _CreateRivBasId(streams, out_dir, ds_field,id_field,start)
+    streams = _CalculateMuskingum(streams,out_dir,k,x, id_field,start)
+    _CreateRapidConnect(streams, out_dir, id_field, ds_field,start)
+    for nc_file in nc_files:
+        _CreateWeightTable(out_dir, basins, nc_file, basin_id,start)
+
+    files = [os.path.join(out_dir, 't_mod.gpkg'), os.path.join(out_dir, 't_basins.gpkg')]
+    gdf_list = [streams,basins]
+    if create_vis:
+        files.append(os.path.join(out_dir, 't_vis.gpkg'))
+        gdf_list.append(vis_streams)
+
+    with Pool(processes=len(files)) as p:
+        p.starmap(_save_geopackage, zip(files, gdf_list, [start]*len(files), [EPSG]*len(files)))
+
+    print('\tFinished successfully!\n')
