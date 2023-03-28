@@ -1,3 +1,28 @@
+"""
+   RAPIDprep.py
+   Provides the master function 'PreprocessforRAPID', which:
+    - Reads in provided stream networks and catchments
+    - Fixes stream segments of 0 length for different cases as follows:
+        1) Feature is coastal w/ no upstream or downstream
+            -> Delete the stream and its basin
+        2) Feature is bridging a 3-river confluence (Has downstream and upstreams)
+            -> Artificially create a basin with 0 area, and force a length on the point of 1 meter
+        3) Feature is costal w/ upstreams but no downstream
+            -> Force a length on the point of 1 meter
+        4) Feature doesn't match any previous case
+            -> Raise an error for now
+    - Creates three new networks:
+        1) A visulation network, which has the top order 1 streams dissolved with their downstream order 2 segment (for smaller file sizes)
+        2) A modeling network, which is similar to 1) but only preserves the geometry of the order 2 segment and the longest order 1 segment
+        3) A modifyed basins network. Any streams that were merged will have their corresponding catchements also dissolved 
+    - Creates the following six files: comid_lat_lon_z.csv, riv_bas_id.csv, k.csv, kfac.csv, x.csv, and rapid_connect.csv
+    - Calculates the muskingum parameters for the stream network and adds this information to the modeling network
+    - Creates weight tables for each of the given input ERA netCDF datasets
+    - Sorts the modeling network by Strahler stream order, ascending
+    - Saves each network to the given directory
+
+    Created by Louis R. Rosas, Riley Hales 2023
+"""
 from multiprocessing import Pool
 from collections.abc import Iterable
 from itertools import chain
@@ -137,7 +162,7 @@ def _trace_tree(tree: dict, search_id: int, cuttoff_n: int = 200) -> list:
 
 def _create_adjoint_dict(network_df: gpd.GeoDataFrame, out_file: str = None, stream_id_col: str = "COMID",
                         next_down_id_col: str = "NextDownID", order_col: str = "order_", trace_up: bool = True,
-                        order_filter: int = 0):
+                        order_filter: int = 0) -> dict:
     """
     Creates a dictionary where each unique id in a stream network is assigned a list of all ids upstream or downstream
     of that stream, as specified. By default is designed to trace upstream on GEOGloWS Delineation Catchment shapefiles,
@@ -188,13 +213,13 @@ def _create_adjoint_dict(network_df: gpd.GeoDataFrame, out_file: str = None, str
             return upstream_lists_dict # Added to return dictionary anyways
     return upstream_lists_dict
 
-def _dissolve_network(network_gdf, upstream_ids, streamid) -> gpd.GeoDataFrame:
+def _dissolve_network(network_gdf: gpd.GeoDataFrame, upstream_ids: list, streamid: str) -> gpd.GeoDataFrame:
     """
     Some stream segments have linestrings that aren't in the right order, and so when dissolved they create a MultiLineString object, which we don't want.
     This is ensures that the geometry is a LineString by finding the correct order and concatenating the linestrings into a new LineString
     """
     stuff_to_dissolve = network_gdf[network_gdf[streamid].isin(upstream_ids)]
-    if len(upstream_ids) == 2:
+    if len(upstream_ids) == 2:  # This is for when we merge only two upstream streams, and this is where only using GeoPandas dissolve may create MultiLineString objects (because geoms in wrong order?)
         line1 = list(stuff_to_dissolve.iloc[0].geometry.coords)
         line2 = list(stuff_to_dissolve.iloc[1].geometry.coords)
         line1_start = line1[0]
@@ -209,7 +234,7 @@ def _dissolve_network(network_gdf, upstream_ids, streamid) -> gpd.GeoDataFrame:
     return stuff_to_dissolve.dissolve()
 
 def _merge_streams(upstream_ids: list, network_gdf: gpd.GeoDataFrame, model: bool, streamid: str = 'LINKNO', 
-                  dsid: str = 'DSLINKNO', length: str = 'Length'):
+                  dsid: str = 'DSLINKNO', length: str = 'Length') -> gpd.GeoDataFrame:
     """
     Selects the stream segments that are upstream of the given stream segments, and merges them into a single geodataframe.
     """
@@ -227,7 +252,6 @@ def _merge_streams(upstream_ids: list, network_gdf: gpd.GeoDataFrame, model: boo
     DSNODEID = order2_stream['DSNODEID'].values[0]
 
     if DSNODEID != -1:
-        print(f"    The stream {upstream_ids[0]} has a DSNODEID other than -1...")
         logging.warning(f"  The stream {upstream_ids[0]} has a DSNODEID other than -1...")
 
     if not model:
@@ -341,7 +365,7 @@ def _read_geopackage(filename: str) -> gpd.GeoDataFrame:
     return pkcg
 
 def _main_dissolve(network_gpkg: str, basin_gpkg: str, model: bool = False, streamid='LINKNO', 
-                   dsid: str = 'DSLINKNO', length: str = 'Length', start=None) -> None:
+                   dsid: str = 'DSLINKNO', length: str = 'Length', start=None):
     """"
     Ensure that shapely >= 2.0.1, otherwise you will get access violations
 
@@ -437,7 +461,7 @@ def _main_dissolve(network_gpkg: str, basin_gpkg: str, model: bool = False, stre
 #   RAPID Preprocessing functions
 ################################################################
         
-def _CreateComidLatLonZ(network,out_dir,id_field):
+def _CreateComidLatLonZ(network: gpd.GeoDataFrame, out_dir: str, id_field:str) -> None:
     network.sort_values(id_field, inplace=True)
     gdf = gpd.GeoDataFrame(network)
     gdf['lat'] = network.geometry.apply(lambda geom: geom.xy[1][0])
@@ -450,12 +474,12 @@ def _CreateComidLatLonZ(network,out_dir,id_field):
     pd.DataFrame(data).to_csv(os.path.join(out_dir, "comid_lat_lon_z.csv"), index=False, header=True)
     logging.info("   Created comid_lat_lon_z.csv")
 
-def _CreateRivBasId(network, out_dir,downstream_field,id_field):
+def _CreateRivBasId(network: gpd.GeoDataFrame, out_dir: str, downstream_field: str, id_field: str) -> None:
     network.sort_values([downstream_field, id_field], inplace=True, ascending=[False,False])
     network[id_field].to_csv(os.path.join(out_dir, "riv_bas_id.csv"), index=False, header=False)   
     logging.info("   Created riv_bas_id.csv")
 
-def _CalculateMuskingum(network,out_dir,k,x, id_field):
+def _CalculateMuskingum(network: gpd.GeoDataFrame, out_dir: str,k: float, x: float, id_field: str) -> gpd.GeoDataFrame:
     # Calculation of geodesic lengths must occur in epsg 4326
     network.sort_values(id_field, inplace=True)
     network["LENGTH_GEO"] = network.geometry.apply(_calculate_geodesic_length)
@@ -470,7 +494,10 @@ def _CalculateMuskingum(network,out_dir,k,x, id_field):
     logging.info("   Created muskingum parameters")
     return network
 
-def _calculate_geodesic_length(line):
+def _calculate_geodesic_length(line) -> float:
+    """
+    Input is shapely geometry, should be all shapely LineString objects
+    """
     geod = Geod(ellps='WGS84')
     length = geod.geometry_length(line) / 1000 # To convert to km
 
@@ -479,7 +506,7 @@ def _calculate_geodesic_length(line):
         length = 0.001
     return length
 
-def _CreateRapidConnect(network, out_dir, id_field, downstream_field):
+def _CreateRapidConnect(network: gpd. GeoDataFrame, out_dir: str, id_field: str, downstream_field: str) -> None:
     network.sort_values(id_field, inplace=True)
     list_all = []
     max_count_Upstream = 0
@@ -510,7 +537,7 @@ def _CreateRapidConnect(network, out_dir, id_field, downstream_field):
 
     logging.info("  Created rapid_connect.csv")
 
-def _CreateWeightTable(out_dir, basins_gdf, nc_file, basin_id):
+def _CreateWeightTable(out_dir: str, basins_gdf: gpd.GeoDataFrame, nc_file: str, basin_id: str) -> None:
     if not basin_id in basins_gdf.columns:
         raise ValueError(f"The id field {basin_id} is not in the basins file in {out_dir}")
 
@@ -629,7 +656,7 @@ def _CreateWeightTable(out_dir, basins_gdf, nc_file, basin_id):
 
 def PreprocessForRAPID(stream_file: str, basins_file: str, nc_files: list, out_dir: str, 
                        create_vis: bool = True, id_field: str = 'LINKNO', ds_field: str = 'DSLINKNO', 
-                       basin_id: str = 'streamID', k: float = 0.35, x: float = 3, EPSG: int = 4326):
+                       basin_id: str = 'streamID', k: float = 0.35, x: float = 3, EPSG: int = 4326) -> None:
     """
     Master function for preprocessing stream delineations and catchments and creating RAPID inputs. 
 
@@ -652,6 +679,12 @@ def PreprocessForRAPID(stream_file: str, basins_file: str, nc_files: list, out_d
         Field in network file that corresponds to the unique downstream id of each stream segment
     basin_id : string, optional
         Field in basins file that corresponds to the unique id of each catchment
+    k : float, optional
+        K parameter to use when generating Muskingum parameters
+    x : float, optional
+        X parameter to use when generating Muskingum parameters
+    EPSG : int, optional
+        EPSG to save all networks in, 4326 recommended
     """
     # Configure logging settings
     logging.basicConfig(filename=os.path.join(out_dir,'log.log'), encoding='utf-8', level=logging.DEBUG,format='%(asctime)s %(message)s', datefmt='%m/%d/%Y %I:%M:%S %p')
