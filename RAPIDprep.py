@@ -15,6 +15,7 @@ import numpy as np
 import time
 import netCDF4 as NET
 import warnings
+import logging
 
 ################################################################
 #   Disolving functions:
@@ -227,6 +228,7 @@ def _merge_streams(upstream_ids: list, network_gdf: gpd.GeoDataFrame, model: boo
 
     if DSNODEID != -1:
         print(f"    The stream {upstream_ids[0]} has a DSNODEID other than -1...")
+        logging.warning(f"  The stream {upstream_ids[0]} has a DSNODEID other than -1...")
 
     if not model:
         network_gdf = _dissolve_network(network_gdf, upstream_ids,streamid)
@@ -316,6 +318,7 @@ def _fix_0_Length(gdf: gpd.GeoDataFrame,basin_gdf: gpd.GeoDataFrame,streamid: st
 
         # Case 4
         else:
+            logging.warning(f"The stream segement {feat[streamid]} has condtitions we've not yet considered")
             raise(f"The stream segement {feat[streamid]} has condtitions we've not yet considered")
         
     basin_gdf = pd.concat([basin_gdf] + case2_gdfs)
@@ -324,23 +327,21 @@ def _fix_0_Length(gdf: gpd.GeoDataFrame,basin_gdf: gpd.GeoDataFrame,streamid: st
         
     return gdf, basin_gdf
 
-def _save_geopackage(filename: str, gpd: gpd.GeoDataFrame, start: float, EPSG:int) -> None:
+def _save_geopackage(filename: str, gpd: gpd.GeoDataFrame,EPSG:int) -> None:
     """
     Function for multiprocessing. Executes the geopandas 'to_file' method on the gpd, saving it at the location filename with the projection of EPSG, and displays a timestamp
     """
     gpd.to_file(filename, driver="GPKG", index=False, crs=EPSG)
-    print(f"--- Finished at {round((time.time() - start) / 60 ,2)} minutes to save {os.path.basename(filename)} ---")
 
-def _read_geopackage(filename: str, start: float) -> gpd.GeoDataFrame:
+def _read_geopackage(filename: str) -> gpd.GeoDataFrame:
     """
     Function for multiprocessing. Executes the geopandas 'read_file' method on the filename, and displays timestamp
     """
     pkcg =  gpd.read_file(filename)
-    print(f"--- Finished at {round((time.time() - start) / 60 ,2)} minutes to read {os.path.basename(filename)} ---")
     return pkcg
 
-def _main_dissolve(network_gpkg: str, basin_gpkg: str, output_gpkg_name: str = None, out_dir:str = None, model: bool = False, 
-         streamid='LINKNO', dsid: str = 'DSLINKNO', length: str = 'Length', EPSG=4326, start=None) -> None:
+def _main_dissolve(network_gpkg: str, basin_gpkg: str, model: bool = False, streamid='LINKNO', 
+                   dsid: str = 'DSLINKNO', length: str = 'Length', start=None) -> None:
     """"
     Ensure that shapely >= 2.0.1, otherwise you will get access violations
 
@@ -353,11 +354,6 @@ def _main_dissolve(network_gpkg: str, basin_gpkg: str, output_gpkg_name: str = N
         Path to delineation network file
     basin_gpkg : string
         Path to basins or catchments file
-    output_gpkg_name : string, optional
-        Optional output path for new delineation network. If not specified, the name will be the same as the input + _connectivity.gpkg
-        If specified, enter a path such as: "C:\\Users\\user\\Desktop\\output"; "_mapping.gpkg", "_model.gpkg", and "_basins.gpkg" will be added
-    out_dir : string, optional
-        Output directory to write files to. If specified, it will override output_gpkg_name
     model : bool, optional
         If true, the only files created will be the model and basins gpkg's. Otherwise, the mapping gpkg will also be made (default False)
     streamid : string, optional
@@ -366,14 +362,13 @@ def _main_dissolve(network_gpkg: str, basin_gpkg: str, output_gpkg_name: str = N
         Field in network file that corresponds to the unique downstream id of each stream segment
     length : string, optional
         Field in network file that corresponds to the length of each stream segment
-    EPSG : int, optional
-        The projection that will be used to read and write the gpkgs.
     """
     if start is None:
         start = time.time()
 
     with Pool(processes=2) as p:
-        gdf, basin_gdf = p.starmap(_read_geopackage, zip([network_gpkg, basin_gpkg], [start]*2))
+        gdf, basin_gdf = p.map(_read_geopackage, [network_gpkg, basin_gpkg])
+    logging.info(f" Finished reading {network_gpkg} and {basin_gpkg}")
 
     if not model:
         mapping_gdf = gdf.copy()
@@ -381,8 +376,8 @@ def _main_dissolve(network_gpkg: str, basin_gpkg: str, output_gpkg_name: str = N
     gdf['MERGEIDS'] = np.nan
     
     if 0 in gdf[length].values:
+        logging.info("      Segments of length 0 found. Fixing...")
         gdf, basin_gdf = _fix_0_Length(gdf, basin_gdf, streamid, dsid, length)
-        print(f"--- Segments of length 0 found. Finished at {round((time.time() - start) / 60 ,2)} minutes to fix ---")
 
     allorders_dict = _create_adjoint_dict(gdf,
                     stream_id_col=streamid,
@@ -397,12 +392,10 @@ def _main_dissolve(network_gpkg: str, basin_gpkg: str, output_gpkg_name: str = N
     
     toporder2 = {value[-1] for value in list(order_2_dict.values())}
 
-    print(f"--- Finished at {round((time.time() - start) / 60 ,2)} minutes to create order dicts. Dissolving... ---")
-    # Define the number of chunks
-    num_chunks = 3
+    logging.info("  Dictionaries created, dissolving")
 
-    # Split basin_gdf into num_chunks parts, for speed
-    basin_gdf_chunks = [basin_gdf[i:i + len(basin_gdf)//num_chunks] for i in range(0, len(basin_gdf), len(basin_gdf)//num_chunks)]
+    # Split basin_gdf into 3 parts, for speed
+    basin_gdf_chunks = [basin_gdf[i:i + len(basin_gdf)//3] for i in range(0, len(basin_gdf), len(basin_gdf)//3)]
 
     with Pool() as p:
         # Process each chunk of basin_gdf separately
@@ -413,13 +406,8 @@ def _main_dissolve(network_gpkg: str, basin_gpkg: str, output_gpkg_name: str = N
         merged_basins += p.starmap(_merge_basins,[(allorders_dict[str(rivid)], basin_gdf_chunks[0]) for rivid in toporder2])
         merged_basins += p.starmap(_merge_basins,[(allorders_dict[str(rivid)], basin_gdf_chunks[1]) for rivid in toporder2])
         merged_basins += p.starmap(_merge_basins,[(allorders_dict[str(rivid)], basin_gdf_chunks[2]) for rivid in toporder2])
-            
-        # merged_streams = p.starmap(_merge_streams, [(allorders_dict[str(rivid)], gdf, True) for rivid in toporder2])
-        # merged_basins = p.starmap(_merge_basins,[(allorders_dict[str(rivid)], basin_gdf) for rivid in toporder2])
-        # if not model:
-        #     merged_mapping = p.starmap(_merge_streams, [(allorders_dict[str(rivid)],gdf, False) for rivid in toporder2])
 
-    print(f"--- Finished dissolving at {round((time.time() - start) / 60 ,2)} minutes ---")
+    logging.info("  Finished dissolving")
 
     # list all ids that were merged, turn a list of lists into a flat list, remove duplicates by converting to a set 
     all_merged_rivids = set(chain.from_iterable([allorders_dict[str(rivid)] for rivid in toporder2])) 
@@ -438,10 +426,8 @@ def _main_dissolve(network_gpkg: str, basin_gpkg: str, output_gpkg_name: str = N
     if not model:
         mapping_gdf = pd.concat([mapping_gdf, *merged_mapping])
         mapping_gdf['reach_id'] = mapping_gdf[streamid]
-
-    print(f"--- Finished at {round((time.time() - start) / 60 ,2)} minutes to drop and merge ---")
     
-    gdf.sort_values('strmOrder', inplace=True)
+    logging.info("  Networks merged and sorted")
 
     if model:
         return gdf, basin_gdf
@@ -451,7 +437,7 @@ def _main_dissolve(network_gpkg: str, basin_gpkg: str, output_gpkg_name: str = N
 #   RAPID Preprocessing functions
 ################################################################
         
-def _CreateComidLatLonZ(network,out_dir,id_field,start):
+def _CreateComidLatLonZ(network,out_dir,id_field):
     network.sort_values(id_field, inplace=True)
     gdf = gpd.GeoDataFrame(network)
     gdf['lat'] = network.geometry.apply(lambda geom: geom.xy[1][0])
@@ -462,15 +448,14 @@ def _CreateComidLatLonZ(network,out_dir,id_field,start):
             "z": 0}
     
     pd.DataFrame(data).to_csv(os.path.join(out_dir, "comid_lat_lon_z.csv"), index=False, header=True)
-    print(f"\tCreated comid_lat_lon_z.csv at {round((time.time() - start) / 60 ,2)} minutes.")
+    logging.info("   Created comid_lat_lon_z.csv")
 
-def _CreateRivBasId(network, out_dir,downstream_field,id_field,start):
+def _CreateRivBasId(network, out_dir,downstream_field,id_field):
     network.sort_values([downstream_field, id_field], inplace=True, ascending=[False,False])
     network[id_field].to_csv(os.path.join(out_dir, "riv_bas_id.csv"), index=False, header=False)   
+    logging.info("   Created riv_bas_id.csv")
 
-    print(f"\tCreated riv_bas_id.csv at {round((time.time() - start) / 60 ,2)}")
-
-def _CalculateMuskingum(network,out_dir,k,x, id_field,start):
+def _CalculateMuskingum(network,out_dir,k,x, id_field):
     # Calculation of geodesic lengths must occur in epsg 4326
     network.sort_values(id_field, inplace=True)
     network["LENGTH_GEO"] = network.geometry.apply(_calculate_geodesic_length)
@@ -481,7 +466,8 @@ def _CalculateMuskingum(network,out_dir,k,x, id_field,start):
     network["Musk_kfac"].to_csv(os.path.join(out_dir, "kfac.csv"), index=False, header=False)
     network["Musk_k"].to_csv(os.path.join(out_dir, "k.csv"), index=False, header=False)
     network["Musk_x"].to_csv(os.path.join(out_dir, "x.csv"), index=False, header=False)
-    print(f"\tCreated muskingum parameters at {round((time.time() - start) / 60 ,2)} minutes.")
+
+    logging.info("   Created muskingum parameters")
     return network
 
 def _calculate_geodesic_length(line):
@@ -493,7 +479,7 @@ def _calculate_geodesic_length(line):
         length = 0.001
     return length
 
-def _CreateRapidConnect(network, out_dir, id_field, downstream_field,start):
+def _CreateRapidConnect(network, out_dir, id_field, downstream_field):
     network.sort_values(id_field, inplace=True)
     list_all = []
     max_count_Upstream = 0
@@ -522,10 +508,9 @@ def _CreateRapidConnect(network, out_dir, id_field, downstream_field,start):
     df = pd.DataFrame(list_all)
     df.to_csv(os.path.join(out_dir,'rapid_connect.csv'), index=False, header=None)
 
-    print(f"\tCreated rapid_connect.csv at {round((time.time() - start) / 60 ,2)} minutes.")
+    logging.info("  Created rapid_connect.csv")
 
-def _CreateWeightTable(out_dir, basins_gdf, nc_file, basin_id,start):
-    print(f"\tBeginning Weight Table Creation at {round((time.time() - start) / 60 ,2)} minutes.")
+def _CreateWeightTable(out_dir, basins_gdf, nc_file, basin_id):
     if not basin_id in basins_gdf.columns:
         raise ValueError(f"The id field {basin_id} is not in the basins file in {out_dir}")
 
@@ -548,7 +533,6 @@ def _CreateWeightTable(out_dir, basins_gdf, nc_file, basin_id,start):
     data_nc.close()
 
     # Create Thiessen polygons based on the points within the extent
-    print("\tCreating Thiessen polygons")
     buffer = 2 * max(abs(lat[0]-lat[1]),abs(lon[0] - lon[1]))
 
     # Extract the lat and lon within buffered extent (buffer with 2* interval degree)
@@ -575,10 +559,8 @@ def _CreateWeightTable(out_dir, basins_gdf, nc_file, basin_id,start):
         polygons_gdf['POINT_X'] = polygons_gdf.geometry.centroid.x
         polygons_gdf['POINT_Y'] = polygons_gdf.geometry.centroid.y
 
-    print("Intersecting Thiessen polygons with catchment...")
     intersect = gpd.overlay(basins_gdf, polygons_gdf, how='intersection')
 
-    print("Calculating geodesic areas...")
     intersect['AREA_GEO'] = intersect['geometry'].to_crs({'proj':'cea'}).area
 
     area_arr = pd.DataFrame(data={
@@ -642,7 +624,7 @@ def _CreateWeightTable(out_dir, basins_gdf, nc_file, basin_id,start):
         out_name = os.path.join(out_dir, "weight_era_t1800.csv")
 
     df.to_csv(out_name, index=False)
-    print(f"\tCreated weight table at {round((time.time() - start) / 60 ,2)} minutes.")
+    logging.info(f" Created {os.path.basename(out_name)}")
 
 
 def PreprocessForRAPID(stream_file: str, basins_file: str, nc_files: list, out_dir: str, 
@@ -671,19 +653,26 @@ def PreprocessForRAPID(stream_file: str, basins_file: str, nc_files: list, out_d
     basin_id : string, optional
         Field in basins file that corresponds to the unique id of each catchment
     """
-    start = time.time()
+    # Configure logging settings
+    logging.basicConfig(filename=os.path.join(out_dir,'log.log'), encoding='utf-8', level=logging.DEBUG,format='%(asctime)s %(message)s', datefmt='%m/%d/%Y %I:%M:%S %p')
+    logging.info('Beginning session')
 
+    # Dissolve streams and basins
     if create_vis:
-        streams, basins, vis_streams = _main_dissolve(stream_file, basins_file, out_dir=out_dir, model=False, start=start, EPSG=EPSG)
+        streams, basins, vis_streams = _main_dissolve(stream_file, basins_file, model=False)
     else:
-        streams, basins = _main_dissolve(stream_file, basins_file, out_dir=out_dir, model=True, start=start, EPSG=EPSG)
+        streams, basins = _main_dissolve(stream_file, basins_file, model=True)
 
-    _CreateComidLatLonZ(streams, out_dir, id_field,start)
-    _CreateRivBasId(streams, out_dir, ds_field,id_field,start)
-    streams = _CalculateMuskingum(streams,out_dir,k,x, id_field,start)
-    _CreateRapidConnect(streams, out_dir, id_field, ds_field,start)
+    # Create rapid preprocessing files
+    _CreateComidLatLonZ(streams, out_dir, id_field)
+    _CreateRivBasId(streams, out_dir, ds_field,id_field)
+    streams = _CalculateMuskingum(streams,out_dir,k,x, id_field)
+    _CreateRapidConnect(streams, out_dir, id_field, ds_field)
     for nc_file in nc_files:
-        _CreateWeightTable(out_dir, basins, nc_file, basin_id,start)
+        _CreateWeightTable(out_dir, basins, nc_file, basin_id)
+
+    # Sort streams before saving them
+    streams.sort_values('strmOrder', inplace=True)
 
     files = [os.path.join(out_dir, 't_mod.gpkg'), os.path.join(out_dir, 't_basins.gpkg')]
     gdf_list = [streams,basins]
@@ -691,7 +680,8 @@ def PreprocessForRAPID(stream_file: str, basins_file: str, nc_files: list, out_d
         files.append(os.path.join(out_dir, 't_vis.gpkg'))
         gdf_list.append(vis_streams)
 
+    # Now save all files to outdir
     with Pool(processes=len(files)) as p:
-        p.starmap(_save_geopackage, zip(files, gdf_list, [start]*len(files), [EPSG]*len(files)))
+        p.starmap(_save_geopackage, zip(files, gdf_list, [EPSG]*len(files)))
 
-    print('\tFinished successfully!\n')
+    logging.info('Finished successfully')
