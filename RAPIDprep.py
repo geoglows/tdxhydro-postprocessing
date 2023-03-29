@@ -555,10 +555,7 @@ def _CreateRapidConnect(network: gpd. GeoDataFrame, out_dir: str, id_field: str,
 
     logging.info("  Created rapid_connect.csv")
 
-def _CreateWeightTable(out_dir: str, basins_gdf: gpd.GeoDataFrame, nc_file: str, basin_id: str) -> None:
-    if not basin_id in basins_gdf.columns:
-        raise ValueError(f"The id field {basin_id} is not in the basins file in {out_dir}")
-
+def _CreateWeightTable(out_dir: str, basins_gdf: gpd.GeoDataFrame, nc_file: str, basin_id: str= 'reach_id') -> None:
     # Obtain catchment extent
     extent = basins_gdf.total_bounds
 
@@ -722,7 +719,7 @@ def PreprocessForRAPID(stream_file: str, basins_file: str, nc_files: list, out_d
 
     n = len(nc_files)
     with Pool(processes=n) as p:
-        p.starmap(_CreateWeightTable, zip([out_dir]*n, [basins]*n, nc_files, [basin_id]*n))
+        p.starmap(_CreateWeightTable, zip([out_dir]*n, [basins]*n, nc_files))
 
     files = [os.path.join(out_dir, os.path.basename(os.path.splitext(stream_file)[0])+'_model.gpkg'), os.path.join(out_dir, os.path.basename(os.path.splitext(stream_file)[0])+'_basins.gpkg')]
     gdf_list = [streams,basins]
