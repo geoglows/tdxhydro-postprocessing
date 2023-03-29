@@ -1,0 +1,11 @@
+name: rapid_preprocessing
+channels:
+- conda-forge
+- defaults
+dependencies:
+  - geopandas
+  - netcdf4
+  - numpy
+  - pandas
+  - shapely
+  - pyproj
