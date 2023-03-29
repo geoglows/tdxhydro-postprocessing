@@ -15,13 +15,14 @@
         1) A visulation network, which has the top order 1 streams dissolved with their downstream order 2 segment (for smaller file sizes)
         2) A modeling network, which is similar to 1) but only preserves the geometry of the order 2 segment and the longest order 1 segment
         3) A modifyed basins network. Any streams that were merged will have their corresponding catchements also dissolved 
+    - 
     - Creates the following six files: comid_lat_lon_z.csv, riv_bas_id.csv, k.csv, kfac.csv, x.csv, and rapid_connect.csv
     - Calculates the muskingum parameters for the stream network and adds this information to the modeling network
     - Creates weight tables for each of the given input ERA netCDF datasets
     - Sorts the modeling network by Strahler stream order, ascending
     - Saves each network to the given directory
 
-    Created by Louis R. Rosas, Riley Hales 2023
+    Created by Louis R. Rosas, Riley Hales, Josh Ogden 2023
 """
 from multiprocessing import Pool
 from collections.abc import Iterable
@@ -41,10 +42,14 @@ import time
 import netCDF4 as NET
 import warnings
 import logging
+import re
+
+hydrobasin_cache = {1020000010:11,1020011530:12,1020018110:13,1020021940:14,1020027430:15,1020034170:16,1020035180:17,1020040190:18,2020033490:21,2020041390:22,2020057170:23,2020065840:24,2020071190:25,2020000010:26,2020003440:27,2020018240:28,2020024230:29,3020009320:31,3020024310:32,3020000010:33,3020003790:34,3020005240:35,3020008670:36,4020034510:41,4020050210:42,4020050220:43,4020050290:44,4020050470:45,4020000010:46,4020006940:47,4020015090:48,4020024190:49,5020054880:51,5020055870:52,5020082270:53,5020000010:54,5020015660:55,5020037270:56,5020049720:57,6020017370:61,6020021870:62,6020029280:63,6020000010:64,6020006540:65,6020008320:66,6020014330:67,7020038340:71,7020046750:72,7020047840:73,7020065090:74,7020000010:75,7020014250:76,7020021430:77,7020024600:78,8020022890:81,8020032840:82,8020044560:83,8020000010:84,8020008900:85,8020010700:86,8020020760:87,9020000010:91}
 
 ################################################################
 #   Disolving functions:
 ################################################################
+
 class NpEncoder(json.JSONEncoder):
     def default(self, obj):
         if isinstance(obj, np.integer):
@@ -250,6 +255,7 @@ def _merge_streams(upstream_ids: list, network_gdf: gpd.GeoDataFrame, model: boo
     DOUTEND = order2_stream['DOUTEND'].values[0]
     DOUTSTART = network_gdf[network_gdf[streamid] == ids_to_use[1]]["DOUTSTART"].values[0]
     DSNODEID = order2_stream['DSNODEID'].values[0]
+    upstream_comids = network_gdf[network_gdf[streamid].isin(upstream_ids[1:])]['reach_id'].values
 
     if DSNODEID != -1:
         logging.warning(f"  The stream {upstream_ids[0]} has a DSNODEID other than -1...")
@@ -277,7 +283,8 @@ def _merge_streams(upstream_ids: list, network_gdf: gpd.GeoDataFrame, model: boo
     network_gdf["DOUTEND"] = DOUTEND
     network_gdf["DOUTSTART"] = DOUTSTART
     network_gdf["DOUTMID"] = round((DOUTEND + DOUTSTART) / 2, 2)
-    network_gdf['MERGEIDS'] = ','.join(str(num) for num in upstream_ids[1:])
+    network_gdf['MERGEIDS'] = ','.join(str(num) for num in upstream_comids)
+    network_gdf['reach_id'] = order2_stream['reach_id'].values[0]
     
     return network_gdf
 
@@ -285,8 +292,10 @@ def _merge_basins(upstream_ids: list, basin_gdf: gpd.GeoDataFrame) -> gpd.GeoDat
     """
     Dissolves basins based on list of upstream river ids, and returns that feature. Ensure that id is the stream order 2 id
     """
+    reach_id = basin_gdf[basin_gdf['streamID'] == upstream_ids[0]]['reach_id'].values
     gdf = basin_gdf[basin_gdf["streamID"].isin(upstream_ids)].dissolve()
     gdf['streamID'] = upstream_ids[0]
+    gdf['reach_id'] = reach_id
     return gdf
 
 def _fix_0_Length(gdf: gpd.GeoDataFrame,basin_gdf: gpd.GeoDataFrame,streamid: str, dsid: str, length: str) -> gpd.GeoDataFrame:
@@ -394,13 +403,23 @@ def _main_dissolve(network_gpkg: str, basin_gpkg: str, model: bool = False, stre
         gdf, basin_gdf = p.map(_read_geopackage, [network_gpkg, basin_gpkg])
     logging.info(f" Finished reading {network_gpkg} and {basin_gpkg}")
 
+    gdf['MERGEIDS'] = np.nan
+
+    # Assign global ids
+    # extract the hydrobasin id from the pathname using regular expressions
+    match = re.search(r"\d+", os.path.basename(network_gpkg))
+    id_number = match.group()
+    prefix = str(hydrobasin_cache[int(id_number)])
+    gdf['reach_id'] = prefix + gdf[streamid].astype(str).str.zfill(7)
+    basin_gdf['reach_id'] = prefix + basin_gdf['streamID'].astype(str).str.zfill(7)
+    gdf['reach_id'] = gdf['reach_id'].astype(int)
+    basin_gdf['reach_id'] = basin_gdf['reach_id'].astype(int)
+
     if not model:
         mapping_gdf = gdf.copy()
-
-    gdf['MERGEIDS'] = np.nan
     
     if 0 in gdf[length].values:
-        logging.info("      Segments of length 0 found. Fixing...")
+        logging.info("  Segments of length 0 found. Fixing...")
         gdf, basin_gdf = _fix_0_Length(gdf, basin_gdf, streamid, dsid, length)
 
     allorders_dict = _create_adjoint_dict(gdf,
@@ -418,18 +437,12 @@ def _main_dissolve(network_gpkg: str, basin_gpkg: str, model: bool = False, stre
 
     logging.info("  Dictionaries created, dissolving")
 
-    # Split basin_gdf into 3 parts, for speed
-    basin_gdf_chunks = [basin_gdf[i:i + len(basin_gdf)//3] for i in range(0, len(basin_gdf), len(basin_gdf)//3)]
-
     with Pool() as p:
         # Process each chunk of basin_gdf separately
         merged_streams = p.starmap(_merge_streams, [(allorders_dict[str(rivid)], gdf, True) for rivid in toporder2])
+        merged_basins = p.starmap(_merge_basins,[(allorders_dict[str(rivid)], basin_gdf) for rivid in toporder2])
         if not model:
                 merged_mapping = p.starmap(_merge_streams, [(allorders_dict[str(rivid)], gdf, False) for rivid in toporder2])
-        merged_basins = []
-        merged_basins += p.starmap(_merge_basins,[(allorders_dict[str(rivid)], basin_gdf_chunks[0]) for rivid in toporder2])
-        merged_basins += p.starmap(_merge_basins,[(allorders_dict[str(rivid)], basin_gdf_chunks[1]) for rivid in toporder2])
-        merged_basins += p.starmap(_merge_basins,[(allorders_dict[str(rivid)], basin_gdf_chunks[2]) for rivid in toporder2])
 
     logging.info("  Finished dissolving")
 
@@ -445,11 +458,11 @@ def _main_dissolve(network_gpkg: str, basin_gpkg: str, model: bool = False, stre
     # concat the merged features
     gdf = pd.concat([gdf, *merged_streams])
     basin_gdf = pd.concat([basin_gdf, *merged_basins])
-    gdf['reach_id'] = gdf[streamid]
-    basin_gdf['reach_id'] = basin_gdf['streamID']
     if not model:
         mapping_gdf = pd.concat([mapping_gdf, *merged_mapping])
-        mapping_gdf['reach_id'] = mapping_gdf[streamid]
+
+    # Sort streams for csvs
+    gdf.sort_values('strmOrder', inplace=True)
     
     logging.info("  Networks merged and sorted")
 
@@ -462,26 +475,33 @@ def _main_dissolve(network_gpkg: str, basin_gpkg: str, model: bool = False, stre
 ################################################################
         
 def _CreateComidLatLonZ(network: gpd.GeoDataFrame, out_dir: str, id_field:str) -> None:
-    network.sort_values(id_field, inplace=True)
-    gdf = gpd.GeoDataFrame(network)
-    gdf['lat'] = network.geometry.apply(lambda geom: geom.xy[1][0])
-    gdf['lon'] = network.geometry.apply(lambda geom: geom.xy[0][0])
-    data = {id_field: network[id_field].values,
-            "lat": gdf['lat'].values,
-            "lon": gdf['lon'].values,
+    """
+    Assumes that geometry of the network are shapely LineStrings. If there are MultiLineStrings than something has gone wrong in the dissolving step.
+    """
+    temp_network = network.sort_values(id_field)
+    lats = temp_network.geometry.apply(lambda geom: geom.xy[1][0]).values
+    lons = temp_network.geometry.apply(lambda geom: geom.xy[0][0]).values
+    data = {id_field: temp_network[id_field].values,
+            "lat": lats,
+            "lon": lons,
             "z": 0}
     
     pd.DataFrame(data).to_csv(os.path.join(out_dir, "comid_lat_lon_z.csv"), index=False, header=True)
-    logging.info("   Created comid_lat_lon_z.csv")
+    logging.info("  Created comid_lat_lon_z.csv")
 
 def _CreateRivBasId(network: gpd.GeoDataFrame, out_dir: str, downstream_field: str, id_field: str) -> None:
-    network.sort_values([downstream_field, id_field], inplace=True, ascending=[False,False])
-    network[id_field].to_csv(os.path.join(out_dir, "riv_bas_id.csv"), index=False, header=False)   
-    logging.info("   Created riv_bas_id.csv")
+    """
+    Creates riv_bas_id.csv. Network is sorted to match the outputs of the ArcGIS tool this was designed from, 
+    and it is likely that the second element in the list for ascending may be True without impacting RAPID
+    """
+    temp_network = network.sort_values([downstream_field, id_field], ascending=[False,False])
+    temp_network[id_field].to_csv(os.path.join(out_dir, "riv_bas_id.csv"), index=False, header=False)   
+    logging.info("  Created riv_bas_id.csv")
 
 def _CalculateMuskingum(network: gpd.GeoDataFrame, out_dir: str,k: float, x: float, id_field: str) -> gpd.GeoDataFrame:
-    # Calculation of geodesic lengths must occur in epsg 4326
-    network.sort_values(id_field, inplace=True)
+    """
+    Calculates muskingum parameters by using pyproj's Geod.geometry_length. Note that the network must be in EPSG 4326
+    """
     network["LENGTH_GEO"] = network.geometry.apply(_calculate_geodesic_length)
     network["Musk_kfac"] = network["LENGTH_GEO"] * 3600
     network["Musk_k"] = network["Musk_kfac"] * k
@@ -491,8 +511,7 @@ def _CalculateMuskingum(network: gpd.GeoDataFrame, out_dir: str,k: float, x: flo
     network["Musk_k"].to_csv(os.path.join(out_dir, "k.csv"), index=False, header=False)
     network["Musk_x"].to_csv(os.path.join(out_dir, "x.csv"), index=False, header=False)
 
-    logging.info("   Created muskingum parameters")
-    return network
+    logging.info("  Created muskingum parameters")
 
 def _calculate_geodesic_length(line) -> float:
     """
@@ -507,7 +526,6 @@ def _calculate_geodesic_length(line) -> float:
     return length
 
 def _CreateRapidConnect(network: gpd. GeoDataFrame, out_dir: str, id_field: str, downstream_field: str) -> None:
-    network.sort_values(id_field, inplace=True)
     list_all = []
     max_count_Upstream = 0
 
@@ -559,7 +577,7 @@ def _CreateWeightTable(out_dir: str, basins_gdf: gpd.GeoDataFrame, nc_file: str,
 
     data_nc.close()
 
-    # Create Thiessen polygons based on the points within the extent
+    # Create a buffer
     buffer = 2 * max(abs(lat[0]-lat[1]),abs(lon[0] - lon[1]))
 
     # Extract the lat and lon within buffered extent (buffer with 2* interval degree)
@@ -644,15 +662,13 @@ def _CreateWeightTable(out_dir: str, basins_gdf: gpd.GeoDataFrame, nc_file: str,
 
                 df.loc[len(df)] = [streamID_unique, area_geo_each, index_lon_each, index_lat_each, num_ind_points, lon_each, lat_each]
 
-    out_name = os.path.join(out_dir, "weight_era_t640.csv")
-    if '720' in nc_file:
-        out_name = os.path.join(out_dir, "weight_era_t720.csv")
-    elif '1800' in nc_file:
-        out_name = os.path.join(out_dir, "weight_era_t1800.csv")
-
-    df.to_csv(out_name, index=False)
+    out_name = 'weight_' + os.path.basename(os.path.splitext(nc_file)[0]) + '.csv'
+    df.to_csv(os.path.join(out_dir, out_name), index=False)
     logging.info(f" Created {os.path.basename(out_name)}")
 
+################################################################
+#   Master function
+################################################################
 
 def PreprocessForRAPID(stream_file: str, basins_file: str, nc_files: list, out_dir: str, 
                        create_vis: bool = True, id_field: str = 'LINKNO', ds_field: str = 'DSLINKNO', 
@@ -699,22 +715,24 @@ def PreprocessForRAPID(stream_file: str, basins_file: str, nc_files: list, out_d
     # Create rapid preprocessing files
     _CreateComidLatLonZ(streams, out_dir, id_field)
     _CreateRivBasId(streams, out_dir, ds_field,id_field)
-    streams = _CalculateMuskingum(streams,out_dir,k,x, id_field)
+    _CalculateMuskingum(streams,out_dir,k,x, id_field)
     _CreateRapidConnect(streams, out_dir, id_field, ds_field)
-    for nc_file in nc_files:
-        _CreateWeightTable(out_dir, basins, nc_file, basin_id)
+    # for nc_file in nc_files:
+    #     _CreateWeightTable(out_dir, basins, nc_file, basin_id)
 
-    # Sort streams before saving them
-    streams.sort_values('strmOrder', inplace=True)
+    n = len(nc_files)
+    with Pool(processes=n) as p:
+        p.starmap(_CreateWeightTable, zip([out_dir]*n, [basins]*n, nc_files, [basin_id]*n))
 
-    files = [os.path.join(out_dir, 't_mod.gpkg'), os.path.join(out_dir, 't_basins.gpkg')]
+    files = [os.path.join(out_dir, os.path.basename(os.path.splitext(stream_file)[0])+'_model.gpkg'), os.path.join(out_dir, os.path.basename(os.path.splitext(stream_file)[0])+'_basins.gpkg')]
     gdf_list = [streams,basins]
     if create_vis:
-        files.append(os.path.join(out_dir, 't_vis.gpkg'))
+        files.append(os.path.join(out_dir, os.path.basename(os.path.splitext(stream_file)[0])+'_vis.gpkg'))
         gdf_list.append(vis_streams)
 
     # Now save all files to outdir
     with Pool(processes=len(files)) as p:
         p.starmap(_save_geopackage, zip(files, gdf_list, [EPSG]*len(files)))
 
-    logging.info('Finished successfully')
+    logging.info('Saved to file - finished successfully')
+    
