@@ -7,5 +7,5 @@ dependencies:
   - netcdf4
   - numpy
   - pandas
-  - shapely
+  - shapely>=2
   - pyproj
