@@ -404,6 +404,7 @@ def _main_dissolve(network_gpkg: str, basin_gpkg: str, model: bool = False, stre
     gdf = gpd.read_file(network_gpkg)
     basin_gdf = gpd.read_file(basin_gpkg)
     print(f" Finished reading {network_gpkg} and {basin_gpkg}")
+    print(gdf.shape[0])
 
     gdf['MERGEIDS'] = np.nan
 
