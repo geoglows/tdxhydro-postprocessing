@@ -439,7 +439,7 @@ def _main_dissolve(network_gpkg: str, basin_gpkg: str, model: bool = False, stre
 
     logging.info("  Dictionaries created, dissolving")
 
-    with Pool() as p:
+    with Pool(10) as p:
         # Process each chunk of basin_gdf separately
         merged_streams = p.starmap(_merge_streams, [(allorders_dict[str(rivid)], gdf, True) for rivid in toporder2])
         merged_basins = p.starmap(_merge_basins, [(allorders_dict[str(rivid)], basin_gdf) for rivid in toporder2])
@@ -731,11 +731,11 @@ def PreprocessForRAPID(stream_file: str, basins_file: str, nc_files: list, out_d
     #     _CreateWeightTable(out_dir, basins, nc_file, basin_id)
 
     n = len(nc_files)
-    with Pool(processes=min(n, os.cpu_count())) as p:
+    with Pool(processes=min(n, 3)) as p:
         p.starmap(create_weight_table, zip([out_dir] * n, [basins] * n, nc_files))
 
     files = [os.path.join(out_dir, os.path.basename(os.path.splitext(stream_file)[0]) + '_model.gpkg'),
-             os.path.join(out_dir, os.path.basename(os.path.splitext(stream_file)[0]) + '_basins.gpkg')]
+             os.path.join(out_dir, os.path.basename(os.path.splitext(basins_file)[0]) + '_basins.gpkg')]
     gdf_list = [streams, basins]
     if create_vis:
         files.append(os.path.join(out_dir, os.path.basename(os.path.splitext(stream_file)[0]) + '_vis.gpkg'))
