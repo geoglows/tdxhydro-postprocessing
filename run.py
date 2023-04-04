@@ -20,8 +20,8 @@ if __name__ == '__main__':
 
     tdx_header_number = 10
     for streams_gpkg, basins_gpkg in zip(
-            sorted(glob.glob(f'/Users/rchales/Data/tdxhydro_streams_{tdx_header_number}*/*.gpkg')),
-            sorted(glob.glob(f'/Users/rchales/Data/tdxhydro_basins_{tdx_header_number}*/*.gpkg'))
+            sorted(glob.glob(f'/tdxhydro/tdxhydro_streamnet*.gpkg')),
+            sorted(glob.glob(f'/tdxhydro/tdxhydro_streamreach_basins*.gpkg'))
     ):
         region_number = os.path.basename(streams_gpkg).split('_')[2]
 
