@@ -41,7 +41,3 @@ if __name__ == '__main__':
         print(os.path.join(gpkg_outputs, region_number))
 
         PreprocessForRAPID(streams_gpkg, basins_gpkg, sample_grids, out_dir)
-
-        # move the gpkg files to a separate directory
-        for f in glob.glob(os.path.join(out_dir, '*.gpkg')):
-            os.rename(f, os.path.join(gpkg_outputs, region_number, os.path.basename(f)))
