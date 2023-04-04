@@ -20,10 +20,10 @@ if __name__ == '__main__':
 
     sample_grids = glob.glob('./era5_sample_grids/*.nc')
 
-    tdx_header_number = sys.argv[1]
+    # tdx_header_number = sys.argv[1]
     for streams_gpkg, basins_gpkg in zip(
-            sorted(glob.glob(f'/tdxhydro/TDX_streamnet*{tdx_header_number}*.gpkg')),
-            sorted(glob.glob(f'/tdxhydro/TDX_streamreach_basins*{tdx_header_number}*.gpkg'))
+            sorted(glob.glob(f'/tdxhydro/TDX_streamnet*.gpkg')),
+            sorted(glob.glob(f'/tdxhydro/TDX_streamreach_basins*.gpkg'))
     ):
         region_number = os.path.basename(streams_gpkg).split('_')[2]
 

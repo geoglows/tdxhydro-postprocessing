@@ -718,18 +718,21 @@ def PreprocessForRAPID(stream_file: str, basins_file: str, nc_files: list, out_d
     print('Beginning session')
 
     # Dissolve streams and basins
+    print('Dissolving streams and basins')
     if create_vis:
         streams, basins, vis_streams = _main_dissolve(stream_file, basins_file, model=False)
     else:
         streams, basins = _main_dissolve(stream_file, basins_file, model=True)
 
     # Create rapid preprocessing files
+    print('Creating RAPID files')
     create_comid_lat_lon_z(streams, out_dir, id_field)
     create_riv_bas_id(streams, out_dir, ds_field, id_field)
     calculate_muskingum(streams, out_dir, k, x, id_field)
     create_rapid_connect(streams, out_dir, id_field, ds_field)
 
     # Create weight table
+    print('Creating weight tables')
     for nc_file in nc_files:
         create_weight_table(out_dir, basins, nc_file)
 
