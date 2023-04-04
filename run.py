@@ -2,6 +2,8 @@ from RAPIDprep import PreprocessForRAPID
 import glob
 import os
 import logging
+import sys
+import datetime
 
 
 # Configure logging settings
@@ -18,10 +20,10 @@ if __name__ == '__main__':
 
     sample_grids = glob.glob('./era5_sample_grids/*.nc')
 
-    tdx_header_number = 10
+    tdx_header_number = sys.argv[1]
     for streams_gpkg, basins_gpkg in zip(
-            sorted(glob.glob(f'/tdxhydro/TDX_streamnet*.gpkg')),
-            sorted(glob.glob(f'/tdxhydro/TDX_streamreach_basins*.gpkg'))
+            sorted(glob.glob(f'/tdxhydro/TDX_streamnet*{tdx_header_number}*.gpkg')),
+            sorted(glob.glob(f'/tdxhydro/TDX_streamreach_basins*{tdx_header_number}*.gpkg'))
     ):
         region_number = os.path.basename(streams_gpkg).split('_')[2]
 
@@ -31,6 +33,7 @@ if __name__ == '__main__':
         if not os.path.exists(os.path.join(gpkg_outputs, region_number)):
             os.makedirs(os.path.join(gpkg_outputs, region_number))
 
+        print(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
         print(streams_gpkg)
         print(basins_gpkg)
         print(region_number)

@@ -401,9 +401,9 @@ def _main_dissolve(network_gpkg: str, basin_gpkg: str, model: bool = False, stre
     if start is None:
         start = time.time()
 
-    with Pool(processes=2) as p:
-        gdf, basin_gdf = p.map(_read_geopackage, [network_gpkg, basin_gpkg])
-    logging.info(f" Finished reading {network_gpkg} and {basin_gpkg}")
+    gdf = gpd.read_file(network_gpkg)
+    basin_gdf = gpd.read_file(basin_gpkg)
+    print(f" Finished reading {network_gpkg} and {basin_gpkg}")
 
     gdf['MERGEIDS'] = np.nan
 
@@ -421,7 +421,7 @@ def _main_dissolve(network_gpkg: str, basin_gpkg: str, model: bool = False, stre
         mapping_gdf = gdf.copy()
 
     if 0 in gdf[length].values:
-        logging.info("  Segments of length 0 found. Fixing...")
+        print("  Segments of length 0 found. Fixing...")
         gdf, basin_gdf = _fix_0_Length(gdf, basin_gdf, streamid, dsid, length)
 
     allorders_dict = _create_adjoint_dict(gdf,
@@ -437,9 +437,9 @@ def _main_dissolve(network_gpkg: str, basin_gpkg: str, model: bool = False, stre
 
     toporder2 = {value[-1] for value in list(order_2_dict.values())}
 
-    logging.info("  Dictionaries created, dissolving")
+    print("  Dictionaries created, dissolving")
 
-    with Pool(10) as p:
+    with Pool(12) as p:
         # Process each chunk of basin_gdf separately
         merged_streams = p.starmap(_merge_streams, [(allorders_dict[str(rivid)], gdf, True) for rivid in toporder2])
         merged_basins = p.starmap(_merge_basins, [(allorders_dict[str(rivid)], basin_gdf) for rivid in toporder2])
@@ -447,7 +447,7 @@ def _main_dissolve(network_gpkg: str, basin_gpkg: str, model: bool = False, stre
             merged_mapping = p.starmap(_merge_streams,
                                        [(allorders_dict[str(rivid)], gdf, False) for rivid in toporder2])
 
-    logging.info("  Finished dissolving")
+    print("  Finished dissolving")
 
     # list all ids that were merged, turn a list of lists into a flat list, remove duplicates by converting to a set 
     all_merged_rivids = set(chain.from_iterable([allorders_dict[str(rivid)] for rivid in toporder2]))
@@ -467,7 +467,7 @@ def _main_dissolve(network_gpkg: str, basin_gpkg: str, model: bool = False, stre
     # Sort streams for csvs
     gdf.sort_values('strmOrder', inplace=True)
 
-    logging.info("  Networks merged and sorted")
+    print("  Networks merged and sorted")
 
     if model:
         return gdf, basin_gdf
@@ -492,7 +492,7 @@ def create_comid_lat_lon_z(network: gpd.GeoDataFrame, out_dir: str, id_field: st
             "z": 0}
 
     pd.DataFrame(data).to_csv(os.path.join(out_dir, "comid_lat_lon_z.csv"), index=False, header=True)
-    logging.info("  Created comid_lat_lon_z.csv")
+    print("  Created comid_lat_lon_z.csv")
 
 
 def create_riv_bas_id(network: gpd.GeoDataFrame, out_dir: str, downstream_field: str, id_field: str) -> None:
@@ -502,7 +502,7 @@ def create_riv_bas_id(network: gpd.GeoDataFrame, out_dir: str, downstream_field:
     """
     temp_network = network.sort_values([downstream_field, id_field], ascending=[False, False])
     temp_network[id_field].to_csv(os.path.join(out_dir, "riv_bas_id.csv"), index=False, header=False)
-    logging.info("  Created riv_bas_id.csv")
+    print("  Created riv_bas_id.csv")
 
 
 def calculate_muskingum(network: gpd.GeoDataFrame, out_dir: str, k: float, x: float, id_field: str) -> gpd.GeoDataFrame:
@@ -518,7 +518,7 @@ def calculate_muskingum(network: gpd.GeoDataFrame, out_dir: str, k: float, x: fl
     network["Musk_k"].to_csv(os.path.join(out_dir, "k.csv"), index=False, header=False)
     network["Musk_x"].to_csv(os.path.join(out_dir, "x.csv"), index=False, header=False)
 
-    logging.info("  Created muskingum parameters")
+    print("  Created muskingum parameters")
 
 
 def _calculate_geodesic_length(line) -> float:
@@ -562,7 +562,7 @@ def create_rapid_connect(network: gpd.GeoDataFrame, out_dir: str, id_field: str,
     df = pd.DataFrame(list_all)
     df.to_csv(os.path.join(out_dir, 'rapid_connect.csv'), index=False, header=None)
 
-    logging.info("  Created rapid_connect.csv")
+    print("  Created rapid_connect.csv")
 
 
 def create_weight_table(out_dir: str, basins_gdf: gpd.GeoDataFrame, nc_file: str, basin_id: str = 'reach_id') -> None:
@@ -672,7 +672,7 @@ def create_weight_table(out_dir: str, basins_gdf: gpd.GeoDataFrame, nc_file: str
 
     out_name = 'weight_' + os.path.basename(os.path.splitext(nc_file)[0]) + '.csv'
     df.to_csv(os.path.join(out_dir, out_name), index=False)
-    logging.info(f" Created {os.path.basename(out_name)}")
+    print(f" Created {os.path.basename(out_name)}")
 
 
 ################################################################
@@ -714,7 +714,7 @@ def PreprocessForRAPID(stream_file: str, basins_file: str, nc_files: list, out_d
     # Configure logging settings
     logging.basicConfig(filename=os.path.join(out_dir, 'log.log'), encoding='utf-8', level=logging.DEBUG,
                         format='%(asctime)s %(message)s', datefmt='%m/%d/%Y %I:%M:%S %p')
-    logging.info('Beginning session')
+    print('Beginning session')
 
     # Dissolve streams and basins
     if create_vis:
@@ -727,8 +727,6 @@ def PreprocessForRAPID(stream_file: str, basins_file: str, nc_files: list, out_d
     create_riv_bas_id(streams, out_dir, ds_field, id_field)
     calculate_muskingum(streams, out_dir, k, x, id_field)
     create_rapid_connect(streams, out_dir, id_field, ds_field)
-    # for nc_file in nc_files:
-    #     _CreateWeightTable(out_dir, basins, nc_file, basin_id)
 
     n = len(nc_files)
     with Pool(processes=min(n, 3)) as p:
@@ -745,4 +743,4 @@ def PreprocessForRAPID(stream_file: str, basins_file: str, nc_files: list, out_d
     with Pool(processes=min(len(files), os.cpu_count())) as p:
         p.starmap(_save_geopackage, zip(files, gdf_list, [EPSG] * len(files)))
 
-    logging.info('Saved to file - finished successfully')
+    print('Saved to file - finished successfully')
