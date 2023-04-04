@@ -1,3 +1,4 @@
+import datetime
 import json
 import logging
 import os
@@ -398,12 +399,11 @@ def _main_dissolve(network_gpkg: str, basin_gpkg: str, model: bool = False, stre
     length : string, optional
         Field in network file that corresponds to the length of each stream segment
     """
-    if start is None:
-        start = time.time()
-
+    print(datetime.datetime.now().strftime("%H:%M:%S"))
     gdf = gpd.read_file(network_gpkg)
     basin_gdf = gpd.read_file(basin_gpkg)
     print(f" Finished reading {network_gpkg} and {basin_gpkg}")
+    print(datetime.datetime.now().strftime("%H:%M:%S"))
     print(gdf.shape[0])
 
     gdf['MERGEIDS'] = np.nan
@@ -566,7 +566,7 @@ def create_rapid_connect(network: gpd.GeoDataFrame, out_dir: str, id_field: str,
     print("  Created rapid_connect.csv")
 
 
-def create_weight_table(out_dir: str, basins_gdf: gpd.GeoDataFrame, nc_file: str, basin_id: str = 'reach_id') -> None:
+def create_weight_table(out_dir: str, basins_gdf: gpd.GeoDataFrame, nc_file: str, basin_id: str = 'streamID') -> None:
     # Obtain catchment extent
     extent = basins_gdf.total_bounds
 
@@ -682,7 +682,7 @@ def create_weight_table(out_dir: str, basins_gdf: gpd.GeoDataFrame, nc_file: str
 
 def PreprocessForRAPID(stream_file: str, basins_file: str, nc_files: list, out_dir: str,
                        create_vis: bool = True, id_field: str = 'LINKNO', ds_field: str = 'DSLINKNO',
-                       basin_id: str = 'streamID', k: float = 0.35, x: float = 3, EPSG: int = 4326) -> None:
+                       k: float = 0.35, x: float = 3, EPSG: int = 4326) -> None:
     """
     Master function for preprocessing stream delineations and catchments and creating RAPID inputs. 
 
@@ -729,9 +729,9 @@ def PreprocessForRAPID(stream_file: str, basins_file: str, nc_files: list, out_d
     calculate_muskingum(streams, out_dir, k, x, id_field)
     create_rapid_connect(streams, out_dir, id_field, ds_field)
 
-    n = len(nc_files)
-    with Pool(processes=min(n, 3)) as p:
-        p.starmap(create_weight_table, zip([out_dir] * n, [basins] * n, nc_files))
+    # Create weight table
+    for nc_file in nc_files:
+        create_weight_table(out_dir, basins, nc_file)
 
     files = [os.path.join(out_dir, os.path.basename(os.path.splitext(stream_file)[0]) + '_model.gpkg'),
              os.path.join(out_dir, os.path.basename(os.path.splitext(basins_file)[0]) + '_basins.gpkg')]
