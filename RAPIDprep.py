@@ -3,7 +3,6 @@ import json
 import logging
 import os
 import queue
-import re
 import warnings
 from collections.abc import Iterable
 from itertools import chain
@@ -32,11 +31,12 @@ hydrobasin_cache = {
     8020020760: 87, 9020000010: 91
 }
 
+# todo carefully reintroduce parallel processing on reading/writing gpkg files and creating weight tables
+
 
 ################################################################
 #   Dissolving functions:
 ################################################################
-
 class NpEncoder(json.JSONEncoder):
     def default(self, obj):
         if isinstance(obj, np.integer):
@@ -158,7 +158,7 @@ def _trace_tree(tree: dict, search_id: int, cuttoff_n: int = 200) -> list:
     return upstream
 
 
-def _create_adjoint_dict(network_df: gpd.GeoDataFrame, out_file: str = None, stream_id_col: str = "COMID",
+def _create_adjoint_dict(network_gdf: gpd.GeoDataFrame, out_file: str = None, stream_id_col: str = "COMID",
                          next_down_id_col: str = "NextDownID", order_col: str = "order_", trace_up: bool = True,
                          order_filter: int = 0) -> dict:
     """
@@ -168,7 +168,7 @@ def _create_adjoint_dict(network_df: gpd.GeoDataFrame, out_file: str = None, str
     order. If filtered by stream order, the dictionary will only contain ids of the given stream order, with the
     upstream or downstream ids for the other streams in the chain that share that stream order.
     Args:
-        network_shp: The stream network. This file
+        network_gdf: The stream network. This file
                      must contain attributes for a unique id and a next down id, and if filtering by order number is
                      specified, it must also contain a column with stream order values.
         out_file: a path to an output file to write the dictionary as a .json, if desired.
@@ -191,18 +191,18 @@ def _create_adjoint_dict(network_df: gpd.GeoDataFrame, out_file: str = None, str
     if order_filter != 0:
         columns_to_search.append(order_col)
     for col in columns_to_search:
-        if col not in network_df.columns:
+        if col not in network_gdf.columns:
             print(f"Column {col} not present")
             return {}
     if trace_up:
-        tree = _make_tree_up(network_df, order_filter, stream_id_col, next_down_id_col, order_col)
+        tree = _make_tree_up(network_gdf, order_filter, stream_id_col, next_down_id_col, order_col)
     else:
-        tree = _make_tree_down(network_df, order_filter, stream_id_col, next_down_id_col, order_col)
+        tree = _make_tree_down(network_gdf, order_filter, stream_id_col, next_down_id_col, order_col)
     if order_filter != 0:
         upstream_lists_dict = {str(hydro_id): _trace_tree(tree, hydro_id) for hydro_id in
-                               network_df[network_df[order_col] == order_filter][stream_id_col]}
+                               network_gdf[network_gdf[order_col] == order_filter][stream_id_col]}
     else:
-        upstream_lists_dict = {str(hydro_id): _trace_tree(tree, hydro_id) for hydro_id in network_df[stream_id_col]}
+        upstream_lists_dict = {str(hydro_id): _trace_tree(tree, hydro_id) for hydro_id in network_gdf[stream_id_col]}
     if out_file is not None:
         if not os.path.exists(out_file):
             with open(out_file, "w") as f:
@@ -341,6 +341,15 @@ def identify_0_length_fixes(gdf: gpd.GeoDataFrame, stream_id_col: str, ds_id_col
             logging.warning(f"The stream segement {feat[stream_id_col]} has condtitions we've not yet considered")
             case4_ids.append(rivid)
 
+    # variable length lists with np.nan to make them the same length
+    longest_list = max([len(case1_ids), len(case2_ids), len(case3_ids), len(case4_ids), len(case2_xs), len(case2_ys)])
+    case1_ids = case1_ids + [np.nan] * (longest_list - len(case1_ids))
+    case2_ids = case2_ids + [np.nan] * (longest_list - len(case2_ids))
+    case2_xs = case2_xs + [np.nan] * (longest_list - len(case2_xs))
+    case2_ys = case2_ys + [np.nan] * (longest_list - len(case2_ys))
+    case3_ids = case3_ids + [np.nan] * (longest_list - len(case3_ids))
+    case4_ids = case4_ids + [np.nan] * (longest_list - len(case4_ids))
+
     return pd.DataFrame({
         'case1': case1_ids,
         'case2': case2_ids,
@@ -442,7 +451,7 @@ def dissolve_streams(streams_gpkg: str, save_dir: str,
     """
     print(datetime.datetime.now().strftime("%H:%M:%S"))
     streams_gdf = gpd.read_file(streams_gpkg)
-    print(f" Finished reading {streams_gpkg}")
+    print(f"Finished reading {streams_gpkg}")
     print(datetime.datetime.now().strftime("%H:%M:%S"))
     print(streams_gdf.shape[0])
 
@@ -453,32 +462,34 @@ def dissolve_streams(streams_gpkg: str, save_dir: str,
         zero_length_fixes_df = identify_0_length_fixes(streams_gdf, stream_id_col, ds_id_col, length_col)
         zero_length_fixes_df.to_csv(os.path.join(save_dir, 'zero_length_fixes.csv'), index=False)
         streams_gdf = apply_0_length_stream_fixes(streams_gdf, zero_length_fixes_df, stream_id_col, length_col)
+        zero_length_fixes_df = None
 
-    allorders_dict = _create_adjoint_dict(streams_gdf,
-                                          stream_id_col=stream_id_col,
-                                          next_down_id_col=ds_id_col,
+    allorders_dict = _create_adjoint_dict(streams_gdf, stream_id_col=stream_id_col, next_down_id_col=ds_id_col,
                                           order_col="strmOrder")
 
-    order_2_dict = _create_adjoint_dict(streams_gdf,
-                                        stream_id_col=stream_id_col,
-                                        next_down_id_col=ds_id_col,
-                                        order_col="strmOrder",
-                                        order_filter=2)
+    order_2_dict = _create_adjoint_dict(streams_gdf, stream_id_col=stream_id_col, next_down_id_col=ds_id_col,
+                                        order_col="strmOrder", order_filter=2)
+
+    with open(os.path.join(save_dir, 'adjoint_dissolves_tree.json'), 'w') as f:
+        json.dump(order_2_dict, f)
+
+    with open(os.path.join(save_dir, 'adjoint_tree.json'), 'w') as f:
+        json.dump(allorders_dict, f)
 
     # list all ids that were merged, turn a list of lists into a flat list, remove duplicates by converting to a set
     toporder2 = {value[-1] for value in list(order_2_dict.values())}
     all_merged_rivids = set(chain.from_iterable([allorders_dict[str(rivid)] for rivid in toporder2]))
 
-    print("  Starting Dissolve")
+    print("Starting Dissolve")
     with Pool(n_process) as p:
         # Process each chunk of basin_gdf separately
-        print("  Merging streams (model)")
+        print("Merging streams (model)")
         merged_streams_model = p.starmap(_merge_streams,
                                          [(allorders_dict[str(rivid)], streams_gdf, True) for rivid in toporder2])
-        print("  Merging streams (mapping)")
+        print("Merging streams (mapping)")
         merged_streams_mapping = p.starmap(_merge_streams,
                                            [(allorders_dict[str(rivid)], streams_gdf, False) for rivid in toporder2])
-    print("  Finished dissolving")
+    print("Finished dissolving")
 
     # concat the merged features
     streams_gdf = streams_gdf[~streams_gdf[stream_id_col].isin(all_merged_rivids)]
@@ -521,11 +532,11 @@ def dissolve_basins(basins_gpkg: str, save_dir: str,
     """
     print(datetime.datetime.now().strftime("%H:%M:%S"))
     basins_gdf = gpd.read_file(basins_gpkg)
-    print(f" Finished reading {basins_gpkg}")
+    print(f"Finished reading {basins_gpkg}")
     print(datetime.datetime.now().strftime("%H:%M:%S"))
     print(basins_gdf.shape[0])
 
-    with open(os.path.join(save_dir, 'adjoint_dissolves_dict.json'), 'r') as f:
+    with open(os.path.join(save_dir, 'adjoint_dissolves_tree.json'), 'r') as f:
         adjoint_dict = json.load(f)
 
     # Check for 0 length segments
@@ -537,7 +548,7 @@ def dissolve_basins(basins_gpkg: str, save_dir: str,
 
     with Pool(n_process) as p:
         # Process each chunk of basin_gdf separately
-        print("  Merging basins")
+        print("Merging basins")
         basins_gdf = p.starmap(_merge_basins,
                                [(basins_gdf, stream_id_col, ds_id_col, rivid) for rivid in adjoint_dict.keys()])
 
@@ -568,7 +579,7 @@ def create_comid_lat_lon_z(streams_gdf: gpd.GeoDataFrame, out_dir: str, id_field
         "lon": lons,
         "z": 0
     }).to_csv(os.path.join(out_dir, "comid_lat_lon_z.csv"), index=False, header=True)
-    print("  Created comid_lat_lon_z.csv")
+    print("Created comid_lat_lon_z.csv")
     return
 
 
@@ -579,7 +590,7 @@ def create_riv_bas_id(streams_gdf: gpd.GeoDataFrame, out_dir: str, downstream_fi
     """
     temp_network = streams_gdf.sort_values([downstream_field, id_field], ascending=[False, False])
     temp_network[id_field].to_csv(os.path.join(out_dir, "riv_bas_id.csv"), index=False, header=False)
-    print("  Created riv_bas_id.csv")
+    print("Created riv_bas_id.csv")
     return
 
 
@@ -596,7 +607,7 @@ def calculate_muskingum(streams_gdf: gpd.GeoDataFrame, out_dir: str, k: float, x
     streams_gdf["Musk_k"].to_csv(os.path.join(out_dir, "k.csv"), index=False, header=False)
     streams_gdf["Musk_x"].to_csv(os.path.join(out_dir, "x.csv"), index=False, header=False)
 
-    print("  Created muskingum parameters")
+    print("Created muskingum parameters")
     return
 
 
@@ -640,7 +651,7 @@ def create_rapid_connect(network: gpd.GeoDataFrame, out_dir: str, id_field: str,
 
     pd.DataFrame(list_all).to_csv(os.path.join(out_dir, 'rapid_connect.csv'), index=False, header=None)
 
-    print("  Created rapid_connect.csv")
+    print("Created rapid_connect.csv")
     return
 
 
@@ -751,7 +762,7 @@ def create_weight_table(out_dir: str, basins_gdf: gpd.GeoDataFrame, nc_file: str
 
     out_name = 'weight_' + os.path.basename(os.path.splitext(nc_file)[0]) + '.csv'
     df.to_csv(os.path.join(out_dir, out_name), index=False)
-    print(f" Created {os.path.basename(out_name)}")
+    print(f"Created {os.path.basename(out_name)}")
     return
 
 
