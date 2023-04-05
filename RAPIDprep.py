@@ -179,7 +179,7 @@ def _create_adjoint_dict(network_gdf: gpd.GeoDataFrame, out_file: str = None, st
                       stream order
     Returns:
     """
-    # Added to forgo computation on precreated json files
+    # Added to forgo computation on pre-created json files
     if out_file is not None and os.path.exists(out_file):
         with open(out_file, 'r') as f:
             upstream_lists_dict = json.load(f)
@@ -212,15 +212,15 @@ def _create_adjoint_dict(network_gdf: gpd.GeoDataFrame, out_file: str = None, st
 
 
 def _merge_streams(upstream_ids: list, network_gdf: gpd.GeoDataFrame, make_model_version: bool,
-                   streamid: str = 'LINKNO', dsid: str = 'DSLINKNO', length: str = 'Length') -> gpd.GeoDataFrame:
+                   streamid: str = 'LINKNO', dsid: str = 'DSLINKNO', length_col: str = 'Length') -> gpd.GeoDataFrame:
     """
     Selects the stream segments that are upstream of the given stream segments, and merges them into a single geodataframe.
     """
     if make_model_version:
         # A little ugly, but we use an if/else to return the index to use based on which of the upstream_ids is longer
         upstream_ids = [upstream_ids[0], upstream_ids[
-            2 if network_gdf[network_gdf[streamid] == upstream_ids[1]][length].values <=
-                 network_gdf[network_gdf[streamid] == upstream_ids[2]][length].values else 1]]
+            2 if network_gdf[network_gdf[streamid] == upstream_ids[1]][length_col].values <=
+                 network_gdf[network_gdf[streamid] == upstream_ids[2]][length_col].values else 1]]
 
     dissolved_feature = network_gdf[network_gdf[streamid].isin(upstream_ids)]
     if len(upstream_ids) == 2:
@@ -241,48 +241,48 @@ def _merge_streams(upstream_ids: list, network_gdf: gpd.GeoDataFrame, make_model
         dissolved_feature = dissolved_feature.dissolve()
 
     order2_stream = network_gdf[network_gdf[streamid] == upstream_ids[0]]
-    dwnstrm_id = order2_stream[dsid].values[0]
-    DSCONTAREA = order2_stream['DSContArea'].values[0]
-    Length = sum(network_gdf[network_gdf[streamid].isin(upstream_ids)][length].values)
-    Magnitude = order2_stream['Magnitude'].values[0]
-    strmDrop = sum(network_gdf[network_gdf[streamid].isin(upstream_ids)]['strmDrop'].values)
-    WSNO = order2_stream['WSNO'].values[0]
-    DOUTEND = order2_stream['DOUTEND'].values[0]
-    DOUTSTART = network_gdf[network_gdf[streamid] == upstream_ids[1]]["DOUTSTART"].values[0]
-    DSNODEID = order2_stream['DSNODEID'].values[0]
+    downstream_id = order2_stream[dsid].values[0]
+    dscontarea = order2_stream['DSContArea'].values[0]
+    length = sum(network_gdf[network_gdf[streamid].isin(upstream_ids)][length_col].values)
+    magnitude = order2_stream['Magnitude'].values[0]
+    strm_drop = sum(network_gdf[network_gdf[streamid].isin(upstream_ids)]['strmDrop'].values)
+    wsno = order2_stream['WSNO'].values[0]
+    doutend = order2_stream['DOUTEND'].values[0]
+    doutstart = network_gdf[network_gdf[streamid] == upstream_ids[1]]["DOUTSTART"].values[0]
+    dsnodeid = order2_stream['DSNODEID'].values[0]
     upstream_comids = upstream_ids[1:]
 
-    if DSNODEID != -1:
+    if dsnodeid != -1:
         logging.warning(f"  The stream {upstream_ids[0]} has a DSNODEID other than -1...")
 
     dissolved_feature[streamid] = upstream_ids[0]
-    dissolved_feature[dsid] = dwnstrm_id
+    dissolved_feature[dsid] = downstream_id
     dissolved_feature["USLINKNO1"] = -1
     dissolved_feature["USLINKNO2"] = -1
-    dissolved_feature["DSNODEID"] = DSNODEID
+    dissolved_feature["DSNODEID"] = dsnodeid
     dissolved_feature["strmOrder"] = 2
-    dissolved_feature[length] = Length
-    dissolved_feature["Magnitude"] = Magnitude
-    dissolved_feature["DSContArea"] = DSCONTAREA
-    dissolved_feature["strmDrop"] = strmDrop
-    dissolved_feature["Slope"] = strmDrop / Length
+    dissolved_feature[length_col] = length
+    dissolved_feature["Magnitude"] = magnitude
+    dissolved_feature["DSContArea"] = dscontarea
+    dissolved_feature["strmDrop"] = strm_drop
+    dissolved_feature["Slope"] = strm_drop / length
     dissolved_feature["StraightL"] = -1
     dissolved_feature["USContArea"] = -1
-    dissolved_feature["WSNO"] = WSNO
-    dissolved_feature["DOUTEND"] = DOUTEND
-    dissolved_feature["DOUTSTART"] = DOUTSTART
-    dissolved_feature["DOUTMID"] = round((DOUTEND + DOUTSTART) / 2, 2)
+    dissolved_feature["WSNO"] = wsno
+    dissolved_feature["DOUTEND"] = doutend
+    dissolved_feature["DOUTSTART"] = doutstart
+    dissolved_feature["DOUTMID"] = round((doutend + doutstart) / 2, 2)
     dissolved_feature['MERGEIDS'] = ','.join(str(num) for num in upstream_comids)
 
     return dissolved_feature
 
 
-def _merge_basins(upstream_ids: list, basin_gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+def _merge_basins(basin_gdf: gpd.GeoDataFrame, upstream_ids: list) -> gpd.GeoDataFrame:
     """
-    Dissolves basins based on list of upstream river ids, and returns that feature. Ensure that id is the stream order 2 id
+    Dissolves basins based on list of upstream river ids, and returns that feature.
     """
     gdf = basin_gdf[basin_gdf["streamID"].isin(upstream_ids)].dissolve()
-    gdf['streamID'] = upstream_ids[0]
+    gdf['streamID'] = upstream_ids[0]  # the first ID should be the most downstream ID
     return gdf
 
 
@@ -327,8 +327,8 @@ def identify_0_length_fixes(gdf: gpd.GeoDataFrame, stream_id_col: str, ds_id_col
         # Case 2
         elif feat[ds_id_col].values != -1 and feat['USLINKNO1'].values != -1 and feat['USLINKNO2'].values != -1:
             case2_ids.append(rivid)
-            case2_xs.append(feat['geometry'].values[0].x)
-            case2_ys.append(feat['geometry'].values[0].y)
+            case2_xs.append(feat['geometry'].values[0].coords[0][0])
+            case2_ys.append(feat['geometry'].values[0].coords[0][1])
 
         # Case 3
         elif feat[ds_id_col].values == -1 and feat['USLINKNO1'].values != -1 and feat['USLINKNO2'].values != -1:
@@ -408,9 +408,13 @@ def apply_0_length_basin_fixes(basins_gdf: gpd.GeoDataFrame, zero_length_df: pd.
 
     # Case 2 - Allow 3-river confluence - Create a basin with small non-zero area, assign small non-zero length
     boxes = (
-        zero_length_df['case2', 'case2_x', 'case2_y']
-        .apply(lambda x: sg.box(x.case2_x - buffer_size, x.case2_y - buffer_size, x.case2_x + buffer_size,
-                                x.case2_y + buffer_size))
+        zero_length_df[['case2', 'case2_x', 'case2_y']]
+        .apply(lambda x: sg.box(
+            x.case2_x - buffer_size,
+            x.case2_y - buffer_size,
+            x.case2_x + buffer_size,
+            x.case2_y + buffer_size
+        ), axis=1)
     )
     corrected_basins = pd.concat([
         corrected_basins,
@@ -451,51 +455,51 @@ def dissolve_streams(streams_gpkg: str, save_dir: str,
     streams_gdf = gpd.read_file(streams_gpkg)
     print(f"Finished reading {streams_gpkg}")
     print(datetime.datetime.now().strftime("%H:%M:%S"))
-    print(streams_gdf.shape[0])
+    print(f'Total features {streams_gdf.shape[0]}')
 
     streams_gdf['MERGEIDS'] = np.nan
 
     if 0 in streams_gdf[length_col].values:
-        print("  Segments of length 0 found. Fixing...")
+        print("Fixing length 0 segments")
         zero_length_fixes_df = identify_0_length_fixes(streams_gdf, stream_id_col, ds_id_col, length_col)
         zero_length_fixes_df.to_csv(os.path.join(save_dir, 'zero_length_fixes.csv'), index=False)
         streams_gdf = apply_0_length_stream_fixes(streams_gdf, zero_length_fixes_df, stream_id_col, length_col)
         zero_length_fixes_df = None
 
-    allorders_dict = _create_adjoint_dict(streams_gdf, stream_id_col=stream_id_col, next_down_id_col=ds_id_col,
-                                          order_col="strmOrder")
+    adjoint_dict = _create_adjoint_dict(streams_gdf, stream_id_col=stream_id_col, next_down_id_col=ds_id_col,
+                                        order_col="strmOrder")
 
-    with open(os.path.join(save_dir, 'adjoint_tree.json'), 'w') as f:
-        json.dump(allorders_dict, f)
-
-    # Clear memory
-    allorders_dict = None
-
-    order_2_dict = _create_adjoint_dict(streams_gdf, stream_id_col=stream_id_col, next_down_id_col=ds_id_col,
-                                        order_col="strmOrder", order_filter=2)
-
-    with open(os.path.join(save_dir, 'adjoint_dissolves_tree.json'), 'w') as f:
-        json.dump(order_2_dict, f)
+    adjoint_order_2_dict = _create_adjoint_dict(streams_gdf, stream_id_col=stream_id_col, next_down_id_col=ds_id_col,
+                                                order_col="strmOrder", order_filter=2)
 
     # list all ids that were merged, turn a list of lists into a flat list, remove duplicates by converting to a set
-    toporder2 = {value[-1] for value in list(order_2_dict.values())}
-    all_merged_rivids = set(chain.from_iterable([allorders_dict[str(rivid)] for rivid in toporder2]))
+    top_order_2s = {str(value[-1]) for value in list(adjoint_order_2_dict.values())}
+    adjoint_order_2_dict = {key: adjoint_dict[key] for key in top_order_2s}
+    all_merged_rivids = set(chain.from_iterable([adjoint_dict[rivid] for rivid in top_order_2s]))
 
-    print("Starting Dissolve")
+    with open(os.path.join(save_dir, 'adjoint_tree.json'), 'w') as f:
+        json.dump(adjoint_dict, f)
+        adjoint_dict = None
+
+    with open(os.path.join(save_dir, 'adjoint_dissolves_tree.json'), 'w') as f:
+        json.dump(adjoint_order_2_dict, f)
+
     with Pool(n_process) as p:
         # Process each chunk of basin_gdf separately
         print("Merging streams (model)")
-        merged_streams_model = p.starmap(_merge_streams,
-                                         [(order_2_dict[str(rivid)], streams_gdf, True) for rivid in toporder2])
+        merged_streams_model = p.starmap(_merge_streams, [
+            (adjoint_order_2_dict[str(rivid)], streams_gdf, True) for rivid in top_order_2s])
         print("Merging streams (mapping)")
-        merged_streams_mapping = p.starmap(_merge_streams,
-                                           [(order_2_dict[str(rivid)], streams_gdf, False) for rivid in toporder2])
-    print("Finished dissolving")
+        merged_streams_mapping = p.starmap(_merge_streams, [
+            (adjoint_order_2_dict[str(rivid)], streams_gdf, False) for rivid in top_order_2s])
 
     # concat the merged features
+    print("Concatenating dissolved features")
     streams_gdf = streams_gdf[~streams_gdf[stream_id_col].isin(all_merged_rivids)]
-    mapping_gdf = pd.concat([streams_gdf, *merged_streams_mapping])
-    streams_gdf = pd.concat([streams_gdf, *merged_streams_model])
+    mapping_gdf = pd.concat([streams_gdf, pd.concat(merged_streams_mapping)])
+    merged_streams_mapping = None
+    streams_gdf = pd.concat([streams_gdf, pd.concat(merged_streams_model)])
+    merged_streams_model = None
 
     # Sort streams for csvs
     streams_gdf.sort_values('strmOrder', inplace=True)
@@ -510,8 +514,7 @@ def dissolve_streams(streams_gpkg: str, save_dir: str,
 
 
 def dissolve_basins(basins_gpkg: str, save_dir: str,
-                    stream_id_col='LINKNO', ds_id_col: str = 'DSLINKNO',
-                    n_process: int or None = None) -> gpd.GeoDataFrame:
+                    stream_id_col='LINKNO', n_process: int or None = None) -> gpd.GeoDataFrame:
     """"
     Ensure that shapely >= 2.0.1, otherwise you will get access violations
 
@@ -526,8 +529,6 @@ def dissolve_basins(basins_gpkg: str, save_dir: str,
         Path to directory where dissolved network and catchments will be saved
     stream_id_col : string, optional
         Field in network file that corresponds to the unique id of each stream segment
-    ds_id_col : string, optional
-        Field in network file that corresponds to the unique downstream id of each stream segment
     n_process : int, optional
         Number of processes to use for parallel processing
     """
@@ -539,22 +540,27 @@ def dissolve_basins(basins_gpkg: str, save_dir: str,
 
     with open(os.path.join(save_dir, 'adjoint_dissolves_tree.json'), 'r') as f:
         adjoint_dict = json.load(f)
+    all_merged_basins = set(chain.from_iterable([adjoint_dict[rivid] for rivid in adjoint_dict.keys()]))
 
     # Check for 0 length segments
     zero_length_fixes_df_path = os.path.join(save_dir, 'zero_length_fixes.csv')
     if os.path.exists(zero_length_fixes_df_path):
         zero_length_fixes_df = pd.read_csv(os.path.join(save_dir, 'zero_length_fixes.csv'))
-        basins_gdf = apply_0_length_basin_fixes(basins_gdf, zero_length_fixes_df, stream_id_col=stream_id_col,
-                                                buffer_size=.001)
+        basins_gdf = apply_0_length_basin_fixes(basins_gdf, zero_length_fixes_df,
+                                                stream_id_col=stream_id_col, buffer_size=.001)
 
     with Pool(n_process) as p:
         # Process each chunk of basin_gdf separately
         print("Merging basins")
-        basins_gdf = p.starmap(_merge_basins,
-                               [(basins_gdf, stream_id_col, ds_id_col, rivid) for rivid in adjoint_dict.keys()])
+        merged_basins = p.starmap(_merge_basins, [(basins_gdf, adjoint_dict[rivid]) for rivid in adjoint_dict.keys()])
 
     # concat the merged features
-    basins_gdf = pd.concat([basins_gdf[basins_gdf[stream_id_col].not_in(adjoint_dict.keys())], *basins_gdf])
+    print("Concatenating dissolved features")
+    # drop the basins that were merged
+    basins_gdf = basins_gdf[~basins_gdf[stream_id_col].isin(all_merged_basins)]
+    merged_basins = pd.concat(merged_basins)
+    basins_gdf = pd.concat([basins_gdf, merged_basins])
+    merged_basins = None
 
     # Save the files
     print('Writing geopackages')
@@ -568,7 +574,8 @@ def dissolve_basins(basins_gpkg: str, save_dir: str,
 ################################################################
 def create_comid_lat_lon_z(streams_gdf: gpd.GeoDataFrame, out_dir: str, id_field: str) -> None:
     """
-    Assumes that geometry of the network are shapely LineStrings. If there are MultiLineStrings than something has gone wrong in the dissolving step.
+    Assumes that geometry of the network are shapely LineStrings.
+    If there are MultiLineStrings than something has gone wrong in the dissolving step.
     """
     temp_network = streams_gdf.sort_values(id_field)
     lats = temp_network.geometry.apply(lambda geom: geom.xy[1][0]).values
