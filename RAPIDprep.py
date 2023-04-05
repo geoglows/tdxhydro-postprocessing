@@ -31,8 +31,6 @@ hydrobasin_cache = {
     8020020760: 87, 9020000010: 91
 }
 
-# todo carefully reintroduce parallel processing on reading/writing gpkg files and creating weight tables
-
 
 ################################################################
 #   Dissolving functions:
@@ -827,8 +825,10 @@ def preprocess_for_rapid(stream_file: str, basins_file: str, nc_files: list, sav
 
     # Create weight table
     print('Creating weight tables')
-    for nc_file in nc_files:
-        create_weight_table(save_dir, basins_gdf, nc_file)
+    # for nc_file in nc_files:
+    #     create_weight_table(save_dir, basins_gdf, nc_file)
+    with Pool(min(n_processes, len(nc_files))) as p:
+        p.starmap(create_weight_table, [(save_dir, basins_gdf, nc_file) for nc_file in nc_files])
 
     # clear memory for large basin processing
     print('Clearing basin GDF from memory')
