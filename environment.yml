@@ -1,4 +1,4 @@
-name: rapid_preprocessing
+name: rapid_prep
 channels:
 - conda-forge
 - defaults
