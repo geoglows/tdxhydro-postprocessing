@@ -313,13 +313,12 @@ def _fix_0_Length(gdf: gpd.GeoDataFrame, basin_gdf: gpd.GeoDataFrame, streamid: 
     length : string
         Field in basins network that corresponds to the unique length of each stream segment
     """
-    bad_streams = gdf[gdf[length] == 0]
     case2_gdfs = []
     rivids2drop = []
 
     river_length = 0.001
-    for rivid in bad_streams[streamid].values:
-        feat = bad_streams[bad_streams[streamid] == rivid]
+    for rivid in gdf[gdf[length] == 0][streamid].values:
+        feat = gdf[gdf[streamid] == rivid]
 
         # Case 1
         if feat[dsid].values == -1 and feat['USLINKNO1'].values == -1 and feat['USLINKNO2'].values == -1:
@@ -350,7 +349,7 @@ def _fix_0_Length(gdf: gpd.GeoDataFrame, basin_gdf: gpd.GeoDataFrame, streamid: 
     return gdf, basin_gdf
 
 
-def _main_dissolve(network_gpkg: str, basin_gpkg: str, model: bool = False, streamid='LINKNO',
+def _main_dissolve(network_gpkg: str, basin_gpkg: str, streamid='LINKNO',
                    dsid: str = 'DSLINKNO', length: str = 'Length'):
     """"
     Ensure that shapely >= 2.0.1, otherwise you will get access violations
@@ -678,7 +677,7 @@ def PreprocessForRAPID(stream_file: str, basins_file: str, nc_files: list, out_d
 
     # Dissolve streams and basins
     print('Dissolving streams and basins')
-    streams, basins, vis_streams = _main_dissolve(stream_file, basins_file, model=False)
+    streams, basins, vis_streams = _main_dissolve(stream_file, basins_file)
 
     # Create rapid preprocessing files
     print('Creating RAPID files')
