@@ -211,15 +211,23 @@ def _create_adjoint_dict(network_df: gpd.GeoDataFrame, out_file: str = None, str
     return upstream_lists_dict
 
 
-def _dissolve_network(network_gdf: gpd.GeoDataFrame, upstream_ids: list, streamid: str) -> gpd.GeoDataFrame:
+def _merge_streams(upstream_ids: list, network_gdf: gpd.GeoDataFrame, make_model_version: bool,
+                   streamid: str = 'LINKNO', dsid: str = 'DSLINKNO', length: str = 'Length') -> gpd.GeoDataFrame:
     """
-    Some stream segments have linestrings that aren't in the right order, and so when dissolved they create a MultiLineString object, which we don't want.
-    This is ensures that the geometry is a LineString by finding the correct order and concatenating the linestrings into a new LineString
+    Selects the stream segments that are upstream of the given stream segments, and merges them into a single geodataframe.
     """
-    stuff_to_dissolve = network_gdf[network_gdf[streamid].isin(upstream_ids)]
-    if len(upstream_ids) == 2:  # This is for when we merge only two upstream streams, and this is where only using GeoPandas dissolve may create MultiLineString objects (because geoms in wrong order?)
-        line1 = list(stuff_to_dissolve.iloc[0].geometry.coords)
-        line2 = list(stuff_to_dissolve.iloc[1].geometry.coords)
+    if make_model_version:
+        # A little ugly, but we use an if/else to return the index to use based on which of the upstream_ids is longer
+        upstream_ids = [upstream_ids[0], upstream_ids[
+            2 if network_gdf[network_gdf[streamid] == upstream_ids[1]][length].values <=
+                 network_gdf[network_gdf[streamid] == upstream_ids[2]][length].values else 1]]
+
+    dissolved_feature = network_gdf[network_gdf[streamid].isin(upstream_ids)]
+    if len(upstream_ids) == 2:
+        # This is for when we merge only two upstream streams, and this is where only using GeoPandas dissolve may
+        # create MultiLineString objects (because geoms in wrong order?)
+        line1 = list(dissolved_feature.iloc[0].geometry.coords)
+        line2 = list(dissolved_feature.iloc[1].geometry.coords)
         line1_start = line1[0]
         line2_end = line2[-1]
         if line1_start == line2_end:
@@ -228,71 +236,53 @@ def _dissolve_network(network_gdf: gpd.GeoDataFrame, upstream_ids: list, streami
         else:  # We assume that the end of line1 is the beginning of line2
             newline = line1 + line2
             line = sg.LineString(newline)
-        return gpd.GeoDataFrame(geometry=[line], crs=network_gdf.crs)
-    return stuff_to_dissolve.dissolve()
+        dissolved_feature = gpd.GeoDataFrame(geometry=[line], crs=network_gdf.crs)
+    else:
+        dissolved_feature = dissolved_feature.dissolve()
 
-
-def _merge_streams(upstream_ids: list, network_gdf: gpd.GeoDataFrame, model: bool, streamid: str = 'LINKNO',
-                   dsid: str = 'DSLINKNO', length: str = 'Length') -> gpd.GeoDataFrame:
-    """
-    Selects the stream segments that are upstream of the given stream segments, and merges them into a single geodataframe.
-    """
     order2_stream = network_gdf[network_gdf[streamid] == upstream_ids[0]]
     dwnstrm_id = order2_stream[dsid].values[0]
     DSCONTAREA = order2_stream['DSContArea'].values[0]
-    # A little ugly, but we use an if/else to return the index to use based on which of the upstream_ids is longer
-    ids_to_use = [upstream_ids[0], upstream_ids[
-        2 if network_gdf[network_gdf[streamid] == upstream_ids[1]][length].values <=
-             network_gdf[network_gdf[streamid] == upstream_ids[2]][length].values else 1]]
-    Length = sum(network_gdf[network_gdf[streamid].isin(ids_to_use)][length].values)
+    Length = sum(network_gdf[network_gdf[streamid].isin(upstream_ids)][length].values)
     Magnitude = order2_stream['Magnitude'].values[0]
-    strmDrop = sum(network_gdf[network_gdf[streamid].isin(ids_to_use)]['strmDrop'].values)
+    strmDrop = sum(network_gdf[network_gdf[streamid].isin(upstream_ids)]['strmDrop'].values)
     WSNO = order2_stream['WSNO'].values[0]
     DOUTEND = order2_stream['DOUTEND'].values[0]
-    DOUTSTART = network_gdf[network_gdf[streamid] == ids_to_use[1]]["DOUTSTART"].values[0]
+    DOUTSTART = network_gdf[network_gdf[streamid] == upstream_ids[1]]["DOUTSTART"].values[0]
     DSNODEID = order2_stream['DSNODEID'].values[0]
-    upstream_comids = network_gdf[network_gdf[streamid].isin(upstream_ids[1:])]['reach_id'].values
+    upstream_comids = upstream_ids[1:]
 
     if DSNODEID != -1:
         logging.warning(f"  The stream {upstream_ids[0]} has a DSNODEID other than -1...")
 
-    if not model:
-        network_gdf = _dissolve_network(network_gdf, upstream_ids, streamid)
-    else:
-        # Get rid of the shortest stream segment that isn't the order 2!!!
-        network_gdf = _dissolve_network(network_gdf, ids_to_use, streamid)
+    dissolved_feature[streamid] = upstream_ids[0]
+    dissolved_feature[dsid] = dwnstrm_id
+    dissolved_feature["USLINKNO1"] = -1
+    dissolved_feature["USLINKNO2"] = -1
+    dissolved_feature["DSNODEID"] = DSNODEID
+    dissolved_feature["strmOrder"] = 2
+    dissolved_feature[length] = Length
+    dissolved_feature["Magnitude"] = Magnitude
+    dissolved_feature["DSContArea"] = DSCONTAREA
+    dissolved_feature["strmDrop"] = strmDrop
+    dissolved_feature["Slope"] = strmDrop / Length
+    dissolved_feature["StraightL"] = -1
+    dissolved_feature["USContArea"] = -1
+    dissolved_feature["WSNO"] = WSNO
+    dissolved_feature["DOUTEND"] = DOUTEND
+    dissolved_feature["DOUTSTART"] = DOUTSTART
+    dissolved_feature["DOUTMID"] = round((DOUTEND + DOUTSTART) / 2, 2)
+    dissolved_feature['MERGEIDS'] = ','.join(str(num) for num in upstream_comids)
 
-    network_gdf[streamid] = upstream_ids[0]
-    network_gdf[dsid] = dwnstrm_id
-    network_gdf["USLINKNO1"] = -1
-    network_gdf["USLINKNO2"] = -1
-    network_gdf["DSNODEID"] = DSNODEID
-    network_gdf["strmOrder"] = 2
-    network_gdf[length] = Length
-    network_gdf["Magnitude"] = Magnitude
-    network_gdf["DSContArea"] = DSCONTAREA
-    network_gdf["strmDrop"] = strmDrop
-    network_gdf["Slope"] = strmDrop / Length
-    network_gdf["StraightL"] = -1
-    network_gdf["USContArea"] = -1
-    network_gdf["WSNO"] = WSNO
-    network_gdf["DOUTEND"] = DOUTEND
-    network_gdf["DOUTSTART"] = DOUTSTART
-    network_gdf["DOUTMID"] = round((DOUTEND + DOUTSTART) / 2, 2)
-    network_gdf['MERGEIDS'] = ','.join(str(num) for num in upstream_comids)
-    network_gdf['reach_id'] = order2_stream['reach_id'].values[0]
-
-    return network_gdf
+    return dissolved_feature
 
 
 def _merge_basins(upstream_ids: list, basin_gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     """
     Dissolves basins based on list of upstream river ids, and returns that feature. Ensure that id is the stream order 2 id
     """
-    reach_id = basin_gdf[basin_gdf['streamID'] == upstream_ids[0]]['reach_id'].values
     gdf = basin_gdf[basin_gdf["streamID"].isin(upstream_ids)].dissolve()
     gdf['streamID'] = upstream_ids[0]
-    gdf['reach_id'] = reach_id
     return gdf
 
 
@@ -392,15 +382,15 @@ def _main_dissolve(network_gpkg: str, basin_gpkg: str, model: bool = False, stre
 
     gdf['MERGEIDS'] = np.nan
 
-    # Assign global ids
-    # extract the hydrobasin id from the pathname using regular expressions
-    match = re.search(r"\d+", os.path.basename(network_gpkg))
-    id_number = match.group()
-    prefix = str(hydrobasin_cache[int(id_number)])
-    gdf['reach_id'] = prefix + gdf[streamid].astype(str).str.zfill(7)
-    basin_gdf['reach_id'] = prefix + basin_gdf['streamID'].astype(str).str.zfill(7)
-    gdf['reach_id'] = gdf['reach_id'].astype(int)
-    basin_gdf['reach_id'] = basin_gdf['reach_id'].astype(int)
+    # # Assign global ids
+    # # extract the hydrobasin id from the pathname using regular expressions
+    # match = re.search(r"\d+", os.path.basename(network_gpkg))
+    # id_number = match.group()
+    # prefix = str(hydrobasin_cache[int(id_number)])
+    # gdf['reach_id'] = prefix + gdf[streamid].astype(str).str.zfill(7)
+    # basin_gdf['reach_id'] = prefix + basin_gdf['streamID'].astype(str).str.zfill(7)
+    # gdf['reach_id'] = gdf['reach_id'].astype(int)
+    # basin_gdf['reach_id'] = basin_gdf['reach_id'].astype(int)
 
     if not model:
         mapping_gdf = gdf.copy()
@@ -424,28 +414,22 @@ def _main_dissolve(network_gpkg: str, basin_gpkg: str, model: bool = False, stre
 
     print("  Dictionaries created, dissolving")
 
-    with Pool(8) as p:
+    with Pool(10) as p:
         # Process each chunk of basin_gdf separately
-        merged_streams = p.starmap(_merge_streams, [(allorders_dict[str(rivid)], gdf, True) for rivid in toporder2])
-        merged_basins = p.starmap(_merge_basins, [(allorders_dict[str(rivid)], basin_gdf) for rivid in toporder2])
-        if not model:
-            merged_mapping = p.starmap(_merge_streams,
-                                       [(allorders_dict[str(rivid)], gdf, False) for rivid in toporder2])
+        merged_streams_model = p.starmap(_merge_streams, [(allorders_dict[str(rivid)], gdf, True) for rivid in toporder2])
+        merged_streams_mapping = p.starmap(_merge_streams, [(allorders_dict[str(rivid)], gdf, False) for rivid in toporder2])
+        merged_basins_model = p.starmap(_merge_basins, [(allorders_dict[str(rivid)], basin_gdf) for rivid in toporder2])
 
     print("  Finished dissolving")
 
     # list all ids that were merged, turn a list of lists into a flat list, remove duplicates by converting to a set 
     all_merged_rivids = set(chain.from_iterable([allorders_dict[str(rivid)] for rivid in toporder2]))
 
-    # drop rivids that were merged
-    gdf = gdf[~gdf[streamid].isin(all_merged_rivids)]
-    basin_gdf = basin_gdf[~basin_gdf["streamID"].isin(all_merged_rivids)]
-    mapping_gdf = mapping_gdf[~mapping_gdf[streamid].isin(all_merged_rivids)]
-
     # concat the merged features
-    gdf = pd.concat([gdf, *merged_streams])
-    basin_gdf = pd.concat([basin_gdf, *merged_basins])
-    mapping_gdf = pd.concat([mapping_gdf, *merged_mapping])
+    gdf = gdf[~gdf[streamid].isin(all_merged_rivids)]
+    mapping_gdf = pd.concat([gdf, *merged_streams_mapping])
+    gdf = pd.concat([gdf, *merged_streams_model])
+    basin_gdf = pd.concat([basin_gdf[~basin_gdf["streamID"].isin(all_merged_rivids)], *merged_basins_model])
 
     # Sort streams for csvs
     gdf.sort_values('strmOrder', inplace=True)
