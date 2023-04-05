@@ -410,7 +410,7 @@ def _main_dissolve(network_gpkg: str, basin_gpkg: str, streamid='LINKNO',
 
     print("  Dictionaries created, dissolving")
 
-    with Pool(10) as p:
+    with Pool(14) as p:
         # Process each chunk of basin_gdf separately
         merged_streams_model = p.starmap(_merge_streams, [(allorders_dict[str(rivid)], gdf, True) for rivid in toporder2])
         merged_streams_mapping = p.starmap(_merge_streams, [(allorders_dict[str(rivid)], gdf, False) for rivid in toporder2])
