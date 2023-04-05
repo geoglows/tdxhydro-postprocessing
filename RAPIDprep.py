@@ -465,14 +465,17 @@ def dissolve_streams(streams_gpkg: str, save_dir: str,
     allorders_dict = _create_adjoint_dict(streams_gdf, stream_id_col=stream_id_col, next_down_id_col=ds_id_col,
                                           order_col="strmOrder")
 
+    with open(os.path.join(save_dir, 'adjoint_tree.json'), 'w') as f:
+        json.dump(allorders_dict, f)
+
+    # Clear memory
+    allorders_dict = None
+
     order_2_dict = _create_adjoint_dict(streams_gdf, stream_id_col=stream_id_col, next_down_id_col=ds_id_col,
                                         order_col="strmOrder", order_filter=2)
 
     with open(os.path.join(save_dir, 'adjoint_dissolves_tree.json'), 'w') as f:
         json.dump(order_2_dict, f)
-
-    with open(os.path.join(save_dir, 'adjoint_tree.json'), 'w') as f:
-        json.dump(allorders_dict, f)
 
     # list all ids that were merged, turn a list of lists into a flat list, remove duplicates by converting to a set
     toporder2 = {value[-1] for value in list(order_2_dict.values())}
@@ -483,10 +486,10 @@ def dissolve_streams(streams_gpkg: str, save_dir: str,
         # Process each chunk of basin_gdf separately
         print("Merging streams (model)")
         merged_streams_model = p.starmap(_merge_streams,
-                                         [(allorders_dict[str(rivid)], streams_gdf, True) for rivid in toporder2])
+                                         [(order_2_dict[str(rivid)], streams_gdf, True) for rivid in toporder2])
         print("Merging streams (mapping)")
         merged_streams_mapping = p.starmap(_merge_streams,
-                                           [(allorders_dict[str(rivid)], streams_gdf, False) for rivid in toporder2])
+                                           [(order_2_dict[str(rivid)], streams_gdf, False) for rivid in toporder2])
     print("Finished dissolving")
 
     # concat the merged features
