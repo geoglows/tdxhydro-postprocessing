@@ -392,9 +392,6 @@ def _main_dissolve(network_gpkg: str, basin_gpkg: str, model: bool = False, stre
     # gdf['reach_id'] = gdf['reach_id'].astype(int)
     # basin_gdf['reach_id'] = basin_gdf['reach_id'].astype(int)
 
-    if not model:
-        mapping_gdf = gdf.copy()
-
     if 0 in gdf[length].values:
         print("  Segments of length 0 found. Fixing...")
         gdf, basin_gdf = _fix_0_Length(gdf, basin_gdf, streamid, dsid, length)
