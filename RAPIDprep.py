@@ -31,6 +31,8 @@ hydrobasin_cache = {
     8020020760: 87, 9020000010: 91
 }
 
+# set up logging
+logger = logging.getLogger(__name__)
 
 ################################################################
 #   Dissolving functions:
@@ -190,7 +192,7 @@ def _create_adjoint_dict(network_gdf: gpd.GeoDataFrame, out_file: str = None, st
         columns_to_search.append(order_col)
     for col in columns_to_search:
         if col not in network_gdf.columns:
-            print(f"Column {col} not present")
+            logger.info(f"Column {col} not present")
             return {}
     if trace_up:
         tree = _make_tree_up(network_gdf, order_filter, stream_id_col, next_down_id_col, order_col)
@@ -206,7 +208,7 @@ def _create_adjoint_dict(network_gdf: gpd.GeoDataFrame, out_file: str = None, st
             with open(out_file, "w") as f:
                 json.dump(upstream_lists_dict, f, cls=NpEncoder)
         else:
-            print("File already created")
+            logger.info("File already created")
             return upstream_lists_dict  # Added to return dictionary anyways
     return upstream_lists_dict
 
@@ -451,16 +453,16 @@ def dissolve_streams(streams_gpkg: str, save_dir: str,
     n_process : int, optional
         Number of processes to use for parallel processing
     """
-    print(datetime.datetime.now().strftime("%H:%M:%S"))
+    logger.info(datetime.datetime.now().strftime("%H:%M:%S"))
     streams_gdf = gpd.read_file(streams_gpkg)
-    print(f"Finished reading {streams_gpkg}")
-    print(datetime.datetime.now().strftime("%H:%M:%S"))
-    print(f'Total features {streams_gdf.shape[0]}')
+    logger.info(f"Finished reading {streams_gpkg}")
+    logger.info(datetime.datetime.now().strftime("%H:%M:%S"))
+    logger.info(f'Total features {streams_gdf.shape[0]}')
 
     streams_gdf['MERGEIDS'] = np.nan
 
     if 0 in streams_gdf[length_col].values:
-        print("Fixing length 0 segments")
+        logger.info("Fixing length 0 segments")
         zero_length_fixes_df = identify_0_length_fixes(streams_gdf, stream_id_col, ds_id_col, length_col)
         zero_length_fixes_df.to_csv(os.path.join(save_dir, 'zero_length_fixes.csv'), index=False)
         streams_gdf = apply_0_length_stream_fixes(streams_gdf, zero_length_fixes_df, stream_id_col, length_col)
@@ -486,15 +488,15 @@ def dissolve_streams(streams_gpkg: str, save_dir: str,
 
     with Pool(n_process) as p:
         # Process each chunk of basin_gdf separately
-        print("Merging streams (model)")
+        logger.info("Merging streams (model)")
         merged_streams_model = p.starmap(_merge_streams, [
             (adjoint_order_2_dict[str(rivid)], streams_gdf, True) for rivid in top_order_2s])
-        print("Merging streams (mapping)")
+        logger.info("Merging streams (mapping)")
         merged_streams_mapping = p.starmap(_merge_streams, [
             (adjoint_order_2_dict[str(rivid)], streams_gdf, False) for rivid in top_order_2s])
 
     # concat the merged features
-    print("Concatenating dissolved features")
+    logger.info("Concatenating dissolved features")
     streams_gdf = streams_gdf[~streams_gdf[stream_id_col].isin(all_merged_rivids)]
     mapping_gdf = pd.concat([streams_gdf, pd.concat(merged_streams_mapping)])
     merged_streams_mapping = None
@@ -506,7 +508,7 @@ def dissolve_streams(streams_gpkg: str, save_dir: str,
     mapping_gdf.sort_values('strmOrder', inplace=True)
 
     # Save the files
-    print('Writing geopackages')
+    logger.info('Writing geopackages')
     streams_gdf.to_file(os.path.join(save_dir, os.path.basename(os.path.splitext(streams_gpkg)[0]) + '_model.gpkg'))
     mapping_gdf.to_file(os.path.join(save_dir, os.path.basename(os.path.splitext(streams_gpkg)[0]) + '_vis.gpkg'))
 
@@ -532,11 +534,11 @@ def dissolve_basins(basins_gpkg: str, save_dir: str,
     n_process : int, optional
         Number of processes to use for parallel processing
     """
-    print(datetime.datetime.now().strftime("%H:%M:%S"))
+    logger.info(datetime.datetime.now().strftime("%H:%M:%S"))
     basins_gdf = gpd.read_file(basins_gpkg)
-    print(f"Finished reading {basins_gpkg}")
-    print(datetime.datetime.now().strftime("%H:%M:%S"))
-    print(basins_gdf.shape[0])
+    logger.info(f"Finished reading {basins_gpkg}")
+    logger.info(datetime.datetime.now().strftime("%H:%M:%S"))
+    logger.info(basins_gdf.shape[0])
 
     with open(os.path.join(save_dir, 'adjoint_dissolves_tree.json'), 'r') as f:
         adjoint_dict = json.load(f)
@@ -551,11 +553,11 @@ def dissolve_basins(basins_gpkg: str, save_dir: str,
 
     with Pool(n_process) as p:
         # Process each chunk of basin_gdf separately
-        print("Merging basins")
+        logger.info("Merging basins")
         merged_basins = p.starmap(_merge_basins, [(basins_gdf, adjoint_dict[rivid]) for rivid in adjoint_dict.keys()])
 
     # concat the merged features
-    print("Concatenating dissolved features")
+    logger.info("Concatenating dissolved features")
     # drop the basins that were merged
     basins_gdf = basins_gdf[~basins_gdf[stream_id_col].isin(all_merged_basins)]
     merged_basins = pd.concat(merged_basins)
@@ -563,7 +565,7 @@ def dissolve_basins(basins_gpkg: str, save_dir: str,
     merged_basins = None
 
     # Save the files
-    print('Writing geopackages')
+    logger.info('Writing geopackages')
     basins_gdf.to_file(os.path.join(save_dir, os.path.basename(os.path.splitext(basins_gpkg)[0]) + '_model.gpkg'))
 
     return basins_gdf
@@ -587,7 +589,7 @@ def create_comid_lat_lon_z(streams_gdf: gpd.GeoDataFrame, out_dir: str, id_field
         "lon": lons,
         "z": 0
     }).to_csv(os.path.join(out_dir, "comid_lat_lon_z.csv"), index=False, header=True)
-    print("Created comid_lat_lon_z.csv")
+    logger.info("Created comid_lat_lon_z.csv")
     return
 
 
@@ -598,7 +600,7 @@ def create_riv_bas_id(streams_gdf: gpd.GeoDataFrame, out_dir: str, downstream_fi
     """
     temp_network = streams_gdf.sort_values([downstream_field, id_field], ascending=[False, False])
     temp_network[id_field].to_csv(os.path.join(out_dir, "riv_bas_id.csv"), index=False, header=False)
-    print("Created riv_bas_id.csv")
+    logger.info("Created riv_bas_id.csv")
     return
 
 
@@ -615,7 +617,7 @@ def calculate_muskingum(streams_gdf: gpd.GeoDataFrame, out_dir: str, k: float, x
     streams_gdf["Musk_k"].to_csv(os.path.join(out_dir, "k.csv"), index=False, header=False)
     streams_gdf["Musk_x"].to_csv(os.path.join(out_dir, "x.csv"), index=False, header=False)
 
-    print("Created muskingum parameters")
+    logger.info("Created muskingum parameters")
     return
 
 
@@ -659,7 +661,7 @@ def create_rapid_connect(network: gpd.GeoDataFrame, out_dir: str, id_field: str,
 
     pd.DataFrame(list_all).to_csv(os.path.join(out_dir, 'rapid_connect.csv'), index=False, header=None)
 
-    print("Created rapid_connect.csv")
+    logger.info("Created rapid_connect.csv")
     return
 
 
@@ -770,7 +772,7 @@ def create_weight_table(out_dir: str, basins_gdf: gpd.GeoDataFrame, nc_file: str
 
     out_name = 'weight_' + os.path.basename(os.path.splitext(nc_file)[0]) + '.csv'
     df.to_csv(os.path.join(out_dir, out_name), index=False)
-    print(f"Created {os.path.basename(out_name)}")
+    logger.info(f"Created {os.path.basename(out_name)}")
     return
 
 
@@ -810,37 +812,37 @@ def preprocess_for_rapid(stream_file: str, basins_file: str, nc_files: list, sav
     n_processes : int, optional
         Number of processes to use for multiprocessing. If None, will use all available cores
     """
-    print('Beginning session')
+    logger.info('Beginning session')
 
     # Dissolve streams and basins
-    print('Dissolving streams and basins')
+    logger.info('Dissolving streams and basins')
     streams_gdf = dissolve_streams(stream_file, save_dir=save_dir,
                                    stream_id_col=id_field, ds_id_col=ds_field, length_col=length_field,
                                    n_process=n_processes)
 
     # Create rapid preprocessing files
-    print('Creating RAPID files')
+    logger.info('Creating RAPID files')
     create_comid_lat_lon_z(streams_gdf, save_dir, id_field)
     create_riv_bas_id(streams_gdf, save_dir, ds_field, id_field)
     calculate_muskingum(streams_gdf, save_dir, k, x)
     create_rapid_connect(streams_gdf, save_dir, id_field, ds_field)
 
     # clear memory for large network processing
-    print('Clearing stream GDF from memory')
+    logger.info('Clearing stream GDF from memory')
     streams_gdf = None
 
     # dissolve basins
-    print('Dissolving basins')
+    logger.info('Dissolving basins')
     basins_gdf = dissolve_basins(basins_file, save_dir=save_dir, stream_id_col="streamID", n_process=n_processes)
 
     # Create weight table
-    print('Creating weight tables')
+    logger.info('Creating weight tables')
     # for nc_file in nc_files:
     #     create_weight_table(save_dir, basins_gdf, nc_file)
     with Pool(min(n_processes, len(nc_files))) as p:
         p.starmap(create_weight_table, [(save_dir, basins_gdf, nc_file) for nc_file in nc_files])
 
     # clear memory for large basin processing
-    print('Clearing basin GDF from memory')
+    logger.info('Clearing basin GDF from memory')
     basins_gdf = None
     return
