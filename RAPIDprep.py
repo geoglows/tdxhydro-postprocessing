@@ -1,4 +1,5 @@
 import datetime
+import glob
 import json
 import logging
 import os
@@ -825,6 +826,7 @@ def create_weight_table(out_dir: str, basins_gdf: gpd.GeoDataFrame, nc_file: str
                                    lon_each, lat_each]
 
     df.to_csv(os.path.join(out_dir, out_name), index=False)
+    logger.info(f"Finished weight table: {os.path.basename(out_name)}")
     return
 
 
@@ -850,31 +852,8 @@ def preprocess_for_rapid(stream_file: str, basins_file: str, nc_files: list, sav
         x (float): X parameter to use when generating Muskingum parameters. Defaults to 3.
         n_processes (int): Number of processes to use for multiprocessing. If None, will use all available cores. Defaults to 1.
 
-    Parameters
-    ----------
-    stream_file : string
-        Path to stream network file
-    basins_file : string
-        Path to the basins/catchments file
-    nc_files : list
-        List of paths to sample netCDF files for making weight tables
-    save_dir : string
-        Path to the output directory
-
-    id_field : string, optional
-        Field in network file that corresponds to the unique id of each stream segment
-    ds_field : string, optional
-        Field in network file that corresponds to the unique downstream id of each stream segment
-    length_field : string, optional
-        Field in network file that corresponds to the length of each stream segment
-
-    k : float, optional
-        K parameter to use when generating Muskingum parameters
-    x : float, optional
-        X parameter to use when generating Muskingum parameters
-
-    n_processes : int, optional
-        Number of processes to use for multiprocessing. If None, will use all available cores
+    Returns:
+        None
     """
     logger.info('Dissolving streams')
     # Dissolve streams and basins
@@ -907,3 +886,89 @@ def preprocess_for_rapid(stream_file: str, basins_file: str, nc_files: list, sav
     logger.info('Clearing basin GDF from memory')
     basins_gdf = None
     return
+
+
+def validate_rapid_directory(directory: str) -> bool:
+    """
+    Validate that the directory contains the necessary files for RAPID.
+
+    Args:
+        directory (str): Path to the directory to validate
+
+    Returns:
+        bool: True if valid, False if not
+    """
+    required_rapid_files = [
+        'rapid_connect.csv',
+        'riv_bas_id.csv',
+        'comid_lat_lon_z.csv',
+        'k.csv',
+        'kfac.csv',
+        'x.csv',
+    ]
+    expected_network_files = [
+        'adjoint_tree.json',
+        'adjoint_dissolved_tree.json',
+        'zero_length_fixes.csv',
+    ]
+    expected_geopackages = [
+        'TDX_streamnet_*_model.gpkg',
+        'TDX_streamnet_*_vis.gpkg',
+        'TDX_streamreach_basins_*_model.gpkg'
+    ]
+    # look for rapid files
+    missing_rapid_files = []
+    for file in required_rapid_files:
+        if not os.path.isfile(os.path.join(directory, file)):
+            missing_rapid_files.append(file)
+            logger.info(f'Missing RAPID input: {file}')
+
+    # look for weight tables
+    weight_tables = glob.glob(os.path.join(directory, 'weight_*.csv'))
+    if len(weight_tables) == 0:
+        logger.info('No weight tables found')
+    else:
+        logger.info(f'Found {len(weight_tables)} weight tables')
+
+    # look for network files
+    missing_network_files = []
+    for file in expected_network_files:
+        if not os.path.isfile(os.path.join(directory, file)):
+            missing_network_files.append(file)
+            logger.info(f'Missing network file: {file}')
+
+    # look for geopackages
+    missing_geopackages = []
+    for file in expected_geopackages:
+        if len(glob.glob(os.path.join(directory, file))) == 0:
+            missing_geopackages.append(file)
+            logger.info(f'Missing geopackage: {file}')
+
+    # summarize findings
+    if len(missing_rapid_files) != 0:
+        logger.info('Missing RAPID files:')
+        for file in missing_rapid_files:
+            logger.info(file)
+        logger.info('')
+    elif len(weight_tables) == 0:
+        logger.info('No weight tables found')
+        logger.info('')
+    elif len(missing_network_files) != 0:
+        logger.info('Missing network files:')
+        for file in missing_network_files:
+            logger.info(file)
+        logger.info('')
+    elif len(missing_geopackages) != 0:
+        logger.info('Missing geopackages:')
+        for file in missing_geopackages:
+            logger.info(file)
+        logger.info('')
+    else:
+        logger.info('All expected files found in this directory')
+
+    return np.logical_and(
+        len(missing_rapid_files) == 0,
+        len(weight_tables) > 0,
+        len(missing_network_files) == 0,
+        len(missing_geopackages) == 0
+    )
