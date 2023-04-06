@@ -21,8 +21,9 @@ if __name__ == '__main__':
     sample_grids = glob.glob('./era5_sample_grids/*.nc')
 
     region_sizes_df = pd.read_csv('network_data/stream_counts.csv').astype(int)
-    regions_to_skip = [
-    ]
+    regions_to_skip = [int(os.path.basename(d)) for d in glob.glob(os.path.join(outputs_path, '*'))]
+    logging.info(regions_to_skip)
+
     for streams_gpkg, basins_gpkg in zip(
             sorted(glob.glob(f'/tdxhydro/TDX_streamnet*.gpkg')),
             sorted(glob.glob(f'/tdxhydro/TDX_streamreach_basins*.gpkg'))
@@ -31,6 +32,7 @@ if __name__ == '__main__':
         region_number = int(os.path.basename(streams_gpkg).split('_')[2])
         n_streams = region_sizes_df.loc[region_sizes_df['region'] == region_number, 'count'].values[0]
         if region_number in regions_to_skip:
+            logging.info(f'Skipping region {region_number} - directory already exists')
             continue
         # create the output folder
         out_dir = os.path.join(outputs_path, f'{region_number}')
