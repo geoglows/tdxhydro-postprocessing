@@ -432,27 +432,23 @@ def apply_0_length_basin_fixes(basins_gdf: gpd.GeoDataFrame, zero_length_df: pd.
 
 def dissolve_streams(streams_gpkg: str, save_dir: str,
                      stream_id_col='LINKNO', ds_id_col: str = 'DSLINKNO', length_col: str = 'Length',
-                     n_process: int or None = None) -> gpd.GeoDataFrame:
+                     n_processes: int or None = None) -> gpd.GeoDataFrame:
     """"
     Ensure that shapely >= 2.0.1, otherwise you will get access violations
 
     Dissolves order 1 streams with their downstream order 2 segments (along with their associated catchments).
     Writes the dissolved networks and catchments to new gpkg files.
 
-    Parameters
-    ----------
-    streams_gpkg : string
-        Path to delineation network file
-    save_dir : string
-        Path to directory where dissolved network and catchments will be saved
-    stream_id_col : string, optional
-        Field in network file that corresponds to the unique id of each stream segment
-    ds_id_col : string, optional
-        Field in network file that corresponds to the unique downstream id of each stream segment
-    length_col : string, optional
-        Field in network file that corresponds to the length of each stream segment
-    n_process : int, optional
-        Number of processes to use for parallel processing
+    Args:
+        streams_gpkg (str): Path to delineation network file
+        save_dir (str): Path to directory where dissolved network and catchments will be saved
+        stream_id_col (str, optional): Field in network file that corresponds to the unique id of each stream segment
+        ds_id_col (str, optional): Field in network file that corresponds to the unique downstream id of each stream segment
+        length_col (str, optional): Field in network file that corresponds to the length of each stream segment
+        n_processes (int, optional): Number of processes to use for parallel processing
+
+    Returns:
+        gpd.GeoDataFrame: Dissolved streams
     """
     logger.info(datetime.datetime.now().strftime("%H:%M:%S"))
     streams_gdf = gpd.read_file(streams_gpkg)
@@ -487,7 +483,7 @@ def dissolve_streams(streams_gpkg: str, save_dir: str,
     with open(os.path.join(save_dir, 'adjoint_dissolves_tree.json'), 'w') as f:
         json.dump(adjoint_order_2_dict, f)
 
-    with Pool(n_process) as p:
+    with Pool(n_processes) as p:
         # Process each chunk of basin_gdf separately
         logger.info("Merging streams (model)")
         merged_streams_model = p.starmap(_merge_streams, [
@@ -524,16 +520,14 @@ def dissolve_basins(basins_gpkg: str, save_dir: str,
     Dissolves order 1 streams with their downstream order 2 segments (along with their associated catchments).
     Writes the dissolved networks and catchments to new gpkg files.
 
-    Parameters
-    ----------
-    basins_gpkg : string
-        Path to delineation network file
-    save_dir : string
-        Path to directory where dissolved network and catchments will be saved
-    stream_id_col : string, optional
-        Field in network file that corresponds to the unique id of each stream segment
-    n_process : int, optional
-        Number of processes to use for parallel processing
+    Args:
+        basins_gpkg (str): Path to delineation network file
+        save_dir (str): Path to directory where dissolved network and catchments will be saved
+        stream_id_col (str, optional): Field in network file that corresponds to the unique id of each stream segment
+        n_process (int, optional): Number of processes to use for parallel processing
+
+    Returns:
+        gpd.GeoDataFrame: Dissolved network
     """
     logger.info(datetime.datetime.now().strftime("%H:%M:%S"))
     basins_gdf = gpd.read_file(basins_gpkg)
@@ -579,7 +573,18 @@ def create_comid_lat_lon_z(streams_gdf: gpd.GeoDataFrame, out_dir: str, id_field
     """
     Assumes that geometry of the network are shapely LineStrings.
     If there are MultiLineStrings than something has gone wrong in the dissolving step.
+
+    Args:
+        streams_gdf (gpd.GeoDataFrame): GeoDataFrame of the streams
+        out_dir (str): Path to directory where comid_lat_lon_z.csv will be saved
+        id_field (str): Field in streams_gdf that corresponds to the unique id of each stream segment
+
+    Returns:
+        None
     """
+    logger.info("Creating comid_lat_lon_z.csv")
+    # todo sort the output df not gdf
+    # todo apply lambda to gdf only once
     temp_network = streams_gdf.sort_values(id_field)
     lats = temp_network.geometry.apply(lambda geom: geom.xy[1][0]).values
     lons = temp_network.geometry.apply(lambda geom: geom.xy[0][0]).values
@@ -590,7 +595,6 @@ def create_comid_lat_lon_z(streams_gdf: gpd.GeoDataFrame, out_dir: str, id_field
         "lon": lons,
         "z": 0
     }).to_csv(os.path.join(out_dir, "comid_lat_lon_z.csv"), index=False, header=True)
-    logger.info("Created comid_lat_lon_z.csv")
     return
 
 
@@ -598,10 +602,21 @@ def create_riv_bas_id(streams_gdf: gpd.GeoDataFrame, out_dir: str, downstream_fi
     """
     Creates riv_bas_id.csv. Network is sorted to match the outputs of the ArcGIS tool this was designed from, 
     and it is likely that the second element in the list for ascending may be True without impacting RAPID
+
+    Args:
+        streams_gdf (gpd.GeoDataFrame):
+        out_dir (str):
+        downstream_field (str):
+        id_field (str):
+
+    Returns:
+        None
     """
+    logger.info("Creating riv_bas_id.csv")
+
+    # todo sort the output df not gdf
     temp_network = streams_gdf.sort_values([downstream_field, id_field], ascending=[False, False])
     temp_network[id_field].to_csv(os.path.join(out_dir, "riv_bas_id.csv"), index=False, header=False)
-    logger.info("Created riv_bas_id.csv")
     return
 
 
@@ -609,6 +624,9 @@ def calculate_muskingum(streams_gdf: gpd.GeoDataFrame, out_dir: str, k: float, x
     """
     Calculates muskingum parameters by using pyproj's Geod.geometry_length. Note that the network must be in EPSG 4326
     """
+    logger.info("Creating muskingum parameters")
+
+    # todo split into two functions, one for calculating the parameters and one for writing them to csv
     streams_gdf["LENGTH_GEO"] = streams_gdf.geometry.apply(_calculate_geodesic_length)
     streams_gdf["Musk_kfac"] = streams_gdf["LENGTH_GEO"] * 3600
     streams_gdf["Musk_k"] = streams_gdf["Musk_kfac"] * k
@@ -617,8 +635,6 @@ def calculate_muskingum(streams_gdf: gpd.GeoDataFrame, out_dir: str, k: float, x
     streams_gdf["Musk_kfac"].to_csv(os.path.join(out_dir, "kfac.csv"), index=False, header=False)
     streams_gdf["Musk_k"].to_csv(os.path.join(out_dir, "k.csv"), index=False, header=False)
     streams_gdf["Musk_x"].to_csv(os.path.join(out_dir, "x.csv"), index=False, header=False)
-
-    logger.info("Created muskingum parameters")
     return
 
 
@@ -636,6 +652,27 @@ def _calculate_geodesic_length(line) -> float:
 
 
 def create_rapid_connect(network: gpd.GeoDataFrame, out_dir: str, id_field: str, downstream_field: str) -> None:
+    """
+    Creates rapid_connect.csv
+
+    todo document the columns of the csv
+    rapid_connect is a csv file that contains the following columns:
+    HydroID: the HydroID of the stream
+    NextDownID: the HydroID of the next downstream stream
+    CountUpstreamID: the number of upstream streams
+    UpstreamID: the HydroID of the upstream streams
+
+    Args:
+        network:
+        out_dir:
+        id_field:
+        downstream_field:
+
+    Returns:
+
+    """
+    logger.info("Creating rapid_connect.csv")
+
     list_all = []
     max_count_Upstream = 0
 
@@ -661,12 +698,28 @@ def create_rapid_connect(network: gpd.GeoDataFrame, out_dir: str, id_field: str,
                 row[col_name] = 0
 
     pd.DataFrame(list_all).to_csv(os.path.join(out_dir, 'rapid_connect.csv'), index=False, header=None)
-
-    logger.info("Created rapid_connect.csv")
     return
 
 
 def create_weight_table(out_dir: str, basins_gdf: gpd.GeoDataFrame, nc_file: str, basin_id: str = 'streamID') -> None:
+    """
+    Creates weight table for a given netcdf file named after the netcdf file
+
+    todo document the columns of the csv
+    the columns of the weight table are
+
+    Args:
+        out_dir:
+        basins_gdf:
+        nc_file:
+        basin_id:
+
+    Returns:
+
+    """
+    out_name = 'weight_' + os.path.basename(os.path.splitext(nc_file)[0]) + '.csv'
+    logger.info(f"Creating weight table: {os.path.basename(out_name)}")
+
     # Obtain catchment extent
     extent = basins_gdf.total_bounds
 
@@ -771,9 +824,7 @@ def create_weight_table(out_dir: str, basins_gdf: gpd.GeoDataFrame, nc_file: str
                 df.loc[len(df)] = [streamID_unique, area_geo_each, index_lon_each, index_lat_each, num_ind_points,
                                    lon_each, lat_each]
 
-    out_name = 'weight_' + os.path.basename(os.path.splitext(nc_file)[0]) + '.csv'
     df.to_csv(os.path.join(out_dir, out_name), index=False)
-    logger.info(f"Created {os.path.basename(out_name)}")
     return
 
 
@@ -785,7 +836,19 @@ def preprocess_for_rapid(stream_file: str, basins_file: str, nc_files: list, sav
                          k: float = 0.35, x: float = 3,
                          n_processes: int or None = 1) -> None:
     """
-    Master function for preprocessing stream delineations and catchments and creating RAPID inputs. 
+    Master function for preprocessing stream delineations and catchments and creating RAPID inputs.
+
+    Args:
+        stream_file (str): Path to stream network file
+        basins_file (str): Path to the basins/catchments file
+        nc_files (list): List of paths to sample netCDF files for making weight tables
+        save_dir (str): Path to the output directory
+        id_field (str): Field in network file that corresponds to the unique id of each stream segment. Defaults to 'LINKNO'.
+        ds_field (str): Field in network file that corresponds to the unique downstream id of each stream segment. Defaults to 'DSLINKNO'.
+        length_field (str): Field in network file that corresponds to the length of each stream segment. Defaults to 'Length'.
+        k (float): K parameter to use when generating Muskingum parameters. Defaults to 0.35.
+        x (float): X parameter to use when generating Muskingum parameters. Defaults to 3.
+        n_processes (int): Number of processes to use for multiprocessing. If None, will use all available cores. Defaults to 1.
 
     Parameters
     ----------
@@ -815,9 +878,8 @@ def preprocess_for_rapid(stream_file: str, basins_file: str, nc_files: list, sav
     """
     logger.info('Dissolving streams')
     # Dissolve streams and basins
-    streams_gdf = dissolve_streams(stream_file, save_dir=save_dir,
-                                   stream_id_col=id_field, ds_id_col=ds_field, length_col=length_field,
-                                   n_process=n_processes)
+    streams_gdf = dissolve_streams(stream_file, save_dir=save_dir, stream_id_col=id_field, ds_id_col=ds_field,
+                                   length_col=length_field, n_processes=n_processes)
 
     # Create rapid preprocessing files
     logger.info('Creating RAPID files')
