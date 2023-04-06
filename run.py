@@ -2,6 +2,7 @@ import datetime
 import glob
 import logging
 import os
+import shutil
 
 import pandas as pd
 
@@ -69,6 +70,7 @@ if __name__ == '__main__':
         except Exception as e:
             logging.info('-----ERROR')
             logging.info(e)
+            shutil.rmtree(out_dir)
 
         logging.info('Done')
         logging.info('')
