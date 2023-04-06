@@ -36,6 +36,23 @@ if __name__ == '__main__':
         if region_number in regions_to_skip:
             logging.info(f'Skipping region {region_number} - directory already exists')
             continue
+
+        # Cap the number of streams to process
+        if n_streams > 300_000:
+            logging.info(f'Skipping region {region_number} - too many streams')
+            continue
+
+        # scale the number of processes based on the number of streams to process
+        n_processes = 10
+        # if n_streams >= 100_000:
+        #     n_processes = 10
+        # if n_streams >= 200_000:
+        #     n_processes = 6
+        # if n_streams >= 300_000:
+        #     n_processes = 4
+        # if n_streams >= 500_000:
+        #     n_processes = 2
+
         # create the output folder
         out_dir = os.path.join(outputs_path, f'{region_number}')
         if not os.path.exists(out_dir):
@@ -47,17 +64,7 @@ if __name__ == '__main__':
         logging.info(basins_gpkg)
         logging.info(region_number)
         logging.info(out_dir)
-
-        # scale the number of processes based on the number of streams to process
-        n_processes = 12
-        if n_streams >= 100_000:
-            n_processes = 12
-        if n_streams >= 200_000:
-            n_processes = 6
-        if n_streams >= 300_000:
-            n_processes = 4
-        if n_streams >= 500_000:
-            n_processes = 2
+        logging.info(f'Number of processes {n_processes}')
 
         try:
             preprocess_for_rapid(
