@@ -22,6 +22,7 @@ if __name__ == '__main__':
 
     region_sizes_df = pd.read_csv('network_data/stream_counts.csv').astype(int)
     regions_to_skip = [int(os.path.basename(d)) for d in glob.glob(os.path.join(outputs_path, '*'))]
+    regions_to_skip = regions_to_skip + []
     logging.info(regions_to_skip)
 
     for streams_gpkg, basins_gpkg in zip(
