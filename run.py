@@ -33,7 +33,7 @@ if __name__ == '__main__':
         if region_sizes_df.loc[region_sizes_df['region'] == region_number, 'count'].values[0] >= 300_000:
             continue
 
-        out_dir = os.path.join(outputs_path, region_number)
+        out_dir = os.path.join(outputs_path, f'{region_number}')
         if not os.path.exists(out_dir):
             os.makedirs(out_dir)
 
