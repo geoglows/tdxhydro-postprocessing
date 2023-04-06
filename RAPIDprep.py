@@ -34,6 +34,7 @@ hydrobasin_cache = {
 # set up logging
 logger = logging.getLogger(__name__)
 
+
 ################################################################
 #   Dissolving functions:
 ################################################################
@@ -812,10 +813,8 @@ def preprocess_for_rapid(stream_file: str, basins_file: str, nc_files: list, sav
     n_processes : int, optional
         Number of processes to use for multiprocessing. If None, will use all available cores
     """
-    logger.info('Beginning session')
-
+    logger.info('Dissolving streams')
     # Dissolve streams and basins
-    logger.info('Dissolving streams and basins')
     streams_gdf = dissolve_streams(stream_file, save_dir=save_dir,
                                    stream_id_col=id_field, ds_id_col=ds_field, length_col=length_field,
                                    n_process=n_processes)

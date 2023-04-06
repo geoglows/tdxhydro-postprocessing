@@ -1,8 +1,11 @@
-from RAPIDprep import preprocess_for_rapid
-import glob
-import os
 import datetime
+import glob
 import logging
+import os
+
+import pandas as pd
+
+from RAPIDprep import preprocess_for_rapid
 
 logging.basicConfig(
     level=logging.INFO,
@@ -13,22 +16,24 @@ logging.basicConfig(
 )
 
 if __name__ == '__main__':
-    rapid_outputs = '/tdxprocessed/rapidio'
+    outputs_path = '/tdxprocessed'
 
     sample_grids = glob.glob('./era5_sample_grids/*.nc')
 
-    numbers_to_skip = [
-
+    region_sizes_df = pd.read_csv('network_data/stream_counts.csv').astype(int)
+    regions_to_skip = [
     ]
     for streams_gpkg, basins_gpkg in zip(
             sorted(glob.glob(f'/tdxhydro/TDX_streamnet*.gpkg')),
             sorted(glob.glob(f'/tdxhydro/TDX_streamreach_basins*.gpkg'))
     ):
-        region_number = os.path.basename(streams_gpkg).split('_')[2]
-        if region_number in numbers_to_skip:
+        region_number = int(os.path.basename(streams_gpkg).split('_')[2])
+        if region_number in regions_to_skip:
+            continue
+        if region_sizes_df.loc[region_sizes_df['region'] == region_number, 'count'].values[0] >= 300_000:
             continue
 
-        out_dir = os.path.join(rapid_outputs, region_number)
+        out_dir = os.path.join(outputs_path, region_number)
         if not os.path.exists(out_dir):
             os.makedirs(out_dir)
 
