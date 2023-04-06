@@ -58,13 +58,17 @@ if __name__ == '__main__':
         if n_streams >= 500_000:
             n_processes = 2
 
-        preprocess_for_rapid(
-            streams_gpkg,
-            basins_gpkg,
-            sample_grids,
-            out_dir,
-            n_processes=n_processes,
-        )
+        try:
+            preprocess_for_rapid(
+                streams_gpkg,
+                basins_gpkg,
+                sample_grids,
+                out_dir,
+                n_processes=n_processes,
+            )
+        except Exception as e:
+            logging.info('-----ERROR')
+            logging.info(e)
 
         logging.info('Done')
         logging.info('')
