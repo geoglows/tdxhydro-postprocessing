@@ -946,6 +946,8 @@ def validate_rapid_directory(directory: str):
 
         if len(weight_tables) == 0:
             logger.info('No weight tables found')
+        else:
+            logger.info(f'Found {len(weight_tables)} weight tables')
 
         if len(missing_network_files) != 0:
             logger.info('Missing network files:')
