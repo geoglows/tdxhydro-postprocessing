@@ -433,7 +433,7 @@ def apply_0_length_basin_fixes(basins_gdf: gpd.GeoDataFrame, zero_length_df: pd.
 
 def dissolve_streams(streams_gpkg: str, save_dir: str,
                      stream_id_col='LINKNO', ds_id_col: str = 'DSLINKNO', length_col: str = 'Length',
-                     n_processes: int or None = None) -> gpd.GeoDataFrame:
+                     mp_dissolve: bool = True, n_processes: int or None = None) -> gpd.GeoDataFrame:
     """"
     Ensure that shapely >= 2.0.1, otherwise you will get access violations
 
@@ -446,6 +446,7 @@ def dissolve_streams(streams_gpkg: str, save_dir: str,
         stream_id_col (str, optional): Field in network file that corresponds to the unique id of each stream segment
         ds_id_col (str, optional): Field in network file that corresponds to the unique downstream id of each stream segment
         length_col (str, optional): Field in network file that corresponds to the length of each stream segment
+        mp_dissolve (bool, optional): Whether to use multiprocessing to dissolve streams
         n_processes (int, optional): Number of processes to use for parallel processing
 
     Returns:
@@ -845,8 +846,8 @@ def create_weight_table(out_dir: str, basins_gdf: gpd.GeoDataFrame, nc_file: str
 ################################################################
 def preprocess_for_rapid(stream_file: str, basins_file: str, nc_files: list, save_dir: str,
                          id_field: str = 'LINKNO', ds_field: str = 'DSLINKNO', length_field: str = 'Length',
-                         k: float = 0.35, x: float = 3, n_processes: int or None = 1,
-                         mp_streams: bool = True, mp_basins: bool = True) -> None:
+                         k: float = 0.35, x: float = 3,
+                         n_processes: int or None = 1, mp_streams: bool = True, mp_basins: bool = True) -> None:
     """
     Master function for preprocessing stream delineations and catchments and creating RAPID inputs.
 
@@ -869,8 +870,9 @@ def preprocess_for_rapid(stream_file: str, basins_file: str, nc_files: list, sav
     """
     logger.info('Dissolving streams')
     # Dissolve streams and basins
-    streams_gdf = dissolve_streams(stream_file, save_dir=save_dir, stream_id_col=id_field, ds_id_col=ds_field,
-                                   length_col=length_field, n_processes=n_processes)
+    streams_gdf = dissolve_streams(stream_file, save_dir=save_dir,
+                                   stream_id_col=id_field, ds_id_col=ds_field, length_col=length_field,
+                                   mp_dissolve=mp_streams, n_processes=n_processes * 2)
 
     # Create rapid preprocessing files
     logger.info('Creating RAPID files')
