@@ -513,7 +513,7 @@ def dissolve_streams(streams_gpkg: str, save_dir: str,
     return streams_gdf
 
 
-def dissolve_basins(basins_gpkg: str, save_dir: str,
+def dissolve_basins(basins_gpkg: str, save_dir: str, mp_dissolve: bool = True,
                     stream_id_col='LINKNO', n_process: int or None = None) -> gpd.GeoDataFrame:
     """"
     Ensure that shapely >= 2.0.1, otherwise you will get access violations
@@ -524,6 +524,7 @@ def dissolve_basins(basins_gpkg: str, save_dir: str,
     Args:
         basins_gpkg (str): Path to delineation network file
         save_dir (str): Path to directory where dissolved network and catchments will be saved
+        mp_dissolve (bool, optional): Whether to use multiprocessing to dissolve the network
         stream_id_col (str, optional): Field in network file that corresponds to the unique id of each stream segment
         n_process (int, optional): Number of processes to use for parallel processing
 
@@ -547,21 +548,29 @@ def dissolve_basins(basins_gpkg: str, save_dir: str,
         basins_gdf = apply_0_length_basin_fixes(basins_gdf, zero_length_fixes_df,
                                                 stream_id_col=stream_id_col, buffer_size=.001)
 
-    with Pool(n_process) as p:
-        # Process each chunk of basin_gdf separately
-        logger.info("Merging basins")
-        merged_basins = p.starmap(_merge_basins, [(basins_gdf, adjoint_dict[rivid]) for rivid in adjoint_dict.keys()])
+    if mp_dissolve:
+        with Pool(n_process) as p:
+            # Process each chunk of basin_gdf separately
+            logger.info("Merging basins")
+            merged_basins = p.starmap(_merge_basins,
+                                      [(basins_gdf, adjoint_dict[rivid]) for rivid in adjoint_dict.keys()])
 
-    # concat the merged features
-    logger.info("Concatenating dissolved features")
-    # drop the basins that were merged
-    basins_gdf = basins_gdf[~basins_gdf[stream_id_col].isin(all_merged_basins)]
-    merged_basins = pd.concat(merged_basins)
-    basins_gdf = pd.concat([basins_gdf, merged_basins])
+        logger.info("Concatenating dissolved features")
+        # drop the basins that were merged
+        basins_gdf = basins_gdf[~basins_gdf[stream_id_col].isin(all_merged_basins)]
+        merged_basins = pd.concat(merged_basins)
+        basins_gdf = pd.concat([basins_gdf, merged_basins])
+    else:
+        for rivid in adjoint_dict.keys():
+            merged_basins = _merge_basins(basins_gdf, adjoint_dict[rivid])
+            basins_gdf = pd.concat([
+                basins_gdf[~basins_gdf[stream_id_col].isin(adjoint_dict[rivid])],
+                merged_basins
+            ])
     merged_basins = None
 
     # Save the files
-    logger.info('Writing geopackages')
+    logger.info('Writing modeled basins geopackage')
     basins_gdf.to_file(os.path.join(save_dir, os.path.basename(os.path.splitext(basins_gpkg)[0]) + '_model.gpkg'))
 
     return basins_gdf
@@ -876,7 +885,8 @@ def preprocess_for_rapid(stream_file: str, basins_file: str, nc_files: list, sav
 
     # dissolve basins
     logger.info('Dissolving basins')
-    basins_gdf = dissolve_basins(basins_file, save_dir=save_dir, stream_id_col="streamID", n_process=n_processes)
+    basins_gdf = dissolve_basins(basins_file, mp_dissolve=mp_basins,
+                                 save_dir=save_dir, stream_id_col="streamID", n_process=n_processes)
 
     # Create weight table
     logger.info('Creating weight tables')

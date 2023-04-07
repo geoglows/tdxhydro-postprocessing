@@ -14,4 +14,4 @@ if __name__ == '__main__':
     with Pool(12) as p:
         results = p.map(count_streams, sorted(glob.glob('/Users/rchales/Data/TDXHydro/TDX_streamnet*')))
     results = np.array(results)
-    pd.DataFrame(results, columns=['region', 'count']).to_csv('network_data/stream_counts.csv', index=False)
+    pd.DataFrame(results, columns=['region', 'count']).to_csv('network_data/stream_counts_source.csv', index=False)

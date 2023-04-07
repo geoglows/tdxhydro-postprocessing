@@ -16,12 +16,15 @@ logging.basicConfig(
     filemode='w'
 )
 
-if __name__ == '__main__':
-    outputs_path = '/tdxprocessed'
+outputs_path = '/tdxrapid'
+MP_STREAMS = True
+MP_BASINS = True
+N_PROCESSES = 4
 
+if __name__ == '__main__':
     sample_grids = glob.glob('./era5_sample_grids/*.nc')
 
-    region_sizes_df = pd.read_csv('network_data/stream_counts.csv').astype(int)
+    region_sizes_df = pd.read_csv('network_data/stream_counts_source.csv').astype(int)
     regions_to_skip = [int(os.path.basename(d)) for d in glob.glob(os.path.join(outputs_path, '*'))]
     regions_to_skip = regions_to_skip + []
     logging.info(regions_to_skip)
@@ -43,15 +46,12 @@ if __name__ == '__main__':
             continue
 
         # scale the number of processes based on the number of streams to process
-        n_processes = 10
-        # if n_streams >= 100_000:
-        #     n_processes = 10
-        # if n_streams >= 200_000:
-        #     n_processes = 6
-        # if n_streams >= 300_000:
-        #     n_processes = 4
-        # if n_streams >= 500_000:
+        # if n_streams >= 600_000:
         #     n_processes = 2
+        # elif n_streams >= 400_000:
+        #     n_processes = 4
+        # elif n_streams >= 250_000:
+        #     n_processes = 6
 
         # create the output folder
         out_dir = os.path.join(outputs_path, f'{region_number}')
@@ -64,7 +64,9 @@ if __name__ == '__main__':
         logging.info(basins_gpkg)
         logging.info(region_number)
         logging.info(out_dir)
-        logging.info(f'Number of processes {n_processes}')
+        logging.info(f'Number of processes {N_PROCESSES}')
+        logging.info(f'Use multiprocessing for streams: {MP_STREAMS}')
+        logging.info(f'Use multiprocessing for basins: {MP_BASINS}')
 
         try:
             preprocess_for_rapid(
@@ -72,7 +74,9 @@ if __name__ == '__main__':
                 basins_gpkg,
                 sample_grids,
                 out_dir,
-                n_processes=n_processes,
+                n_processes=N_PROCESSES,
+                mp_streams=MP_STREAMS,
+                mp_basins=MP_BASINS
             )
         except Exception as e:
             logging.info('-----ERROR')
