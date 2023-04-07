@@ -41,9 +41,9 @@ if __name__ == '__main__':
             continue
 
         # Cap the number of streams to process
-        if n_streams > 300_000:
-            logging.info(f'Skipping region {region_number} - too many streams')
-            continue
+        # if n_streams > 300_000:
+        #     logging.info(f'Skipping region {region_number} - too many streams')
+        #     continue
 
         # scale the number of processes based on the number of streams to process
         # if n_streams >= 600_000:
