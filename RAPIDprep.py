@@ -971,7 +971,7 @@ def validate_rapid_directory(directory: str) -> bool:
     else:
         logger.info('All expected files found in this directory')
 
-    return np.logical_and([
+    return all([
         len(missing_rapid_files) == 0,
         len(weight_tables) > 0,
         len(missing_network_files) == 0,
