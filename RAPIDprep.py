@@ -929,29 +929,7 @@ def validate_rapid_directory(directory: str):
     missing_geopackages = [f for f in expected_geopackages if len(glob.glob(os.path.join(directory, f))) == 0]
 
     # summarize findings
-    logger.info(f'Validating RAPID directory: {directory}')
-    if len(missing_rapid_files) != 0:
-        logger.info('Missing RAPID files:')
-        for file in missing_rapid_files:
-            logger.info(file)
-
-    if len(weight_tables) == 0:
-        logger.info('No weight tables found')
-    if len(weight_tables) > 0:
-        logger.info(f'Found {len(weight_tables)} weight tables')
-        for w in weight_tables:
-            logger.info(f'{os.path.basename(w)}')
-
-    if len(missing_network_files) != 0:
-        logger.info('Missing network files:')
-        for file in missing_network_files:
-            logger.info(file)
-
-    if len(missing_geopackages) != 0:
-        logger.info('Missing geopackages:')
-        for file in missing_geopackages:
-            logger.info(file)
-
+    logger.info(f'Validating directory: {directory}')
     if all([
         len(missing_rapid_files) == 0,
         len(weight_tables) > 0,
@@ -959,8 +937,25 @@ def validate_rapid_directory(directory: str):
         len(missing_geopackages) == 0
     ]):
         logger.info('All expected files found in this directory')
+        logger.info(f'Found {len(weight_tables)} weight tables')
     else:
-        logger.info('Missing files in this directory')
+        if len(missing_rapid_files) != 0:
+            logger.info('Missing RAPID files:')
+            for file in missing_rapid_files:
+                logger.info(file)
+
+        if len(weight_tables) == 0:
+            logger.info('No weight tables found')
+
+        if len(missing_network_files) != 0:
+            logger.info('Missing network files:')
+            for file in missing_network_files:
+                logger.info(file)
+
+        if len(missing_geopackages) != 0:
+            logger.info('Missing geopackages:')
+            for file in missing_geopackages:
+                logger.info(file)
 
     logger.info('')
     return
