@@ -891,15 +891,12 @@ def preprocess_for_rapid(stream_file: str, basins_file: str, nc_files: list, sav
     return
 
 
-def validate_rapid_directory(directory: str) -> bool:
+def validate_rapid_directory(directory: str):
     """
     Validate that the directory contains the necessary files for RAPID.
 
     Args:
         directory (str): Path to the directory to validate
-
-    Returns:
-        bool: True if valid, False if not
     """
     required_rapid_files = [
         'rapid_connect.csv',
@@ -911,7 +908,7 @@ def validate_rapid_directory(directory: str) -> bool:
     ]
     expected_network_files = [
         'adjoint_tree.json',
-        'adjoint_dissolved_tree.json',
+        'adjoint_dissolves_tree.json',
         'zero_length_fixes.csv',
     ]
     expected_geopackages = [
@@ -919,61 +916,52 @@ def validate_rapid_directory(directory: str) -> bool:
         'TDX_streamnet_*_vis.gpkg',
         'TDX_streamreach_basins_*_model.gpkg'
     ]
-    # look for rapid files
-    missing_rapid_files = []
-    for file in required_rapid_files:
-        if not os.path.isfile(os.path.join(directory, file)):
-            missing_rapid_files.append(file)
-            logger.info(f'Missing RAPID input: {file}')
+    # Look for RAPID files
+    missing_rapid_files = [f for f in required_rapid_files if not os.path.isfile(os.path.join(directory, f))]
 
     # look for weight tables
     weight_tables = glob.glob(os.path.join(directory, 'weight_*.csv'))
-    if len(weight_tables) == 0:
-        logger.info('No weight tables found')
-    else:
-        logger.info(f'Found {len(weight_tables)} weight tables')
-        for w in weight_tables:
-            logger.info(f'{os.path.basename(w)}')
 
-    # look for network files
-    missing_network_files = []
-    for file in expected_network_files:
-        if not os.path.isfile(os.path.join(directory, file)):
-            missing_network_files.append(file)
-            logger.info(f'Missing network file: {file}')
+    # look for dissolved support files
+    missing_network_files = [f for f in expected_network_files if not os.path.isfile(os.path.join(directory, f))]
 
     # look for geopackages
-    missing_geopackages = []
-    for file in expected_geopackages:
-        if len(glob.glob(os.path.join(directory, file))) == 0:
-            missing_geopackages.append(file)
-            logger.info(f'Missing geopackage: {file}')
+    missing_geopackages = [f for f in expected_geopackages if len(glob.glob(os.path.join(directory, f))) == 0]
 
     # summarize findings
+    logger.info(f'Validating RAPID directory: {directory}')
     if len(missing_rapid_files) != 0:
         logger.info('Missing RAPID files:')
         for file in missing_rapid_files:
             logger.info(file)
-        logger.info('')
-    elif len(weight_tables) == 0:
+
+    if len(weight_tables) == 0:
         logger.info('No weight tables found')
-        logger.info('')
-    elif len(missing_network_files) != 0:
+    if len(weight_tables) > 0:
+        logger.info(f'Found {len(weight_tables)} weight tables')
+        for w in weight_tables:
+            logger.info(f'{os.path.basename(w)}')
+
+    if len(missing_network_files) != 0:
         logger.info('Missing network files:')
         for file in missing_network_files:
             logger.info(file)
-        logger.info('')
-    elif len(missing_geopackages) != 0:
+
+    if len(missing_geopackages) != 0:
         logger.info('Missing geopackages:')
         for file in missing_geopackages:
             logger.info(file)
-        logger.info('')
-    else:
-        logger.info('All expected files found in this directory')
 
-    return all([
+    if all([
         len(missing_rapid_files) == 0,
         len(weight_tables) > 0,
         len(missing_network_files) == 0,
         len(missing_geopackages) == 0
-    ])
+    ]):
+        logger.info('All expected files found in this directory')
+    else:
+        logger.info('Missing files in this directory')
+
+    logger.info('')
+    return
+
