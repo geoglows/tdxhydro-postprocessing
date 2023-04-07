@@ -706,6 +706,7 @@ def create_weight_table(out_dir: str, basins_gdf: gpd.GeoDataFrame, nc_file: str
     """
     Creates weight table for a given netcdf file named after the netcdf file
 
+    todo rewrite this function to be more memory and speed efficient
     todo document the columns of the csv
     the columns of the weight table are
 
@@ -835,8 +836,8 @@ def create_weight_table(out_dir: str, basins_gdf: gpd.GeoDataFrame, nc_file: str
 ################################################################
 def preprocess_for_rapid(stream_file: str, basins_file: str, nc_files: list, save_dir: str,
                          id_field: str = 'LINKNO', ds_field: str = 'DSLINKNO', length_field: str = 'Length',
-                         k: float = 0.35, x: float = 3,
-                         n_processes: int or None = 1) -> None:
+                         k: float = 0.35, x: float = 3, n_processes: int or None = 1,
+                         mp_streams: bool = True, mp_basins: bool = True) -> None:
     """
     Master function for preprocessing stream delineations and catchments and creating RAPID inputs.
 
@@ -851,6 +852,8 @@ def preprocess_for_rapid(stream_file: str, basins_file: str, nc_files: list, sav
         k (float): K parameter to use when generating Muskingum parameters. Defaults to 0.35.
         x (float): X parameter to use when generating Muskingum parameters. Defaults to 3.
         n_processes (int): Number of processes to use for multiprocessing. If None, will use all available cores. Defaults to 1.
+        mp_streams (bool): Whether to use multiprocessing for stream processing. Defaults to True.
+        mp_basins (bool): Whether to use multiprocessing for basin processing. Defaults to True.
 
     Returns:
         None
@@ -929,6 +932,8 @@ def validate_rapid_directory(directory: str) -> bool:
         logger.info('No weight tables found')
     else:
         logger.info(f'Found {len(weight_tables)} weight tables')
+        for w in weight_tables:
+            logger.info(f'{os.path.basename(w)}')
 
     # look for network files
     missing_network_files = []
