@@ -12,5 +12,5 @@ logging.basicConfig(
     filemode='w'
 )
 
-for d in glob.glob(os.path.join('/tdxprocessed', '*')):
+for d in glob.glob(os.path.join('/tdxrapid', '*')):
     validate_rapid_directory(d)
