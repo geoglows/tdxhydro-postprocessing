@@ -8,9 +8,6 @@ import pandas as pd
 
 from RAPIDprep import dissolve_streams_and_basins, prepare_rapid_inputs, make_weight_table
 
-pd.options.display.width = 100
-pd.options.display.max_colwidth = 50
-
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s %(levelname)s %(message)s',
@@ -26,7 +23,6 @@ N_PROCESSES = 6
 id_field = 'LINKNO'
 ds_field = 'DSLINKNO'
 length_field = 'Length'
-
 
 if __name__ == '__main__':
     sample_grids = glob.glob('./era5_sample_grids/*.nc')
@@ -89,7 +85,7 @@ if __name__ == '__main__':
                              ds_field=ds_field, )
 
         for sample_grid in sample_grids:
-            make_weight_table(sample_grid, out_dir)
+            make_weight_table(sample_grid, out_dir, n_workers=N_PROCESSES)
 
         logging.info('Done')
         logging.info('')

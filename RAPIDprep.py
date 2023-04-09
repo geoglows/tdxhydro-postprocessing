@@ -4,22 +4,18 @@ import json
 import logging
 import os
 import queue
-import warnings
 from collections.abc import Iterable
 from itertools import chain
 from multiprocessing import Pool
 
 import dask.dataframe as dd
 import geopandas as gpd
-import netCDF4 as nc
 import numpy as np
 import pandas as pd
 import shapely.geometry as sg
 import xarray as xr
 from pyproj import Geod
-from shapely import Point, MultiPoint
 from shapely.geometry import box
-from shapely.ops import voronoi_diagram
 
 hydrobasin_cache = {
     1020000010: 11, 1020011530: 12, 1020018110: 13, 1020021940: 14, 1020027430: 15, 1020034170: 16,
@@ -40,6 +36,7 @@ logger = logging.getLogger(__name__)
 
 pd.options.display.width = 100
 pd.options.display.max_colwidth = 50
+
 
 ################################################################
 #   Dissolving functions:
@@ -662,7 +659,7 @@ def _calculate_geodesic_length(line) -> float:
     length = geod.geometry_length(line) / 1000  # To convert to km
 
     # This is for the outliers that have 0 length
-    if length < 0.00000000001:
+    if length < 0.0000001:
         length = 0.001
     return length
 
@@ -717,146 +714,16 @@ def create_rapid_connect(network: gpd.GeoDataFrame, out_dir: str, id_field: str,
     return
 
 
-def create_weight_table(out_dir: str, basins_gdf: gpd.GeoDataFrame, nc_file: str, basin_id: str = 'streamID') -> None:
-    """
-    Creates weight table for a given netcdf file named after the netcdf file
-
-    todo rewrite this function to be more memory and speed efficient
-    todo document the columns of the csv
-    the columns of the weight table are
-
-    Args:
-        out_dir:
-        basins_gdf:
-        nc_file:
-        basin_id:
-
-    Returns:
-
-    """
-    out_name = 'weight_' + os.path.basename(os.path.splitext(nc_file)[0]) + '.csv'
+def make_weight_table(lsm_sample: str, out_dir: str, n_workers: int = 1, ):
+    out_name = 'weight_' + os.path.basename(os.path.splitext(lsm_sample)[0]) + '.csv'
     logger.info(f"Creating weight table: {os.path.basename(out_name)}")
 
-    # Obtain catchment extent
-    extent = basins_gdf.total_bounds
-
-    data_nc = nc.Dataset(nc_file)
-
-    # Obtain geographic coordinates
-    variables_list = data_nc.variables.keys()
-    lat_var = 'lat'
-    if 'latitude' in variables_list:
-        lat_var = 'latitude'
-    lon_var = 'lon'
-    if 'longitude' in variables_list:
-        lon_var = 'longitude'
-    lon = (data_nc.variables[lon_var][:] + 180) % 360 - 180  # convert [0, 360] to [-180, 180]
-    lat = data_nc.variables[lat_var][:]
-
-    data_nc.close()
-
-    # Create a buffer
-    buffer = 2 * max(abs(lat[0] - lat[1]), abs(lon[0] - lon[1]))
-
-    # Extract the lat and lon within buffered extent (buffer with 2* interval degree)
-    lat0 = lat[(lat >= (extent[1] - buffer)) & (lat <= (extent[3] + buffer))]
-    lon0 = lon[(lon >= (extent[0] - buffer)) & (lon <= (extent[2] + buffer))]
-
-    # Create a list of geographic coordinate pairs
-    pointGeometryList = [Point(lon, lat) for lat in lat0 for lon in lon0]
-
-    # Create Thiessen polygon based on the point feature
-    regions = voronoi_diagram(MultiPoint(pointGeometryList))
-
-    lon_list = []
-    lat_list = []
-
-    for point in pointGeometryList:
-        lon_list.append(point.x)
-        lat_list.append(point.y)
-
-    # Supress the warning about finding the centroid of a geographic crs 
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        polygons_gdf = gpd.GeoDataFrame(geometry=[region for region in regions.geoms], crs=4326)
-        polygons_gdf['POINT_X'] = polygons_gdf.geometry.centroid.x
-        polygons_gdf['POINT_Y'] = polygons_gdf.geometry.centroid.y
-
-    intersect = gpd.overlay(basins_gdf, polygons_gdf, how='intersection')
-
-    intersect['AREA_GEO'] = intersect['geometry'].to_crs({'proj': 'cea'}).area
-
-    area_arr = pd.DataFrame(data={
-        basin_id: intersect[basin_id].values,
-        'POINT_X': intersect['POINT_X'].values,
-        'POINT_Y': intersect['POINT_Y'].values,
-        'AREA_GEO': intersect['AREA_GEO']
-    })
-    area_arr.sort_values([basin_id, 'AREA_GEO'], inplace=True, ascending=[True, False])
-    connectivity_table = pd.read_csv(os.path.join(out_dir, 'rapid_connect.csv'), header=None)
-    streamID_unique_list = connectivity_table.iloc[:, 0].astype(int).unique().tolist()
-
-    #   If point not in array append dummy data for one point of data
-    lon_dummy = area_arr['POINT_X'].iloc[0]
-    lat_dummy = area_arr['POINT_Y'].iloc[0]
-    try:
-        index_lon_dummy = int(np.where(lon == lon_dummy)[0])
-    except TypeError as _:
-        index_lon_dummy = int((np.abs(lon - lon_dummy)).argmin())
-        pass
-
-    try:
-        index_lat_dummy = int(np.where(lat == lat_dummy)[0])
-    except TypeError as _:
-        index_lat_dummy = int((np.abs(lat - lat_dummy)).argmin())
-        pass
-
-    df = pd.DataFrame(columns=[f'{basin_id}', "area_sqm", "lon_index", "lat_index", "npoints", "lon", "lat"])
-
-    for streamID_unique in streamID_unique_list:
-        ind_points = np.where(area_arr[basin_id] == streamID_unique)[0]
-        num_ind_points = len(ind_points)
-
-        if num_ind_points <= 0:
-            # if point not in array, append dummy data for one point of data
-            # streamID, area_sqm, lon_index, lat_index, npoints
-            df.loc[len(df)] = [streamID_unique, 0, index_lon_dummy, index_lat_dummy, 1, lon_dummy, lat_dummy]
-
-        else:
-            for ind_point in ind_points:
-                area_geo_each = float(area_arr['AREA_GEO'].iloc[ind_point])
-                lon_each = area_arr['POINT_X'].iloc[ind_point]
-                lat_each = area_arr['POINT_Y'].iloc[ind_point]
-
-                try:
-                    index_lon_each = int(np.where(lon == lon_each)[0])
-                except:
-                    index_lon_each = int((np.abs(lon - lon_each)).argmin())
-
-                try:
-                    index_lat_each = int(np.where(lat == lat_each)[0])
-                except:
-                    index_lat_each = int((np.abs(lat - lat_each)).argmin())
-
-                df.loc[len(df)] = [streamID_unique, area_geo_each, index_lon_each, index_lat_each, num_ind_points,
-                                   lon_each, lat_each]
-
-    df.to_csv(os.path.join(out_dir, out_name), index=False)
-    logger.info(f"Finished weight table: {os.path.basename(out_name)}")
-    return
-
-
-def make_weight_table(
-        lsm_sample: str,
-        out_dir: str,
-        n_workers: int = 1,
-):
     sb_gdf = gpd.read_file(glob.glob(os.path.join(out_dir, 'TDX_streamreach*'))[0])
 
     # Extract xs and ys dimensions from the dataset
     lsm_ds = xr.open_dataset(lsm_sample)
-    x_var = [v for v in lsm_ds.variables if v in ('lon', 'longitude', )][0]
-    y_var = [v for v in lsm_ds.variables if v in ('lat', 'latitude', )][0]
+    x_var = [v for v in lsm_ds.variables if v in ('lon', 'longitude',)][0]
+    y_var = [v for v in lsm_ds.variables if v in ('lat', 'latitude',)][0]
     xs = lsm_ds[x_var].values
     ys = lsm_ds[y_var].values
     lsm_ds.close()
@@ -932,7 +799,7 @@ def make_weight_table(
     (
         intersections[['streamID', 'area_sqm', 'lon_index', 'lat_index', 'npoints', 'lon', 'lat']]
         .sort_values(['streamID', 'area_sqm'])
-        .to_csv(os.path.join(out_dir, f'weight_{os.path.basename(lsm_sample).replace(".nc", "")}.csv'), index=False)
+        .to_csv(out_name, index=False)
     )
     return
 
