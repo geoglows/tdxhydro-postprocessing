@@ -9,13 +9,16 @@ from collections.abc import Iterable
 from itertools import chain
 from multiprocessing import Pool
 
+import dask.dataframe as dd
 import geopandas as gpd
 import netCDF4 as nc
 import numpy as np
 import pandas as pd
 import shapely.geometry as sg
+import xarray as xr
 from pyproj import Geod
 from shapely import Point, MultiPoint
+from shapely.geometry import box
 from shapely.ops import voronoi_diagram
 
 hydrobasin_cache = {
@@ -841,6 +844,103 @@ def create_weight_table(out_dir: str, basins_gdf: gpd.GeoDataFrame, nc_file: str
     return
 
 
+def make_weight_table(
+        lsm_sample: str,
+        sb_gdf: gpd.GeoDataFrame,
+        bounds: tuple or list or np.ndarray = None,
+        x_min: float = None,
+        y_min: float = None,
+        x_max: float = None,
+        y_max: float = None,
+        n_workers: int = 1,
+        export_points: bool = False,
+        export_grid: bool = False,
+):
+    # Extract xs and ys dimensions from the dataset
+    lsm_ds = xr.open_zarr(lsm_sample)
+    xs = lsm_ds[X_VAR].values
+    ys = lsm_ds[Y_VAR].values
+    lsm_ds.close()
+
+    # create an array of the indices for x and y
+    x_idxs = np.arange(len(xs))
+    y_idxs = np.arange(len(ys))
+
+    # trim the x, y, and index arrays to the bounding box
+    x_min_idx, x_max_idx = 0, len(xs)
+    y_min_idx, y_max_idx = 0, len(ys)
+    if bounds is not None:
+        assert len(bounds) == 4, "bounds must be an iterable of length 4 (x_min, y_min, x_max, y_max)"
+        x_min, y_min, x_max, y_max = bounds
+    if x_min is not None:
+        x_min_idx = np.argmin(np.abs(xs - x_min))
+    if x_max is not None:
+        x_max_idx = np.argmin(np.abs(xs - x_max))
+    if y_min is not None:
+        y_min_idx = np.argmin(np.abs(ys - y_min))
+    if y_max is not None:
+        y_max_idx = np.argmin(np.abs(ys - y_max))
+    y_min_idx, y_max_idx = min(y_min_idx, y_max_idx), max(y_min_idx, y_max_idx)
+    xs = xs[x_min_idx:x_max_idx + 1]
+    ys = ys[y_min_idx:y_max_idx + 1]
+    x_idxs = x_idxs[x_min_idx:x_max_idx + 1]
+    y_idxs = y_idxs[y_min_idx:y_max_idx + 1]
+
+    resolution = np.abs(xs[1] - xs[0])
+
+    # create thiessen polygons around the 2d array centers and convert to a geodataframe
+    x_grid, y_grid = np.meshgrid(xs, ys)
+    x_idx, y_idx = np.meshgrid(x_idxs, y_idxs)
+    x_grid = x_grid.flatten()
+    y_grid = y_grid.flatten()
+    x_idx = x_idx.flatten()
+    y_idx = y_idx.flatten()
+    labels = np.arange(len(x_grid))
+
+    # todo calculate grid edges with vectorized numpy then apply only the create box code
+    def _point_to_box(row: pd.Series) -> box:
+        return box(row.x_center - resolution / 2,
+                   row.y_center - resolution / 2,
+                   row.x_center + resolution / 2,
+                   row.y_center + resolution / 2)
+
+    tg_gdf = dd.from_pandas(
+        pd.DataFrame(np.transpose(np.array([labels, x_grid, y_grid, x_idx, y_idx])),
+                     columns=['cell_number', 'x_center', 'y_center', 'x_idx', 'y_idx']),
+        npartitions=n_workers
+    )
+
+    tg_gdf['geometry'] = tg_gdf.apply(lambda row: _point_to_box(row), axis=1, meta=('geometry', 'object'))
+    tg_gdf = tg_gdf.compute()
+
+    if export_points:
+        gpd.GeoDataFrame(tg_gdf.drop(columns=['geometry']),
+                         geometry=gpd.points_from_xy(tg_gdf['x_center'], tg_gdf['y_center']),
+                         crs='epsg:4326').to_file('grid_points.gpkg', driver='GPKG')
+    tg_gdf = gpd.GeoDataFrame(tg_gdf, geometry='geometry', crs='epsg:4326')
+    if export_grid:
+        tg_gdf.to_file('grid_cells.gpkg', driver='GPKG')
+
+    # Spatial join the two dataframes using the 'intersects' predicate
+    intersections = gpd.sjoin(tg_gdf, sb_gdf, op='intersects')
+
+    results = gpd.GeoDataFrame(
+        intersections[['LINKNO', 'index_right', 'cell_number', 'x_center', 'y_center', 'x_idx', 'y_idx']]
+        .join(tg_gdf[['geometry', ]], how='left')
+        .join(sb_gdf['geometry'], on=['index_right'], lsuffix='_tp', rsuffix='_sb')
+    )
+    results['geometry_tp'] = gpd.GeoSeries(results['geometry_tp'])
+    results['geometry_sb'] = gpd.GeoSeries(results['geometry_sb'])
+
+    results['geometry_inter'] = (
+        results['geometry_tp']
+        .intersection(results['geometry_sb'])
+    )
+    results['inter_area'] = results['geometry_inter'].area
+    results['inter_area_pct'] = results['inter_area'] / results['geometry_sb'].area
+
+    return results
+
 ################################################################
 #   Master function
 ################################################################
@@ -973,4 +1073,3 @@ def validate_rapid_directory(directory: str):
 
     logger.info('')
     return
-
