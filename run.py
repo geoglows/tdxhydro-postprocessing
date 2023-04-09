@@ -19,7 +19,7 @@ logging.basicConfig(
 outputs_path = '/tdxrapid'
 MP_STREAMS = True
 MP_BASINS = True
-N_PROCESSES = 4
+N_PROCESSES = 6
 
 if __name__ == '__main__':
     sample_grids = glob.glob('./era5_sample_grids/*.nc')
@@ -38,6 +38,9 @@ if __name__ == '__main__':
         n_streams = region_sizes_df.loc[region_sizes_df['region'] == region_number, 'count'].values[0]
         if region_number in regions_to_skip:
             logging.info(f'Skipping region {region_number} - directory already exists')
+            continue
+        if n_streams > 600_000:
+            logging.info(f'Skipping region {region_number} - too many streams')
             continue
 
         # Cap the number of streams to process
