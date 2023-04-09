@@ -6,7 +6,7 @@ import shutil
 
 import pandas as pd
 
-from RAPIDprep import preprocess_for_rapid
+from RAPIDprep import dissolve_streams_and_basins, prepare_rapid_inputs, make_weight_table
 
 logging.basicConfig(
     level=logging.INFO,
@@ -20,6 +20,10 @@ outputs_path = '/tdxrapid'
 MP_STREAMS = True
 MP_BASINS = True
 N_PROCESSES = 6
+id_field = 'LINKNO'
+ds_field = 'DSLINKNO'
+length_field = 'Length'
+
 
 if __name__ == '__main__':
     sample_grids = glob.glob('./era5_sample_grids/*.nc')
@@ -72,11 +76,13 @@ if __name__ == '__main__':
         logging.info(f'Use multiprocessing for basins: {MP_BASINS}')
 
         try:
-            preprocess_for_rapid(
+            dissolve_streams_and_basins(
                 streams_gpkg,
                 basins_gpkg,
-                sample_grids,
                 out_dir,
+                id_field=id_field,
+                ds_field=ds_field,
+                length_field=length_field,
                 n_processes=N_PROCESSES,
                 mp_streams=MP_STREAMS,
                 mp_basins=MP_BASINS
@@ -85,6 +91,19 @@ if __name__ == '__main__':
             logging.info('-----ERROR')
             logging.info(e)
             shutil.rmtree(out_dir)
+            continue
+
+        prepare_rapid_inputs(streams_gpkg,
+                             save_dir=out_dir,
+                             id_field=id_field,
+                             ds_field=ds_field, )
+
+        for sample_grid in sample_grids:
+            make_weight_table(
+                sample_grid,
+                out_dir,
+                streams_gpkg,
+            )
 
         logging.info('Done')
         logging.info('')

@@ -847,19 +847,20 @@ def create_weight_table(out_dir: str, basins_gdf: gpd.GeoDataFrame, nc_file: str
 def make_weight_table(
         lsm_sample: str,
         sb_gdf: gpd.GeoDataFrame,
+        out_dir: str,
         bounds: tuple or list or np.ndarray = None,
         x_min: float = None,
         y_min: float = None,
         x_max: float = None,
         y_max: float = None,
+        x_var: str = 'longitude',
+        y_var: str = 'latitude',
         n_workers: int = 1,
-        export_points: bool = False,
-        export_grid: bool = False,
 ):
     # Extract xs and ys dimensions from the dataset
     lsm_ds = xr.open_zarr(lsm_sample)
-    xs = lsm_ds[X_VAR].values
-    ys = lsm_ds[Y_VAR].values
+    xs = lsm_ds[x_var].values
+    ys = lsm_ds[y_var].values
     lsm_ds.close()
 
     # create an array of the indices for x and y
@@ -895,72 +896,67 @@ def make_weight_table(
     y_grid = y_grid.flatten()
     x_idx = x_idx.flatten()
     y_idx = y_idx.flatten()
-    labels = np.arange(len(x_grid))
+    x_left = x_grid - resolution / 2
+    x_right = x_grid + resolution / 2
+    y_bottom = y_grid - resolution / 2
+    y_top = y_grid + resolution / 2
 
-    # todo calculate grid edges with vectorized numpy then apply only the create box code
     def _point_to_box(row: pd.Series) -> box:
-        return box(row.x_center - resolution / 2,
-                   row.y_center - resolution / 2,
-                   row.x_center + resolution / 2,
-                   row.y_center + resolution / 2)
+        return box(row.x_left, row.y_bottom, row.x_right, row.y_top)
 
     tg_gdf = dd.from_pandas(
-        pd.DataFrame(np.transpose(np.array([labels, x_grid, y_grid, x_idx, y_idx])),
-                     columns=['cell_number', 'x_center', 'y_center', 'x_idx', 'y_idx']),
+        pd.DataFrame(
+            np.transpose(np.array([x_left, y_bottom, x_right, y_top, x_idx, y_idx, x_grid, y_grid])),
+            columns=['x_left', 'y_bottom', 'x_right', 'y_top', 'lon_index', 'lat_index', 'lon', 'lat']
+        ),
         npartitions=n_workers
     )
-
     tg_gdf['geometry'] = tg_gdf.apply(lambda row: _point_to_box(row), axis=1, meta=('geometry', 'object'))
     tg_gdf = tg_gdf.compute()
 
-    if export_points:
-        gpd.GeoDataFrame(tg_gdf.drop(columns=['geometry']),
-                         geometry=gpd.points_from_xy(tg_gdf['x_center'], tg_gdf['y_center']),
-                         crs='epsg:4326').to_file('grid_points.gpkg', driver='GPKG')
+    # drop the columns used for determining the bounding boxes
+    tg_gdf = tg_gdf[['lon_index', 'lat_index', 'lon', 'lat', 'geometry']]
     tg_gdf = gpd.GeoDataFrame(tg_gdf, geometry='geometry', crs='epsg:4326')
-    if export_grid:
-        tg_gdf.to_file('grid_cells.gpkg', driver='GPKG')
 
     # Spatial join the two dataframes using the 'intersects' predicate
     intersections = gpd.sjoin(tg_gdf, sb_gdf, op='intersects')
 
     results = gpd.GeoDataFrame(
-        intersections[['LINKNO', 'index_right', 'cell_number', 'x_center', 'y_center', 'x_idx', 'y_idx']]
+        intersections[['streamID', 'lon_index', 'lat_index']]
         .join(tg_gdf[['geometry', ]], how='left')
         .join(sb_gdf['geometry'], on=['index_right'], lsuffix='_tp', rsuffix='_sb')
     )
-    results['geometry_tp'] = gpd.GeoSeries(results['geometry_tp'])
-    results['geometry_sb'] = gpd.GeoSeries(results['geometry_sb'])
 
-    results['geometry_inter'] = (
-        results['geometry_tp']
-        .intersection(results['geometry_sb'])
+    results['area'] = (
+        gpd.GeoSeries(results['geometry_tp'])
+        .intersection(gpd.GeoSeries(results['geometry_sb']))
+        .to_crs({'proj': 'cea'})
+        .area
     )
-    results['inter_area'] = results['geometry_inter'].area
-    results['inter_area_pct'] = results['inter_area'] / results['geometry_sb'].area
+
+    results['npoints'] = results.groupby('streamID')['streamID'].transform('count')
+    results[['streamID', 'area_sqm', 'lon_index', 'lat_index', 'npoints', 'lon', 'lat']]\
+        .to_csv(os.path.join(out_dir, 'intersections.csv'), index=False)
 
     return results
+
 
 ################################################################
 #   Master function
 ################################################################
-def preprocess_for_rapid(stream_file: str, basins_file: str, nc_files: list, save_dir: str,
-                         id_field: str = 'LINKNO', ds_field: str = 'DSLINKNO', length_field: str = 'Length',
-                         k: float = 0.35, x: float = 3,
-                         n_processes: int or None = 1, mp_streams: bool = True, mp_basins: bool = True) -> None:
+def dissolve_streams_and_basins(stream_file: str, basins_file: str, save_dir: str,
+                                id_field: str = 'LINKNO', ds_field: str = 'DSLINKNO', length_field: str = 'Length',
+                                n_processes: int or None = 1, mp_streams: bool = True, mp_basins: bool = True) -> None:
     """
     Master function for preprocessing stream delineations and catchments and creating RAPID inputs.
 
     Args:
         stream_file (str): Path to stream network file
         basins_file (str): Path to the basins/catchments file
-        nc_files (list): List of paths to sample netCDF files for making weight tables
         save_dir (str): Path to the output directory
         id_field (str): Field in network file that corresponds to the unique id of each stream segment. Defaults to 'LINKNO'.
         ds_field (str): Field in network file that corresponds to the unique downstream id of each stream segment. Defaults to 'DSLINKNO'.
         length_field (str): Field in network file that corresponds to the length of each stream segment. Defaults to 'Length'.
-        k (float): K parameter to use when generating Muskingum parameters. Defaults to 0.35.
-        x (float): X parameter to use when generating Muskingum parameters. Defaults to 3.
         n_processes (int): Number of processes to use for multiprocessing. If None, will use all available cores. Defaults to 1.
         mp_streams (bool): Whether to use multiprocessing for stream processing. Defaults to True.
         mp_basins (bool): Whether to use multiprocessing for basin processing. Defaults to True.
@@ -970,36 +966,28 @@ def preprocess_for_rapid(stream_file: str, basins_file: str, nc_files: list, sav
     """
     logger.info('Dissolving streams')
     # Dissolve streams and basins
-    streams_gdf = dissolve_streams(stream_file, save_dir=save_dir,
-                                   stream_id_col=id_field, ds_id_col=ds_field, length_col=length_field,
-                                   mp_dissolve=mp_streams, n_processes=n_processes * 2)
-
-    # Create rapid preprocessing files
-    logger.info('Creating RAPID files')
-    create_comid_lat_lon_z(streams_gdf, save_dir, id_field)
-    create_riv_bas_id(streams_gdf, save_dir, ds_field, id_field)
-    calculate_muskingum(streams_gdf, save_dir, k, x)
-    create_rapid_connect(streams_gdf, save_dir, id_field, ds_field)
-
-    # clear memory for large network processing
-    logger.info('Clearing stream GDF from memory')
-    streams_gdf = None
+    dissolve_streams(stream_file, save_dir=save_dir,
+                     stream_id_col=id_field, ds_id_col=ds_field, length_col=length_field,
+                     mp_dissolve=mp_streams, n_processes=n_processes * 2)
 
     # dissolve basins
     logger.info('Dissolving basins')
-    basins_gdf = dissolve_basins(basins_file, mp_dissolve=mp_basins,
-                                 save_dir=save_dir, stream_id_col="streamID", n_process=n_processes)
+    dissolve_basins(basins_file, mp_dissolve=mp_basins,
+                    save_dir=save_dir, stream_id_col="streamID", n_process=n_processes)
 
-    # # Create weight table
-    # logger.info('Creating weight tables')
-    # # for nc_file in nc_files:
-    # #     create_weight_table(save_dir, basins_gdf, nc_file)
-    # with Pool(min(n_processes, len(nc_files))) as p:
-    #     p.starmap(create_weight_table, [(save_dir, basins_gdf, nc_file) for nc_file in nc_files])
-    #
-    # # clear memory for large basin processing
-    # logger.info('Clearing basin GDF from memory')
-    # basins_gdf = None
+    return
+
+
+def prepare_rapid_inputs(streams_gpkg: gpd.GeoDataFrame, save_dir: str,
+                         id_field: str = 'LINKNO', ds_field: str = 'DSLINKNO',
+                         default_k: float = 0.35, default_x: float = 3) -> None:
+    # Create rapid preprocessing files
+    logger.info('Creating RAPID files')
+    streams_gdf = gpd.read_file(streams_gpkg)
+    create_comid_lat_lon_z(streams_gdf, save_dir, id_field)
+    create_riv_bas_id(streams_gdf, save_dir, ds_field, id_field)
+    calculate_muskingum(streams_gdf, save_dir, default_k, default_x)
+    create_rapid_connect(streams_gdf, save_dir, id_field, ds_field)
     return
 
 
