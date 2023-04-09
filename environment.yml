@@ -9,3 +9,5 @@ dependencies:
   - pandas
   - shapely>=2
   - pyproj
+  - dask
+  - xarray
