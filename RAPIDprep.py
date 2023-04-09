@@ -38,6 +38,8 @@ hydrobasin_cache = {
 # set up logging
 logger = logging.getLogger(__name__)
 
+pd.options.display.width = 100
+pd.options.display.max_colwidth = 50
 
 ################################################################
 #   Dissolving functions:
@@ -846,41 +848,33 @@ def create_weight_table(out_dir: str, basins_gdf: gpd.GeoDataFrame, nc_file: str
 
 def make_weight_table(
         lsm_sample: str,
-        sb_gdf: gpd.GeoDataFrame,
         out_dir: str,
-        bounds: tuple or list or np.ndarray = None,
-        x_min: float = None,
-        y_min: float = None,
-        x_max: float = None,
-        y_max: float = None,
-        x_var: str = 'longitude',
-        y_var: str = 'latitude',
         n_workers: int = 1,
 ):
+    sb_gdf = gpd.read_file(glob.glob(os.path.join(out_dir, 'TDX_streamreach*'))[0])
+
     # Extract xs and ys dimensions from the dataset
-    lsm_ds = xr.open_zarr(lsm_sample)
+    lsm_ds = xr.open_dataset(lsm_sample)
+    x_var = [v for v in lsm_ds.variables if v in ('lon', 'longitude', )][0]
+    y_var = [v for v in lsm_ds.variables if v in ('lat', 'latitude', )][0]
     xs = lsm_ds[x_var].values
     ys = lsm_ds[y_var].values
     lsm_ds.close()
+
+    # correct irregular x coordinates
+    xs[xs > 180] = xs[xs > 180] - 360
 
     # create an array of the indices for x and y
     x_idxs = np.arange(len(xs))
     y_idxs = np.arange(len(ys))
 
-    # trim the x, y, and index arrays to the bounding box
-    x_min_idx, x_max_idx = 0, len(xs)
-    y_min_idx, y_max_idx = 0, len(ys)
-    if bounds is not None:
-        assert len(bounds) == 4, "bounds must be an iterable of length 4 (x_min, y_min, x_max, y_max)"
-        x_min, y_min, x_max, y_max = bounds
-    if x_min is not None:
-        x_min_idx = np.argmin(np.abs(xs - x_min))
-    if x_max is not None:
-        x_max_idx = np.argmin(np.abs(xs - x_max))
-    if y_min is not None:
-        y_min_idx = np.argmin(np.abs(ys - y_min))
-    if y_max is not None:
-        y_max_idx = np.argmin(np.abs(ys - y_max))
+    x_min, y_min, x_max, y_max = sb_gdf.total_bounds
+
+    x_min_idx = np.argmin(np.abs(xs - x_min))
+    x_max_idx = np.argmin(np.abs(xs - x_max))
+    y_min_idx = np.argmin(np.abs(ys - y_min))
+    y_max_idx = np.argmin(np.abs(ys - y_max))
+
     y_min_idx, y_max_idx = min(y_min_idx, y_max_idx), max(y_min_idx, y_max_idx)
     xs = xs[x_min_idx:x_max_idx + 1]
     ys = ys[y_min_idx:y_max_idx + 1]
@@ -919,26 +913,28 @@ def make_weight_table(
     tg_gdf = gpd.GeoDataFrame(tg_gdf, geometry='geometry', crs='epsg:4326')
 
     # Spatial join the two dataframes using the 'intersects' predicate
-    intersections = gpd.sjoin(tg_gdf, sb_gdf, op='intersects')
+    intersections = gpd.sjoin(tg_gdf, sb_gdf, predicate='intersects')
 
-    results = gpd.GeoDataFrame(
-        intersections[['streamID', 'lon_index', 'lat_index']]
-        .join(tg_gdf[['geometry', ]], how='left')
-        .join(sb_gdf['geometry'], on=['index_right'], lsuffix='_tp', rsuffix='_sb')
+    intersections = gpd.GeoDataFrame(
+        intersections
+        .join(tg_gdf[['geometry', ]], how='outer')
+        .merge(sb_gdf[['geometry', ]], left_on=['index_right'], right_index=True, suffixes=('_tp', '_sb'))
     )
 
-    results['area'] = (
-        gpd.GeoSeries(results['geometry_tp'])
-        .intersection(gpd.GeoSeries(results['geometry_sb']))
+    intersections['area_sqm'] = (
+        gpd.GeoSeries(intersections['geometry_tp'])
+        .intersection(gpd.GeoSeries(intersections['geometry_sb']))
         .to_crs({'proj': 'cea'})
         .area
     )
 
-    results['npoints'] = results.groupby('streamID')['streamID'].transform('count')
-    results[['streamID', 'area_sqm', 'lon_index', 'lat_index', 'npoints', 'lon', 'lat']]\
-        .to_csv(os.path.join(out_dir, 'intersections.csv'), index=False)
-
-    return results
+    intersections['npoints'] = intersections.groupby('streamID')['streamID'].transform('count')
+    (
+        intersections[['streamID', 'area_sqm', 'lon_index', 'lat_index', 'npoints', 'lon', 'lat']]
+        .sort_values(['streamID', 'area_sqm'])
+        .to_csv(os.path.join(out_dir, f'weight_{os.path.basename(lsm_sample).replace(".nc", "")}.csv'), index=False)
+    )
+    return
 
 
 ################################################################

@@ -8,6 +8,9 @@ import pandas as pd
 
 from RAPIDprep import dissolve_streams_and_basins, prepare_rapid_inputs, make_weight_table
 
+pd.options.display.width = 100
+pd.options.display.max_colwidth = 50
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s %(levelname)s %(message)s',
@@ -46,19 +49,6 @@ if __name__ == '__main__':
         if n_streams > 600_000:
             logging.info(f'Skipping region {region_number} - too many streams')
             continue
-
-        # Cap the number of streams to process
-        # if n_streams > 300_000:
-        #     logging.info(f'Skipping region {region_number} - too many streams')
-        #     continue
-
-        # scale the number of processes based on the number of streams to process
-        # if n_streams >= 600_000:
-        #     n_processes = 2
-        # elif n_streams >= 400_000:
-        #     n_processes = 4
-        # elif n_streams >= 250_000:
-        #     n_processes = 6
 
         # create the output folder
         out_dir = os.path.join(outputs_path, f'{region_number}')
@@ -99,11 +89,7 @@ if __name__ == '__main__':
                              ds_field=ds_field, )
 
         for sample_grid in sample_grids:
-            make_weight_table(
-                sample_grid,
-                out_dir,
-                streams_gpkg,
-            )
+            make_weight_table(sample_grid, out_dir)
 
         logging.info('Done')
         logging.info('')
