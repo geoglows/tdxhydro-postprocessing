@@ -990,16 +990,16 @@ def preprocess_for_rapid(stream_file: str, basins_file: str, nc_files: list, sav
     basins_gdf = dissolve_basins(basins_file, mp_dissolve=mp_basins,
                                  save_dir=save_dir, stream_id_col="streamID", n_process=n_processes)
 
-    # Create weight table
-    logger.info('Creating weight tables')
-    # for nc_file in nc_files:
-    #     create_weight_table(save_dir, basins_gdf, nc_file)
-    with Pool(min(n_processes, len(nc_files))) as p:
-        p.starmap(create_weight_table, [(save_dir, basins_gdf, nc_file) for nc_file in nc_files])
-
-    # clear memory for large basin processing
-    logger.info('Clearing basin GDF from memory')
-    basins_gdf = None
+    # # Create weight table
+    # logger.info('Creating weight tables')
+    # # for nc_file in nc_files:
+    # #     create_weight_table(save_dir, basins_gdf, nc_file)
+    # with Pool(min(n_processes, len(nc_files))) as p:
+    #     p.starmap(create_weight_table, [(save_dir, basins_gdf, nc_file) for nc_file in nc_files])
+    #
+    # # clear memory for large basin processing
+    # logger.info('Clearing basin GDF from memory')
+    # basins_gdf = None
     return
 
 
