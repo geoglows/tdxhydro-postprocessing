@@ -42,9 +42,6 @@ if __name__ == '__main__':
         if region_number in regions_to_skip:
             logging.info(f'Skipping region {region_number} - directory already exists')
             continue
-        if n_streams > 600_000:
-            logging.info(f'Skipping region {region_number} - too many streams')
-            continue
 
         # create the output folder
         out_dir = os.path.join(outputs_path, f'{region_number}')
