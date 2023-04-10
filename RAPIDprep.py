@@ -415,6 +415,7 @@ def apply_0_length_basin_fixes(basins_gdf: gpd.GeoDataFrame, zero_length_df: pd.
     # Case 2 - Allow 3-river confluence - Create a basin with small non-zero area, assign small non-zero length
     boxes = (
         zero_length_df[['case2', 'case2_x', 'case2_y']]
+        .dropna(axis=0, how='any')
         .apply(lambda x: sg.box(
             x.case2_x - buffer_size,
             x.case2_y - buffer_size,
@@ -431,6 +432,272 @@ def apply_0_length_basin_fixes(basins_gdf: gpd.GeoDataFrame, zero_length_df: pd.
     # NO FIXES APPLIED TO BASINS FOR CASE 3 - ALREADY HAVE
 
     return corrected_basins
+
+
+################################################################
+#   RAPID Preprocessing functions
+################################################################
+def create_comid_lat_lon_z(streams_gdf: gpd.GeoDataFrame, out_dir: str, id_field: str) -> None:
+    """
+    Assumes that geometry of the network are shapely LineStrings.
+    If there are MultiLineStrings than something has gone wrong in the dissolving step.
+
+    Args:
+        streams_gdf (gpd.GeoDataFrame): GeoDataFrame of the streams
+        out_dir (str): Path to directory where comid_lat_lon_z.csv will be saved
+        id_field (str): Field in streams_gdf that corresponds to the unique id of each stream segment
+
+    Returns:
+        None
+    """
+    logger.info("Creating comid_lat_lon_z.csv")
+    # todo sort the output df not gdf
+    # todo apply lambda to gdf only once
+    temp_network = streams_gdf.sort_values(id_field)
+    lats = temp_network.geometry.apply(lambda geom: geom.xy[1][0]).values
+    lons = temp_network.geometry.apply(lambda geom: geom.xy[0][0]).values
+
+    pd.DataFrame({
+        id_field: temp_network[id_field].values,
+        "lat": lats,
+        "lon": lons,
+        "z": 0
+    }).to_csv(os.path.join(out_dir, "comid_lat_lon_z.csv"), index=False, header=True)
+    return
+
+
+def create_riv_bas_id(streams_gdf: gpd.GeoDataFrame, out_dir: str, downstream_field: str, id_field: str) -> None:
+    """
+    Creates riv_bas_id.csv. Network is sorted to match the outputs of the ArcGIS tool this was designed from, 
+    and it is likely that the second element in the list for ascending may be True without impacting RAPID
+
+    Args:
+        streams_gdf (gpd.GeoDataFrame):
+        out_dir (str):
+        downstream_field (str):
+        id_field (str):
+
+    Returns:
+        None
+    """
+    logger.info("Creating riv_bas_id.csv")
+
+    # todo sort the output df not gdf
+    temp_network = streams_gdf.sort_values([downstream_field, id_field], ascending=[False, False])
+    temp_network[id_field].to_csv(os.path.join(out_dir, "riv_bas_id.csv"), index=False, header=False)
+    return
+
+
+def calculate_muskingum(streams_gdf: gpd.GeoDataFrame, out_dir: str, k: float, x: float) -> None:
+    """
+    Calculates muskingum parameters by using pyproj's Geod.geometry_length. Note that the network must be in EPSG 4326
+    """
+    logger.info("Creating muskingum parameters")
+
+    # todo split into two functions, one for calculating the parameters and one for writing them to csv
+    streams_gdf["LENGTH_GEO"] = streams_gdf.geometry.apply(_calculate_geodesic_length)
+    streams_gdf["Musk_kfac"] = streams_gdf["LENGTH_GEO"] * 3600
+    streams_gdf["Musk_k"] = streams_gdf["Musk_kfac"] * k
+    streams_gdf["Musk_x"] = x * 0.1
+
+    streams_gdf["Musk_kfac"].to_csv(os.path.join(out_dir, "kfac.csv"), index=False, header=False)
+    streams_gdf["Musk_k"].to_csv(os.path.join(out_dir, "k.csv"), index=False, header=False)
+    streams_gdf["Musk_x"].to_csv(os.path.join(out_dir, "x.csv"), index=False, header=False)
+    return
+
+
+def _calculate_geodesic_length(line) -> float:
+    """
+    Input is shapely geometry, should be all shapely LineString objects
+    """
+    geod = Geod(ellps='WGS84')
+    length = geod.geometry_length(line) / 1000  # To convert to km
+
+    # This is for the outliers that have 0 length
+    if length < 0.0000001:
+        length = 0.001
+    return length
+
+
+def create_rapid_connect(network: gpd.GeoDataFrame, out_dir: str, id_field: str, downstream_field: str) -> None:
+    """
+    Creates rapid_connect.csv
+
+    todo document the columns of the csv
+    rapid_connect is a csv file that contains the following columns:
+    HydroID: the HydroID of the stream
+    NextDownID: the HydroID of the next downstream stream
+    CountUpstreamID: the number of upstream streams
+    UpstreamID: the HydroID of the upstream streams
+
+    Args:
+        network:
+        out_dir:
+        id_field:
+        downstream_field:
+
+    Returns:
+
+    """
+    logger.info("Creating rapid_connect.csv")
+
+    list_all = []
+    max_count_Upstream = 0
+
+    for hydroid in network[id_field].values:
+        # find the HydroID of the upstreams
+        list_upstreamID = network.loc[network[downstream_field] == hydroid, id_field].values
+        # count the total number of the upstreams
+        count_upstream = len(list_upstreamID)
+        if count_upstream > max_count_Upstream:
+            max_count_Upstream = count_upstream
+        nextDownID = network.loc[network[id_field] == hydroid, downstream_field].values[0]
+
+        row_dict = {'HydroID': hydroid, 'NextDownID': nextDownID, 'CountUpstreamID': count_upstream}
+        for i in range(count_upstream):
+            row_dict[f'UpstreamID{i + 1}'] = list_upstreamID[i]
+        list_all.append(row_dict)
+
+    # Fill in NaN values for any missing upstream IDs
+    for i in range(max_count_Upstream):
+        col_name = f'UpstreamID{i + 1}'
+        for row in list_all:
+            if col_name not in row:
+                row[col_name] = 0
+
+    pd.DataFrame(list_all).to_csv(os.path.join(out_dir, 'rapid_connect.csv'), index=False, header=None)
+    return
+
+
+def make_weight_table(lsm_sample: str, out_dir: str, n_workers: int = 1, ):
+    out_name = os.path.join(out_dir, 'weight_' + os.path.basename(os.path.splitext(lsm_sample)[0]) + '.csv')
+    logger.info(f"Creating weight table: {os.path.basename(out_name)}")
+
+    sb_gdf = gpd.read_file(glob.glob(os.path.join(out_dir, 'TDX_streamreach*'))[0])
+
+    # Extract xs and ys dimensions from the dataset
+    lsm_ds = xr.open_dataset(lsm_sample)
+    x_var = [v for v in lsm_ds.variables if v in ('lon', 'longitude',)][0]
+    y_var = [v for v in lsm_ds.variables if v in ('lat', 'latitude',)][0]
+    xs = lsm_ds[x_var].values
+    ys = lsm_ds[y_var].values
+    lsm_ds.close()
+
+    # correct irregular x coordinates
+    xs[xs > 180] = xs[xs > 180] - 360
+
+    # create an array of the indices for x and y
+    x_idxs = np.arange(len(xs))
+    y_idxs = np.arange(len(ys))
+
+    x_min, y_min, x_max, y_max = sb_gdf.total_bounds
+
+    x_min_idx = np.argmin(np.abs(xs - x_min))
+    x_max_idx = np.argmin(np.abs(xs - x_max))
+    y_min_idx = np.argmin(np.abs(ys - y_min))
+    y_max_idx = np.argmin(np.abs(ys - y_max))
+
+    y_min_idx, y_max_idx = min(y_min_idx, y_max_idx), max(y_min_idx, y_max_idx)
+    xs = xs[x_min_idx:x_max_idx + 1]
+    ys = ys[y_min_idx:y_max_idx + 1]
+    x_idxs = x_idxs[x_min_idx:x_max_idx + 1]
+    y_idxs = y_idxs[y_min_idx:y_max_idx + 1]
+
+    resolution = np.abs(xs[1] - xs[0])
+
+    # create thiessen polygons around the 2d array centers and convert to a geodataframe
+    x_grid, y_grid = np.meshgrid(xs, ys)
+    x_idx, y_idx = np.meshgrid(x_idxs, y_idxs)
+    x_grid = x_grid.flatten()
+    y_grid = y_grid.flatten()
+    x_idx = x_idx.flatten()
+    y_idx = y_idx.flatten()
+    x_left = x_grid - resolution / 2
+    x_right = x_grid + resolution / 2
+    y_bottom = y_grid - resolution / 2
+    y_top = y_grid + resolution / 2
+
+    def _point_to_box(row: pd.Series) -> box:
+        return box(row.x_left, row.y_bottom, row.x_right, row.y_top)
+
+    tg_gdf = dd.from_pandas(
+        pd.DataFrame(
+            np.transpose(np.array([x_left, y_bottom, x_right, y_top, x_idx, y_idx, x_grid, y_grid])),
+            columns=['x_left', 'y_bottom', 'x_right', 'y_top', 'lon_index', 'lat_index', 'lon', 'lat']
+        ),
+        npartitions=n_workers
+    )
+    tg_gdf['geometry'] = tg_gdf.apply(lambda row: _point_to_box(row), axis=1, meta=('geometry', 'object'))
+    tg_gdf = tg_gdf.compute()
+
+    # drop the columns used for determining the bounding boxes
+    tg_gdf = tg_gdf[['lon_index', 'lat_index', 'lon', 'lat', 'geometry']]
+    # tg_gdf = gpd.GeoDataFrame(tg_gdf, geometry='geometry', crs='epsg:4326')
+    tg_gdf = gpd.GeoDataFrame(
+        tg_gdf,
+        geometry='geometry',
+        crs={'proj': 'latlong', 'ellps': 'WGS84', 'datum': 'WGS84', 'no_defs': True}
+    ).to_crs(epsg=4326)
+
+    # Spatial join the two dataframes using the 'intersects' predicate
+    intersections = gpd.sjoin(tg_gdf, sb_gdf, predicate='intersects')
+
+    intersections = gpd.GeoDataFrame(
+        intersections
+        .merge(sb_gdf[['geometry', ]], left_on=['index_right'], right_index=True, suffixes=('_tp', '_sb'))
+    )
+
+    intersections['area_sqm'] = (
+        gpd.GeoSeries(intersections['geometry_tp'])
+        .intersection(gpd.GeoSeries(intersections['geometry_sb']))
+        .to_crs({'proj': 'cea'})
+        .area
+    )
+
+    intersections['npoints'] = intersections.groupby('streamID')['streamID'].transform('count')
+    (
+        intersections[['streamID', 'area_sqm', 'lon_index', 'lat_index', 'npoints', 'lon', 'lat']]
+        .sort_values(['streamID', 'area_sqm'])
+        .to_csv(out_name, index=False)
+    )
+    return
+
+
+################################################################
+#   Master function
+################################################################
+def dissolve_streams_and_basins(stream_file: str, basins_file: str, save_dir: str,
+                                id_field: str = 'LINKNO', ds_field: str = 'DSLINKNO', length_field: str = 'Length',
+                                n_processes: int or None = 1, mp_streams: bool = True, mp_basins: bool = True) -> None:
+    """
+    Master function for preprocessing stream delineations and catchments and creating RAPID inputs.
+
+    Args:
+        stream_file (str): Path to stream network file
+        basins_file (str): Path to the basins/catchments file
+        save_dir (str): Path to the output directory
+        id_field (str): Field in network file that corresponds to the unique id of each stream segment. Defaults to 'LINKNO'.
+        ds_field (str): Field in network file that corresponds to the unique downstream id of each stream segment. Defaults to 'DSLINKNO'.
+        length_field (str): Field in network file that corresponds to the length of each stream segment. Defaults to 'Length'.
+        n_processes (int): Number of processes to use for multiprocessing. If None, will use all available cores. Defaults to 1.
+        mp_streams (bool): Whether to use multiprocessing for stream processing. Defaults to True.
+        mp_basins (bool): Whether to use multiprocessing for basin processing. Defaults to True.
+
+    Returns:
+        None
+    """
+    logger.info('Dissolving streams')
+    # Dissolve streams and basins
+    dissolve_streams(stream_file, save_dir=save_dir,
+                     stream_id_col=id_field, ds_id_col=ds_field, length_col=length_field,
+                     mp_dissolve=mp_streams, n_processes=n_processes * 2)
+
+    # dissolve basins
+    logger.info('Dissolving basins')
+    dissolve_basins(basins_file, mp_dissolve=mp_basins,
+                    save_dir=save_dir, stream_id_col="streamID", n_process=n_processes)
+
+    return
 
 
 def dissolve_streams(streams_gpkg: str, save_dir: str,
@@ -577,268 +844,6 @@ def dissolve_basins(basins_gpkg: str, save_dir: str, mp_dissolve: bool = True,
     basins_gdf.to_file(os.path.join(save_dir, os.path.basename(os.path.splitext(basins_gpkg)[0]) + '_model.gpkg'))
 
     return basins_gdf
-
-
-################################################################
-#   RAPID Preprocessing functions
-################################################################
-def create_comid_lat_lon_z(streams_gdf: gpd.GeoDataFrame, out_dir: str, id_field: str) -> None:
-    """
-    Assumes that geometry of the network are shapely LineStrings.
-    If there are MultiLineStrings than something has gone wrong in the dissolving step.
-
-    Args:
-        streams_gdf (gpd.GeoDataFrame): GeoDataFrame of the streams
-        out_dir (str): Path to directory where comid_lat_lon_z.csv will be saved
-        id_field (str): Field in streams_gdf that corresponds to the unique id of each stream segment
-
-    Returns:
-        None
-    """
-    logger.info("Creating comid_lat_lon_z.csv")
-    # todo sort the output df not gdf
-    # todo apply lambda to gdf only once
-    temp_network = streams_gdf.sort_values(id_field)
-    lats = temp_network.geometry.apply(lambda geom: geom.xy[1][0]).values
-    lons = temp_network.geometry.apply(lambda geom: geom.xy[0][0]).values
-
-    pd.DataFrame({
-        id_field: temp_network[id_field].values,
-        "lat": lats,
-        "lon": lons,
-        "z": 0
-    }).to_csv(os.path.join(out_dir, "comid_lat_lon_z.csv"), index=False, header=True)
-    return
-
-
-def create_riv_bas_id(streams_gdf: gpd.GeoDataFrame, out_dir: str, downstream_field: str, id_field: str) -> None:
-    """
-    Creates riv_bas_id.csv. Network is sorted to match the outputs of the ArcGIS tool this was designed from, 
-    and it is likely that the second element in the list for ascending may be True without impacting RAPID
-
-    Args:
-        streams_gdf (gpd.GeoDataFrame):
-        out_dir (str):
-        downstream_field (str):
-        id_field (str):
-
-    Returns:
-        None
-    """
-    logger.info("Creating riv_bas_id.csv")
-
-    # todo sort the output df not gdf
-    temp_network = streams_gdf.sort_values([downstream_field, id_field], ascending=[False, False])
-    temp_network[id_field].to_csv(os.path.join(out_dir, "riv_bas_id.csv"), index=False, header=False)
-    return
-
-
-def calculate_muskingum(streams_gdf: gpd.GeoDataFrame, out_dir: str, k: float, x: float) -> None:
-    """
-    Calculates muskingum parameters by using pyproj's Geod.geometry_length. Note that the network must be in EPSG 4326
-    """
-    logger.info("Creating muskingum parameters")
-
-    # todo split into two functions, one for calculating the parameters and one for writing them to csv
-    streams_gdf["LENGTH_GEO"] = streams_gdf.geometry.apply(_calculate_geodesic_length)
-    streams_gdf["Musk_kfac"] = streams_gdf["LENGTH_GEO"] * 3600
-    streams_gdf["Musk_k"] = streams_gdf["Musk_kfac"] * k
-    streams_gdf["Musk_x"] = x * 0.1
-
-    streams_gdf["Musk_kfac"].to_csv(os.path.join(out_dir, "kfac.csv"), index=False, header=False)
-    streams_gdf["Musk_k"].to_csv(os.path.join(out_dir, "k.csv"), index=False, header=False)
-    streams_gdf["Musk_x"].to_csv(os.path.join(out_dir, "x.csv"), index=False, header=False)
-    return
-
-
-def _calculate_geodesic_length(line) -> float:
-    """
-    Input is shapely geometry, should be all shapely LineString objects
-    """
-    geod = Geod(ellps='WGS84')
-    length = geod.geometry_length(line) / 1000  # To convert to km
-
-    # This is for the outliers that have 0 length
-    if length < 0.0000001:
-        length = 0.001
-    return length
-
-
-def create_rapid_connect(network: gpd.GeoDataFrame, out_dir: str, id_field: str, downstream_field: str) -> None:
-    """
-    Creates rapid_connect.csv
-
-    todo document the columns of the csv
-    rapid_connect is a csv file that contains the following columns:
-    HydroID: the HydroID of the stream
-    NextDownID: the HydroID of the next downstream stream
-    CountUpstreamID: the number of upstream streams
-    UpstreamID: the HydroID of the upstream streams
-
-    Args:
-        network:
-        out_dir:
-        id_field:
-        downstream_field:
-
-    Returns:
-
-    """
-    logger.info("Creating rapid_connect.csv")
-
-    list_all = []
-    max_count_Upstream = 0
-
-    for hydroid in network[id_field].values:
-        # find the HydroID of the upstreams
-        list_upstreamID = network.loc[network[downstream_field] == hydroid, id_field].values
-        # count the total number of the upstreams
-        count_upstream = len(list_upstreamID)
-        if count_upstream > max_count_Upstream:
-            max_count_Upstream = count_upstream
-        nextDownID = network.loc[network[id_field] == hydroid, downstream_field].values[0]
-
-        row_dict = {'HydroID': hydroid, 'NextDownID': nextDownID, 'CountUpstreamID': count_upstream}
-        for i in range(count_upstream):
-            row_dict[f'UpstreamID{i + 1}'] = list_upstreamID[i]
-        list_all.append(row_dict)
-
-    # Fill in NaN values for any missing upstream IDs
-    for i in range(max_count_Upstream):
-        col_name = f'UpstreamID{i + 1}'
-        for row in list_all:
-            if col_name not in row:
-                row[col_name] = 0
-
-    pd.DataFrame(list_all).to_csv(os.path.join(out_dir, 'rapid_connect.csv'), index=False, header=None)
-    return
-
-
-def make_weight_table(lsm_sample: str, out_dir: str, n_workers: int = 1, ):
-    out_name = 'weight_' + os.path.basename(os.path.splitext(lsm_sample)[0]) + '.csv'
-    logger.info(f"Creating weight table: {os.path.basename(out_name)}")
-
-    sb_gdf = gpd.read_file(glob.glob(os.path.join(out_dir, 'TDX_streamreach*'))[0])
-
-    # Extract xs and ys dimensions from the dataset
-    lsm_ds = xr.open_dataset(lsm_sample)
-    x_var = [v for v in lsm_ds.variables if v in ('lon', 'longitude',)][0]
-    y_var = [v for v in lsm_ds.variables if v in ('lat', 'latitude',)][0]
-    xs = lsm_ds[x_var].values
-    ys = lsm_ds[y_var].values
-    lsm_ds.close()
-
-    # correct irregular x coordinates
-    xs[xs > 180] = xs[xs > 180] - 360
-
-    # create an array of the indices for x and y
-    x_idxs = np.arange(len(xs))
-    y_idxs = np.arange(len(ys))
-
-    x_min, y_min, x_max, y_max = sb_gdf.total_bounds
-
-    x_min_idx = np.argmin(np.abs(xs - x_min))
-    x_max_idx = np.argmin(np.abs(xs - x_max))
-    y_min_idx = np.argmin(np.abs(ys - y_min))
-    y_max_idx = np.argmin(np.abs(ys - y_max))
-
-    y_min_idx, y_max_idx = min(y_min_idx, y_max_idx), max(y_min_idx, y_max_idx)
-    xs = xs[x_min_idx:x_max_idx + 1]
-    ys = ys[y_min_idx:y_max_idx + 1]
-    x_idxs = x_idxs[x_min_idx:x_max_idx + 1]
-    y_idxs = y_idxs[y_min_idx:y_max_idx + 1]
-
-    resolution = np.abs(xs[1] - xs[0])
-
-    # create thiessen polygons around the 2d array centers and convert to a geodataframe
-    x_grid, y_grid = np.meshgrid(xs, ys)
-    x_idx, y_idx = np.meshgrid(x_idxs, y_idxs)
-    x_grid = x_grid.flatten()
-    y_grid = y_grid.flatten()
-    x_idx = x_idx.flatten()
-    y_idx = y_idx.flatten()
-    x_left = x_grid - resolution / 2
-    x_right = x_grid + resolution / 2
-    y_bottom = y_grid - resolution / 2
-    y_top = y_grid + resolution / 2
-
-    def _point_to_box(row: pd.Series) -> box:
-        return box(row.x_left, row.y_bottom, row.x_right, row.y_top)
-
-    tg_gdf = dd.from_pandas(
-        pd.DataFrame(
-            np.transpose(np.array([x_left, y_bottom, x_right, y_top, x_idx, y_idx, x_grid, y_grid])),
-            columns=['x_left', 'y_bottom', 'x_right', 'y_top', 'lon_index', 'lat_index', 'lon', 'lat']
-        ),
-        npartitions=n_workers
-    )
-    tg_gdf['geometry'] = tg_gdf.apply(lambda row: _point_to_box(row), axis=1, meta=('geometry', 'object'))
-    tg_gdf = tg_gdf.compute()
-
-    # drop the columns used for determining the bounding boxes
-    tg_gdf = tg_gdf[['lon_index', 'lat_index', 'lon', 'lat', 'geometry']]
-    tg_gdf = gpd.GeoDataFrame(tg_gdf, geometry='geometry', crs='epsg:4326')
-
-    # Spatial join the two dataframes using the 'intersects' predicate
-    intersections = gpd.sjoin(tg_gdf, sb_gdf, predicate='intersects')
-
-    intersections = gpd.GeoDataFrame(
-        intersections
-        .join(tg_gdf[['geometry', ]], how='outer')
-        .merge(sb_gdf[['geometry', ]], left_on=['index_right'], right_index=True, suffixes=('_tp', '_sb'))
-    )
-
-    intersections['area_sqm'] = (
-        gpd.GeoSeries(intersections['geometry_tp'])
-        .intersection(gpd.GeoSeries(intersections['geometry_sb']))
-        .to_crs({'proj': 'cea'})
-        .area
-    )
-
-    intersections['npoints'] = intersections.groupby('streamID')['streamID'].transform('count')
-    (
-        intersections[['streamID', 'area_sqm', 'lon_index', 'lat_index', 'npoints', 'lon', 'lat']]
-        .sort_values(['streamID', 'area_sqm'])
-        .to_csv(out_name, index=False)
-    )
-    return
-
-
-################################################################
-#   Master function
-################################################################
-def dissolve_streams_and_basins(stream_file: str, basins_file: str, save_dir: str,
-                                id_field: str = 'LINKNO', ds_field: str = 'DSLINKNO', length_field: str = 'Length',
-                                n_processes: int or None = 1, mp_streams: bool = True, mp_basins: bool = True) -> None:
-    """
-    Master function for preprocessing stream delineations and catchments and creating RAPID inputs.
-
-    Args:
-        stream_file (str): Path to stream network file
-        basins_file (str): Path to the basins/catchments file
-        save_dir (str): Path to the output directory
-        id_field (str): Field in network file that corresponds to the unique id of each stream segment. Defaults to 'LINKNO'.
-        ds_field (str): Field in network file that corresponds to the unique downstream id of each stream segment. Defaults to 'DSLINKNO'.
-        length_field (str): Field in network file that corresponds to the length of each stream segment. Defaults to 'Length'.
-        n_processes (int): Number of processes to use for multiprocessing. If None, will use all available cores. Defaults to 1.
-        mp_streams (bool): Whether to use multiprocessing for stream processing. Defaults to True.
-        mp_basins (bool): Whether to use multiprocessing for basin processing. Defaults to True.
-
-    Returns:
-        None
-    """
-    logger.info('Dissolving streams')
-    # Dissolve streams and basins
-    dissolve_streams(stream_file, save_dir=save_dir,
-                     stream_id_col=id_field, ds_id_col=ds_field, length_col=length_field,
-                     mp_dissolve=mp_streams, n_processes=n_processes * 2)
-
-    # dissolve basins
-    logger.info('Dissolving basins')
-    dissolve_basins(basins_file, mp_dissolve=mp_basins,
-                    save_dir=save_dir, stream_id_col="streamID", n_process=n_processes)
-
-    return
 
 
 def prepare_rapid_inputs(streams_gpkg: gpd.GeoDataFrame, save_dir: str,
