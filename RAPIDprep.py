@@ -721,10 +721,8 @@ def dissolve_streams(streams_gpkg: str, save_dir: str,
     Returns:
         gpd.GeoDataFrame: Dissolved streams
     """
-    logger.info(datetime.datetime.now().strftime("%H:%M:%S"))
     streams_gdf = gpd.read_file(streams_gpkg)
     logger.info(f"Finished reading {streams_gpkg}")
-    logger.info(datetime.datetime.now().strftime("%H:%M:%S"))
     logger.info(f'Total features {streams_gdf.shape[0]}')
 
     streams_gdf['MERGEIDS'] = np.nan
@@ -801,10 +799,8 @@ def dissolve_basins(basins_gpkg: str, save_dir: str, mp_dissolve: bool = True,
     Returns:
         gpd.GeoDataFrame: Dissolved network
     """
-    logger.info(datetime.datetime.now().strftime("%H:%M:%S"))
     basins_gdf = gpd.read_file(basins_gpkg)
     logger.info(f"Finished reading {basins_gpkg}")
-    logger.info(datetime.datetime.now().strftime("%H:%M:%S"))
     logger.info(basins_gdf.shape[0])
 
     with open(os.path.join(save_dir, 'adjoint_dissolves_tree.json'), 'r') as f:
