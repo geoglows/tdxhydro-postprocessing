@@ -2,7 +2,7 @@ import glob
 import logging
 import os
 
-from RAPIDprep import validate_rapid_directory
+from RAPIDprep import is_valid_rapid_dir
 
 logging.basicConfig(
     level=logging.INFO,
@@ -13,4 +13,4 @@ logging.basicConfig(
 )
 
 for d in glob.glob(os.path.join('/tdxrapid', '*')):
-    validate_rapid_directory(d)
+    is_valid_rapid_dir(d)

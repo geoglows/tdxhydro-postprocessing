@@ -17,7 +17,7 @@ import xarray as xr
 from pyproj import Geod
 from shapely.geometry import box
 
-hydrobasin_cache = {
+HYDROBASIN_IDS = {
     1020000010: 11, 1020011530: 12, 1020018110: 13, 1020021940: 14, 1020027430: 15, 1020034170: 16,
     1020035180: 17, 1020040190: 18, 2020033490: 21, 2020041390: 22, 2020057170: 23, 2020065840: 24,
     2020071190: 25, 2020000010: 26, 2020003440: 27, 2020018240: 28, 2020024230: 29, 3020009320: 31,
@@ -31,11 +31,27 @@ hydrobasin_cache = {
     8020020760: 87, 9020000010: 91
 }
 
+REQUIRED_RAPID_FILES = [
+    'rapid_connect.csv',
+    'riv_bas_id.csv',
+    'comid_lat_lon_z.csv',
+    'k.csv',
+    'kfac.csv',
+    'x.csv',
+]
+REQUIRED_NETWORK_FILES = [
+    'adjoint_tree.json',
+    'adjoint_dissolves_tree.json',
+    'zero_length_fixes.csv',
+]
+REQUIRED_GEOPACKAGES = [
+    'TDX_streamnet_*_model.gpkg',
+    'TDX_streamnet_*_vis.gpkg',
+    'TDX_streamreach_basins_*_model.gpkg'
+]
+
 # set up logging
 logger = logging.getLogger(__name__)
-
-pd.options.display.width = 100
-pd.options.display.max_colwidth = 50
 
 
 ################################################################
@@ -855,73 +871,56 @@ def prepare_rapid_inputs(streams_gpkg: gpd.GeoDataFrame, save_dir: str,
     return
 
 
-def validate_rapid_directory(directory: str):
+def is_valid_rapid_dir(directory: str) -> bool:
     """
     Validate that the directory contains the necessary files for RAPID.
 
     Args:
         directory (str): Path to the directory to validate
     """
-    required_rapid_files = [
-        'rapid_connect.csv',
-        'riv_bas_id.csv',
-        'comid_lat_lon_z.csv',
-        'k.csv',
-        'kfac.csv',
-        'x.csv',
-    ]
-    expected_network_files = [
-        'adjoint_tree.json',
-        'adjoint_dissolves_tree.json',
-        'zero_length_fixes.csv',
-    ]
-    expected_geopackages = [
-        'TDX_streamnet_*_model.gpkg',
-        'TDX_streamnet_*_vis.gpkg',
-        'TDX_streamreach_basins_*_model.gpkg'
-    ]
     # Look for RAPID files
-    missing_rapid_files = [f for f in required_rapid_files if not os.path.isfile(os.path.join(directory, f))]
+    missing_rapid_files = [f for f in REQUIRED_RAPID_FILES if not os.path.isfile(os.path.join(directory, f))]
 
     # look for weight tables
     weight_tables = glob.glob(os.path.join(directory, 'weight_*.csv'))
 
     # look for dissolved support files
-    missing_network_files = [f for f in expected_network_files if not os.path.isfile(os.path.join(directory, f))]
+    missing_network_files = [f for f in REQUIRED_NETWORK_FILES if not os.path.isfile(os.path.join(directory, f))]
 
     # look for geopackages
-    missing_geopackages = [f for f in expected_geopackages if len(glob.glob(os.path.join(directory, f))) == 0]
+    missing_geopackages = [f for f in REQUIRED_GEOPACKAGES if len(glob.glob(os.path.join(directory, f))) == 0]
 
     # summarize findings
     logger.info(f'Validating directory: {directory}')
     if all([
         len(missing_rapid_files) == 0,
-        len(weight_tables) > 0,
+        len(weight_tables) >= 3,
         len(missing_network_files) == 0,
         len(missing_geopackages) == 0
     ]):
         logger.info('All expected files found in this directory')
         logger.info(f'Found {len(weight_tables)} weight tables')
-    else:
-        if len(missing_rapid_files) != 0:
-            logger.info('Missing RAPID files:')
-            for file in missing_rapid_files:
-                logger.info(file)
+        logger.info('')
+        return True
 
-        if len(weight_tables) == 0:
-            logger.info('No weight tables found')
-        else:
-            logger.info(f'Found {len(weight_tables)} weight tables')
+    if len(missing_rapid_files) != 0:
+        logger.info('Missing RAPID files:')
+        for file in missing_rapid_files:
+            logger.info(file)
 
-        if len(missing_network_files) != 0:
-            logger.info('Missing network files:')
-            for file in missing_network_files:
-                logger.info(file)
+    logger.info(f'Found {len(weight_tables)} weight tables')
+    for table in weight_tables:
+        logger.info(f'\t{table}')
 
-        if len(missing_geopackages) != 0:
-            logger.info('Missing geopackages:')
-            for file in missing_geopackages:
-                logger.info(file)
+    if len(missing_network_files) != 0:
+        logger.info('Missing network files:')
+        for file in missing_network_files:
+            logger.info(file)
+
+    if len(missing_geopackages) != 0:
+        logger.info('Missing geopackages:')
+        for file in missing_geopackages:
+            logger.info(file)
 
     logger.info('')
-    return
+    return False
