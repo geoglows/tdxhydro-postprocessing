@@ -535,53 +535,50 @@ def _calculate_geodesic_length(line) -> float:
     return length
 
 
-def create_rapid_connect(network: gpd.GeoDataFrame, out_dir: str, id_field: str, downstream_field: str) -> None:
+def create_rapid_connect(streams_gdf: gpd.GeoDataFrame,
+                         save_dir: str, id_field: str, ds_id_field: str,
+                         n_workers: int or None = 1) -> None:
     """
     Creates rapid_connect.csv
 
-    todo document the columns of the csv
-    rapid_connect is a csv file that contains the following columns:
-    HydroID: the HydroID of the stream
-    NextDownID: the HydroID of the next downstream stream
-    CountUpstreamID: the number of upstream streams
-    UpstreamID: the HydroID of the upstream streams
+    rapid_connect is a csv file with no header or index column that contains the following columns:
+        HydroID: the HydroID of the stream
+        NextDownID: the HydroID of the next downstream stream
+        CountUpstreamID: the number of upstream streams
+        UpstreamID1: the HydroID of the first upstream segment, if it exits
+        UpstreamID2: the HydroID of the second upstream segment, if it exits
 
     Args:
-        network:
-        out_dir:
-        id_field:
-        downstream_field:
+        streams_gdf: GeoDataFrame of the streams
+        save_dir: Path to directory where rapid_connect.csv will be saved
+        id_field: Field in streams_gdf that corresponds to the unique id of each stream segment
+        ds_id_field: Field in streams_gdf that corresponds to the downstream id of each stream segment
+        n_workers: Number of workers to use for multiprocessing. If None, then all available workers will be used.
 
     Returns:
 
     """
     logger.info("Creating rapid_connect.csv")
 
-    list_all = []
-    max_count_Upstream = 0
+    def _make_rapid_connect_row(stream_id):
+        upstreams = streams_gdf.loc[streams_gdf[ds_id_field] == stream_id, id_field].values
+        return {
+            'HydroID': stream_id,
+            'NextDownID': streams_gdf.loc[streams_gdf[id_field] == stream_id, ds_id_field].values[0],
+            'CountUpstreamID': len(upstreams),
+            **{f'UpstreamID{i + 1}': upstreams[i] for i in range(len(upstreams))}
+        }
 
-    for hydroid in network[id_field].values:
-        # find the HydroID of the upstreams
-        list_upstreamID = network.loc[network[downstream_field] == hydroid, id_field].values
-        # count the total number of the upstreams
-        count_upstream = len(list_upstreamID)
-        if count_upstream > max_count_Upstream:
-            max_count_Upstream = count_upstream
-        nextDownID = network.loc[network[id_field] == hydroid, downstream_field].values[0]
+    with Pool(n_workers) as p:
+        rapid_connect = p.map(_make_rapid_connect_row, streams_gdf[id_field].values)
 
-        row_dict = {'HydroID': hydroid, 'NextDownID': nextDownID, 'CountUpstreamID': count_upstream}
-        for i in range(count_upstream):
-            row_dict[f'UpstreamID{i + 1}'] = list_upstreamID[i]
-        list_all.append(row_dict)
-
-    # Fill in NaN values for any missing upstream IDs
-    for i in range(max_count_Upstream):
-        col_name = f'UpstreamID{i + 1}'
-        for row in list_all:
-            if col_name not in row:
-                row[col_name] = 0
-
-    pd.DataFrame(list_all).to_csv(os.path.join(out_dir, 'rapid_connect.csv'), index=False, header=None)
+    rapid_connect = (
+        pd
+        .DataFrame(rapid_connect)
+        .fillna(0)
+        .astype(int)
+    )
+    rapid_connect.to_csv(os.path.join(save_dir, 'rapid_connect.csv'), index=False, header=None)
     return
 
 
@@ -860,14 +857,15 @@ def dissolve_basins(basins_gpkg: str, save_dir: str, mp_dissolve: bool = True,
 
 def prepare_rapid_inputs(streams_gpkg: gpd.GeoDataFrame, save_dir: str,
                          id_field: str = 'LINKNO', ds_field: str = 'DSLINKNO',
-                         default_k: float = 0.35, default_x: float = 3) -> None:
+                         default_k: float = 0.35, default_x: float = 3,
+                         n_workers: int or None = 1) -> None:
     # Create rapid preprocessing files
     logger.info('Creating RAPID files')
     streams_gdf = gpd.read_file(streams_gpkg)
     create_comid_lat_lon_z(streams_gdf, save_dir, id_field)
     create_riv_bas_id(streams_gdf, save_dir, ds_field, id_field)
     calculate_muskingum(streams_gdf, save_dir, default_k, default_x)
-    create_rapid_connect(streams_gdf, save_dir, id_field, ds_field)
+    create_rapid_connect(streams_gdf, save_dir, id_field, ds_field, n_workers=n_workers)
     return
 
 
