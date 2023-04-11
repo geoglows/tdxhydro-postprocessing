@@ -535,6 +535,18 @@ def _calculate_geodesic_length(line) -> float:
     return length
 
 
+def _make_rapid_connect_row(stream_id, streams_gdf):
+    id_field = 'LINKNO'
+    ds_id_field = 'DSLINKNO'
+    upstreams = streams_gdf.loc[streams_gdf[ds_id_field] == stream_id, id_field].values
+    return {
+        'HydroID': stream_id,
+        'NextDownID': streams_gdf.loc[streams_gdf[id_field] == stream_id, ds_id_field].values[0],
+        'CountUpstreamID': len(upstreams),
+        **{f'UpstreamID{i + 1}': upstreams[i] for i in range(len(upstreams))}
+    }
+
+
 def create_rapid_connect(streams_gdf: gpd.GeoDataFrame,
                          save_dir: str, id_field: str, ds_id_field: str,
                          n_workers: int or None = 1) -> None:
@@ -560,17 +572,8 @@ def create_rapid_connect(streams_gdf: gpd.GeoDataFrame,
     """
     logger.info("Creating rapid_connect.csv")
 
-    def _make_rapid_connect_row(stream_id):
-        upstreams = streams_gdf.loc[streams_gdf[ds_id_field] == stream_id, id_field].values
-        return {
-            'HydroID': stream_id,
-            'NextDownID': streams_gdf.loc[streams_gdf[id_field] == stream_id, ds_id_field].values[0],
-            'CountUpstreamID': len(upstreams),
-            **{f'UpstreamID{i + 1}': upstreams[i] for i in range(len(upstreams))}
-        }
-
     with Pool(n_workers) as p:
-        rapid_connect = p.map(_make_rapid_connect_row, streams_gdf[id_field].values)
+        rapid_connect = p.starmap(_make_rapid_connect_row, [[x, streams_gdf] for x in streams_gdf[id_field].values])
 
     rapid_connect = (
         pd
@@ -855,13 +858,13 @@ def dissolve_basins(basins_gpkg: str, save_dir: str, mp_dissolve: bool = True,
     return basins_gdf
 
 
-def prepare_rapid_inputs(streams_gpkg: gpd.GeoDataFrame, save_dir: str,
+def prepare_rapid_inputs(save_dir: str,
                          id_field: str = 'LINKNO', ds_field: str = 'DSLINKNO',
                          default_k: float = 0.35, default_x: float = 3,
                          n_workers: int or None = 1) -> None:
     # Create rapid preprocessing files
     logger.info('Creating RAPID files')
-    streams_gdf = gpd.read_file(streams_gpkg)
+    streams_gdf = gpd.read_file(glob.glob(os.path.join(save_dir, 'TDX_streamnet*_model.gpkg'))[0])
     create_comid_lat_lon_z(streams_gdf, save_dir, id_field)
     create_riv_bas_id(streams_gdf, save_dir, ds_field, id_field)
     calculate_muskingum(streams_gdf, save_dir, default_k, default_x)

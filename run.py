@@ -81,11 +81,10 @@ if __name__ == '__main__':
                                 save_dir=save_dir, stream_id_col="streamID", n_process=N_PROCESSES)
 
             if not all([os.path.exists(os.path.join(save_dir, f)) for f in REQUIRED_RAPID_FILES]):
-                prepare_rapid_inputs(streams_gpkg,
-                                     save_dir=save_dir,
+                prepare_rapid_inputs(save_dir=save_dir,
                                      id_field=id_field,
                                      ds_field=ds_field,
-                                     n_workders=min(N_PROCESSES, 10))
+                                     n_workers=min(N_PROCESSES, 10))
 
             if len(list(glob.glob(os.path.join(save_dir, 'weight_*.csv')))) < 3:
                 for sample_grid in sample_grids:
