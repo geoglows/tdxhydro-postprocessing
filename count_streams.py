@@ -16,3 +16,15 @@ if __name__ == '__main__':
         results = p.map(count_streams, streams_paths)
     results = np.array(results)
     pd.DataFrame(results, columns=['region', 'count']).to_csv('network_data/stream_counts.csv', index=False)
+
+    merged_df = (
+        pd
+        .read_csv('network_data/stream_counts.csv')
+        .merge(pd.read_csv('network_data/stream_counts_source.csv'),
+               how='outer', left_on='region', right_on='region', suffixes=('_calc', '_source'))
+        .sort_values(by='region')
+    )
+    merged_df['percent_removed'] = (merged_df['count_source'] - merged_df['count_calc']) / merged_df['count_source']
+    merged_df['percent_removed'] = merged_df['percent_removed'].round(4)
+    merged_df.to_csv('network_data/stream_counts_merged.csv', index=False)
+
