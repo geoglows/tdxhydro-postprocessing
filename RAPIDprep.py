@@ -731,19 +731,21 @@ def correct_streams(streams_gpkg: str, save_dir: str,
     Returns:
         gpd.GeoDataFrame: Dissolved streams
     """
+    logger.info(f"Reading {streams_gpkg}")
     streams_gdf = gpd.read_file(streams_gpkg)
-    logger.info(f"Finished reading {streams_gpkg}")
     logger.info(f'Total features {streams_gdf.shape[0]}')
 
     streams_gdf['MERGEIDS'] = np.nan
 
     # trace network to create adjoint tree
+    logger.info('Tracing network')
     adjoint_dict = _create_adjoint_dict(streams_gdf, id_field=stream_id_col, ds_id_field=ds_id_field,
                                         order_field="strmOrder")
     with open(os.path.join(save_dir, 'adjoint_tree.json'), 'w') as f:
         json.dump(adjoint_dict, f)
 
     # Drop trees with small total length/area
+    logger.info('Dropping small trees')
     small_tree_outlet_ids = streams_gdf.loc[np.logical_and(
         streams_gdf[ds_id_field] == -1,
         streams_gdf['DSContArea'] < 75_000_000
@@ -767,6 +769,7 @@ def correct_streams(streams_gpkg: str, save_dir: str,
                                                 order_field="strmOrder", order_filter=2)
 
     # list all ids that were merged, turn a list of lists into a flat list, remove duplicates by converting to a set
+    logger.info('Finding headwater streams to be dissolved')
     top_order_2s = {str(value[-1]) for value in list(adjoint_order_2_dict.values())}
     adjoint_order_2_dict = {key: adjoint_dict[key] for key in top_order_2s}
     all_merged_rivids = set(chain.from_iterable([adjoint_dict[rivid] for rivid in top_order_2s]))

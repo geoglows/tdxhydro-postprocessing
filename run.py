@@ -26,7 +26,7 @@ logging.basicConfig(
 outputs_path = '/tdxrapid'
 MP_STREAMS = True
 MP_BASINS = True
-MIN_N_PROCESSES = 6
+MIN_N_PROCESSES = 3
 id_field = 'LINKNO'
 ds_field = 'DSLINKNO'
 length_field = 'Length'
@@ -57,9 +57,10 @@ if __name__ == '__main__':
 
         n_streams = region_sizes_df.loc[region_sizes_df['region'] == region_number, 'count'].values[0]
         if n_streams > 500_000:
-            n_processes = MIN_N_PROCESSES
+            n_processes_basins = MIN_N_PROCESSES
         else:
-            n_processes = 2 * MIN_N_PROCESSES
+            n_processes_basins = 2 * MIN_N_PROCESSES
+        n_processes_streams = 2 * n_processes_basins
 
         # create the output folder
         save_dir = os.path.join(outputs_path, f'{region_number}')
@@ -72,24 +73,25 @@ if __name__ == '__main__':
         logging.info(streams_gpkg)
         logging.info(basins_gpkg)
         logging.info(save_dir)
+        logging.info(f'N Processes: {n_processes_streams} (streams), {n_processes_basins} (basins)')
 
         try:
             # Streams and rapid inputs
             if not glob.glob(os.path.join(save_dir, 'TDX_streamnet*.gpkg')):
                 correct_streams(streams_gpkg, save_dir=save_dir, stream_id_col=id_field, ds_id_field=ds_field,
-                                length_col=length_field, mp_dissolve=MP_STREAMS, n_processes=n_processes)
+                                length_col=length_field, mp_dissolve=MP_STREAMS, n_processes=n_processes_streams)
             if not all([os.path.exists(os.path.join(save_dir, f)) for f in REQUIRED_RAPID_FILES]):
                 prepare_rapid_inputs(save_dir=save_dir,
                                      id_field=id_field,
-                                     n_workers=min(n_processes, 18))
+                                     n_workers=min(n_processes_streams, 18))
 
             # Basins and weight tables
             # if not glob.glob(os.path.join(save_dir, 'TDX_streamreach_basins*.gpkg')):
             #     dissolve_basins(basins_gpkg, mp_dissolve=MP_BASINS,
-            #                     save_dir=save_dir, stream_id_col="streamID", n_process=n_processes)
+            #                     save_dir=save_dir, stream_id_col="streamID", n_process=n_processes_basins)
             # if len(list(glob.glob(os.path.join(save_dir, 'weight_*.csv')))) < 3:
             #     for sample_grid in sample_grids:
-            #         make_weight_table(sample_grid, save_dir, n_workers=n_processes)
+            #         make_weight_table(sample_grid, save_dir, n_workers=n_processes_streams)
 
         except Exception as e:
             logging.info('\n----- ERROR -----\n')
