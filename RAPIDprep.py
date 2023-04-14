@@ -1,4 +1,3 @@
-import datetime
 import glob
 import json
 import logging
@@ -178,8 +177,8 @@ def _trace_tree(tree: dict, search_id: int, cuttoff_n: int = 200) -> list:
     return upstream
 
 
-def _create_adjoint_dict(network_gdf: gpd.GeoDataFrame, out_file: str = None, stream_id_col: str = "COMID",
-                         next_down_id_col: str = "NextDownID", order_col: str = "order_", trace_up: bool = True,
+def _create_adjoint_dict(network_gdf: gpd.GeoDataFrame, out_file: str = None, id_field: str = "COMID",
+                         ds_id_field: str = "NextDownID", order_field: str = "order_", trace_up: bool = True,
                          order_filter: int = 0) -> dict:
     """
     Creates a dictionary where each unique id in a stream network is assigned a list of all ids upstream or downstream
@@ -192,10 +191,10 @@ def _create_adjoint_dict(network_gdf: gpd.GeoDataFrame, out_file: str = None, st
                      must contain attributes for a unique id and a next down id, and if filtering by order number is
                      specified, it must also contain a column with stream order values.
         out_file: a path to an output file to write the dictionary as a .json, if desired.
-        stream_id_col: the name of the column that contains the unique ids for the stream segments
-        next_down_id_col: the name of the column that contains the unique id of the next down stream for each row, the
+        id_field: the name of the column that contains the unique ids for the stream segments
+        ds_id_field: the name of the column that contains the unique id of the next down stream for each row, the
                           one that the stream for that row feeds into.
-        order_col: name of the column that contains the stream order
+        order_field: name of the column that contains the stream order
         trace_up: if true, trace up from each stream, otherwise trace down.
         order_filter: if set to number other than zero, limits values traced to only ids that match streams with that
                       stream order
@@ -207,34 +206,35 @@ def _create_adjoint_dict(network_gdf: gpd.GeoDataFrame, out_file: str = None, st
             upstream_lists_dict = json.load(f)
         return upstream_lists_dict
 
-    columns_to_search = [stream_id_col, next_down_id_col]
+    columns_to_search = [id_field, ds_id_field]
     if order_filter != 0:
-        columns_to_search.append(order_col)
+        columns_to_search.append(order_field)
     for col in columns_to_search:
         if col not in network_gdf.columns:
             logger.info(f"Column {col} not present")
             return {}
     if trace_up:
-        tree = _make_tree_up(network_gdf, order_filter, stream_id_col, next_down_id_col, order_col)
+        tree = _make_tree_up(network_gdf, order_filter, id_field, ds_id_field, order_field)
     else:
-        tree = _make_tree_down(network_gdf, order_filter, stream_id_col, next_down_id_col, order_col)
+        tree = _make_tree_down(network_gdf, order_filter, id_field, ds_id_field, order_field)
     if order_filter != 0:
         upstream_lists_dict = {str(hydro_id): _trace_tree(tree, hydro_id) for hydro_id in
-                               network_gdf[network_gdf[order_col] == order_filter][stream_id_col]}
+                               network_gdf[network_gdf[order_field] == order_filter][id_field]}
     else:
-        upstream_lists_dict = {str(hydro_id): _trace_tree(tree, hydro_id) for hydro_id in network_gdf[stream_id_col]}
+        upstream_lists_dict = {str(hydro_id): _trace_tree(tree, hydro_id) for hydro_id in network_gdf[id_field]}
     if out_file is not None:
         if not os.path.exists(out_file):
             with open(out_file, "w") as f:
                 json.dump(upstream_lists_dict, f, cls=NpEncoder)
         else:
             logger.info("File already created")
-            return upstream_lists_dict  # Added to return dictionary anyways
+            return upstream_lists_dict  # Added to return dictionary anyway
     return upstream_lists_dict
 
 
-def _merge_streams(upstream_ids: list, network_gdf: gpd.GeoDataFrame, make_model_version: bool,
-                   streamid: str = 'LINKNO', dsid: str = 'DSLINKNO', length_col: str = 'Length') -> gpd.GeoDataFrame:
+def _merge_headwater_streams(upstream_ids: list, network_gdf: gpd.GeoDataFrame, make_model_version: bool,
+                             streamid: str = 'LINKNO', dsid: str = 'DSLINKNO',
+                             length_col: str = 'Length') -> gpd.GeoDataFrame:
     """
     Selects the stream segments that are upstream of the given stream segments, and merges them into a single geodataframe.
     """
@@ -482,25 +482,21 @@ def create_comid_lat_lon_z(streams_gdf: gpd.GeoDataFrame, out_dir: str, id_field
     return
 
 
-def create_riv_bas_id(streams_gdf: gpd.GeoDataFrame, out_dir: str, downstream_field: str, id_field: str) -> None:
+def create_riv_bas_id(streams_gdf: gpd.GeoDataFrame, out_dir: str, id_field: str) -> None:
     """
     Creates riv_bas_id.csv. Network is sorted to match the outputs of the ArcGIS tool this was designed from, 
     and it is likely that the second element in the list for ascending may be True without impacting RAPID
 
     Args:
-        streams_gdf (gpd.GeoDataFrame):
-        out_dir (str):
-        downstream_field (str):
-        id_field (str):
+        streams_gdf (gpd.GeoDataFrame): GeoDataFrame of the streams
+        out_dir (str): Path to directory where riv_bas_id.csv will be saved
+        id_field (str): Field in streams_gdf that corresponds to the unique id of each stream segment
 
     Returns:
         None
     """
     logger.info("Creating riv_bas_id.csv")
-
-    # todo sort the output df not gdf
-    temp_network = streams_gdf.sort_values([downstream_field, id_field], ascending=[False, False])
-    temp_network[id_field].to_csv(os.path.join(out_dir, "riv_bas_id.csv"), index=False, header=False)
+    streams_gdf[id_field].to_csv(os.path.join(out_dir, "riv_bas_id.csv"), index=False, header=False)
     return
 
 
@@ -548,7 +544,7 @@ def _make_rapid_connect_row(stream_id, streams_gdf):
 
 
 def create_rapid_connect(streams_gdf: gpd.GeoDataFrame,
-                         save_dir: str, id_field: str, ds_id_field: str,
+                         save_dir: str, id_field: str,
                          n_workers: int or None = 1) -> None:
     """
     Creates rapid_connect.csv
@@ -564,7 +560,6 @@ def create_rapid_connect(streams_gdf: gpd.GeoDataFrame,
         streams_gdf: GeoDataFrame of the streams
         save_dir: Path to directory where rapid_connect.csv will be saved
         id_field: Field in streams_gdf that corresponds to the unique id of each stream segment
-        ds_id_field: Field in streams_gdf that corresponds to the downstream id of each stream segment
         n_workers: Number of workers to use for multiprocessing. If None, then all available workers will be used.
 
     Returns:
@@ -692,10 +687,10 @@ def dissolve_streams_and_basins(stream_file: str, basins_file: str, save_dir: st
         stream_file (str): Path to stream network file
         basins_file (str): Path to the basins/catchments file
         save_dir (str): Path to the output directory
-        id_field (str): Field in network file that corresponds to the unique id of each stream segment. Defaults to 'LINKNO'.
-        ds_field (str): Field in network file that corresponds to the unique downstream id of each stream segment. Defaults to 'DSLINKNO'.
-        length_field (str): Field in network file that corresponds to the length of each stream segment. Defaults to 'Length'.
-        n_processes (int): Number of processes to use for multiprocessing. If None, will use all available cores. Defaults to 1.
+        id_field (str): Field name with the unique id of each stream segment. Defaults to 'LINKNO'.
+        ds_field (str): Field name with the unique downstream id of each stream segment. Defaults to 'DSLINKNO'.
+        length_field (str): Field name with the length of each stream segment. Defaults to 'Length'.
+        n_processes (int): Number of processes to use for multiprocessing. Defaults to 1.
         mp_streams (bool): Whether to use multiprocessing for stream processing. Defaults to True.
         mp_basins (bool): Whether to use multiprocessing for basin processing. Defaults to True.
 
@@ -704,9 +699,8 @@ def dissolve_streams_and_basins(stream_file: str, basins_file: str, save_dir: st
     """
     logger.info('Dissolving streams')
     # Dissolve streams and basins
-    dissolve_streams(stream_file, save_dir=save_dir,
-                     stream_id_col=id_field, ds_id_col=ds_field, length_col=length_field,
-                     mp_dissolve=mp_streams, n_processes=n_processes * 2)
+    correct_streams(stream_file, save_dir=save_dir, stream_id_col=id_field, ds_id_field=ds_field,
+                    length_col=length_field, mp_dissolve=mp_streams, n_processes=n_processes * 2)
 
     # dissolve basins
     logger.info('Dissolving basins')
@@ -716,10 +710,10 @@ def dissolve_streams_and_basins(stream_file: str, basins_file: str, save_dir: st
     return
 
 
-def dissolve_streams(streams_gpkg: str, save_dir: str,
-                     stream_id_col='LINKNO', ds_id_col: str = 'DSLINKNO', length_col: str = 'Length',
-                     mp_dissolve: bool = True, n_processes: int or None = None) -> gpd.GeoDataFrame:
-    """"
+def correct_streams(streams_gpkg: str, save_dir: str,
+                    stream_id_col='LINKNO', ds_id_field: str = 'DSLINKNO', length_col: str = 'Length',
+                    mp_dissolve: bool = True, n_processes: int or None = None) -> gpd.GeoDataFrame:
+    """
     Ensure that shapely >= 2.0.1, otherwise you will get access violations
 
     Dissolves order 1 streams with their downstream order 2 segments (along with their associated catchments).
@@ -728,8 +722,8 @@ def dissolve_streams(streams_gpkg: str, save_dir: str,
     Args:
         streams_gpkg (str): Path to delineation network file
         save_dir (str): Path to directory where dissolved network and catchments will be saved
-        stream_id_col (str, optional): Field in network file that corresponds to the unique id of each stream segment
-        ds_id_col (str, optional): Field in network file that corresponds to the unique downstream id of each stream segment
+        stream_id_col (str, optional): Field name with to the unique id of each stream segment
+        ds_id_field (str, optional): Field name with the unique downstream id of each stream segment
         length_col (str, optional): Field in network file that corresponds to the length of each stream segment
         mp_dissolve (bool, optional): Whether to use multiprocessing to dissolve streams
         n_processes (int, optional): Number of processes to use for parallel processing
@@ -743,38 +737,51 @@ def dissolve_streams(streams_gpkg: str, save_dir: str,
 
     streams_gdf['MERGEIDS'] = np.nan
 
+    # trace network to create adjoint tree
+    adjoint_dict = _create_adjoint_dict(streams_gdf, id_field=stream_id_col, ds_id_field=ds_id_field,
+                                        order_field="strmOrder")
+    with open(os.path.join(save_dir, 'adjoint_tree.json'), 'w') as f:
+        json.dump(adjoint_dict, f)
+
+    # Drop trees with small total length/area
+    small_tree_outlet_ids = streams_gdf.loc[np.logical_and(
+        streams_gdf[ds_id_field] == -1,
+        streams_gdf['DSContArea'] < 75_000_000
+    ), stream_id_col].values
+    small_tree_segments = set(
+        chain.from_iterable([adjoint_dict[str(x)] for x in small_tree_outlet_ids])
+    )
+    pd.DataFrame(small_tree_segments).to_csv(os.path.join(save_dir, 'small_drainage_tree_ids.csv'), index=False)
+    streams_gdf = streams_gdf[~streams_gdf[stream_id_col].isin(small_tree_segments)]
+
+    # Fix 0 length segments
     if 0 in streams_gdf[length_col].values:
         logger.info("Fixing length 0 segments")
-        zero_length_fixes_df = identify_0_length_fixes(streams_gdf, stream_id_col, ds_id_col, length_col)
+        zero_length_fixes_df = identify_0_length_fixes(streams_gdf, stream_id_col, ds_id_field, length_col)
         zero_length_fixes_df.to_csv(os.path.join(save_dir, 'zero_length_fixes.csv'), index=False)
         streams_gdf = apply_0_length_stream_fixes(streams_gdf, zero_length_fixes_df, stream_id_col, length_col)
         zero_length_fixes_df = None
 
-    adjoint_dict = _create_adjoint_dict(streams_gdf, stream_id_col=stream_id_col, next_down_id_col=ds_id_col,
-                                        order_col="strmOrder")
-
-    adjoint_order_2_dict = _create_adjoint_dict(streams_gdf, stream_id_col=stream_id_col, next_down_id_col=ds_id_col,
-                                                order_col="strmOrder", order_filter=2)
+    # Find headwater streams to be dissolved
+    adjoint_order_2_dict = _create_adjoint_dict(streams_gdf, id_field=stream_id_col, ds_id_field=ds_id_field,
+                                                order_field="strmOrder", order_filter=2)
 
     # list all ids that were merged, turn a list of lists into a flat list, remove duplicates by converting to a set
     top_order_2s = {str(value[-1]) for value in list(adjoint_order_2_dict.values())}
     adjoint_order_2_dict = {key: adjoint_dict[key] for key in top_order_2s}
     all_merged_rivids = set(chain.from_iterable([adjoint_dict[rivid] for rivid in top_order_2s]))
 
-    with open(os.path.join(save_dir, 'adjoint_tree.json'), 'w') as f:
-        json.dump(adjoint_dict, f)
-        adjoint_dict = None
-
     with open(os.path.join(save_dir, 'adjoint_dissolves_tree.json'), 'w') as f:
         json.dump(adjoint_order_2_dict, f)
 
+    # dissolve the headwater streams
     with Pool(n_processes) as p:
         # Process each chunk of basin_gdf separately
         logger.info("Merging streams (model)")
-        merged_streams_model = p.starmap(_merge_streams, [
+        merged_streams_model = p.starmap(_merge_headwater_streams, [
             (adjoint_order_2_dict[str(rivid)], streams_gdf, True) for rivid in top_order_2s])
         logger.info("Merging streams (mapping)")
-        merged_streams_mapping = p.starmap(_merge_streams, [
+        merged_streams_mapping = p.starmap(_merge_headwater_streams, [
             (adjoint_order_2_dict[str(rivid)], streams_gdf, False) for rivid in top_order_2s])
 
     # concat the merged features
@@ -798,8 +805,8 @@ def dissolve_streams(streams_gpkg: str, save_dir: str,
 
 
 def dissolve_basins(basins_gpkg: str, save_dir: str, mp_dissolve: bool = True,
-                    stream_id_col='LINKNO', n_process: int or None = None) -> gpd.GeoDataFrame:
-    """"
+                    stream_id_col='streamID', n_process: int or None = None) -> gpd.GeoDataFrame:
+    """
     Ensure that shapely >= 2.0.1, otherwise you will get access violations
 
     Dissolves order 1 streams with their downstream order 2 segments (along with their associated catchments).
@@ -822,6 +829,10 @@ def dissolve_basins(basins_gpkg: str, save_dir: str, mp_dissolve: bool = True,
     with open(os.path.join(save_dir, 'adjoint_dissolves_tree.json'), 'r') as f:
         adjoint_dict = json.load(f)
     all_merged_basins = set(chain.from_iterable([adjoint_dict[rivid] for rivid in adjoint_dict.keys()]))
+
+    # Drop basins of small drainage trees
+    small_tree_ids = pd.read_csv(os.path.join(save_dir, 'small_drainage_tree_ids.csv')).values.flatten()
+    basins_gdf = basins_gdf[~basins_gdf[stream_id_col].isin(small_tree_ids)]
 
     # Check for 0 length segments
     zero_length_fixes_df_path = os.path.join(save_dir, 'zero_length_fixes.csv')
@@ -859,16 +870,18 @@ def dissolve_basins(basins_gpkg: str, save_dir: str, mp_dissolve: bool = True,
 
 
 def prepare_rapid_inputs(save_dir: str,
-                         id_field: str = 'LINKNO', ds_field: str = 'DSLINKNO',
+                         id_field: str = 'LINKNO',
+                         order_field: str = 'strmOrder',
                          default_k: float = 0.35, default_x: float = 3,
                          n_workers: int or None = 1) -> None:
     # Create rapid preprocessing files
     logger.info('Creating RAPID files')
     streams_gdf = gpd.read_file(glob.glob(os.path.join(save_dir, 'TDX_streamnet*_model.gpkg'))[0])
-    create_comid_lat_lon_z(streams_gdf, save_dir, id_field)
-    create_riv_bas_id(streams_gdf, save_dir, ds_field, id_field)
-    calculate_muskingum(streams_gdf, save_dir, default_k, default_x)
-    create_rapid_connect(streams_gdf, save_dir, id_field, ds_field, n_workers=n_workers)
+    streams_gdf = streams_gdf.sort_values([order_field, id_field], ascending=[True, True])
+    create_comid_lat_lon_z(streams_gdf, save_dir, id_field=id_field)
+    create_riv_bas_id(streams_gdf, save_dir, id_field=id_field)
+    calculate_muskingum(streams_gdf, save_dir, k=default_k, x=default_x)
+    create_rapid_connect(streams_gdf, save_dir, id_field=id_field, n_workers=n_workers)
     return
 
 
@@ -905,21 +918,21 @@ def is_valid_rapid_dir(directory: str) -> bool:
         return True
 
     if len(missing_rapid_files) != 0:
-        logger.info('Missing RAPID files:')
+        logger.info('\tMissing RAPID files:')
         for file in missing_rapid_files:
             logger.info(file)
 
-    logger.info(f'Found {len(weight_tables)} weight tables')
+    logger.info(f'\tFound {len(weight_tables)} weight tables')
     for table in weight_tables:
         logger.info(f'\t{table}')
 
     if len(missing_network_files) != 0:
-        logger.info('Missing network files:')
+        logger.info('\tMissing network files:')
         for file in missing_network_files:
             logger.info(file)
 
     if len(missing_geopackages) != 0:
-        logger.info('Missing geopackages:')
+        logger.info('\tMissing geopackages:')
         for file in missing_geopackages:
             logger.info(file)
 
