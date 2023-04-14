@@ -26,7 +26,7 @@ logging.basicConfig(
 outputs_path = '/tdxrapid'
 MP_STREAMS = True
 MP_BASINS = True
-MIN_N_PROCESSES = 3
+MIN_N_PROCESSES = 4
 id_field = 'LINKNO'
 ds_field = 'DSLINKNO'
 length_field = 'Length'
