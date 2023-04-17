@@ -6,9 +6,11 @@ import traceback
 
 import pandas as pd
 
+import RAPIDprep
 from RAPIDprep import (
     correct_streams,
     dissolve_basins,
+    apply_0_length_basin_fixes,
     prepare_rapid_inputs,
     make_weight_table,
     is_valid_rapid_dir,
@@ -26,7 +28,7 @@ logging.basicConfig(
 outputs_path = '/tdxrapid'
 MP_STREAMS = True
 MP_BASINS = True
-MIN_N_PROCESSES = 4
+MIN_N_PROCESSES = 6
 id_field = 'LINKNO'
 ds_field = 'DSLINKNO'
 length_field = 'Length'
@@ -51,7 +53,11 @@ if __name__ == '__main__':
     ):
         # Identify the region being processed
         region_number = int(os.path.basename(streams_gpkg).split('_')[2])
-        if region_number in regions_to_skip or region_number in completed_regions:
+
+        if region_number in regions_to_skip:
+            logging.info(f'Skipping region {region_number} - In regions_to_skip\n')
+            continue
+        if region_number in completed_regions:
             logging.info(f'Skipping region {region_number} - Valid directory already exists\n')
             continue
 
@@ -73,6 +79,7 @@ if __name__ == '__main__':
         logging.info(streams_gpkg)
         logging.info(basins_gpkg)
         logging.info(save_dir)
+        logging.info(f'Streams: {n_streams}')
         logging.info(f'N Processes: {n_processes_streams} (streams), {n_processes_basins} (basins)')
 
         try:
@@ -84,14 +91,20 @@ if __name__ == '__main__':
                 prepare_rapid_inputs(save_dir=save_dir,
                                      id_field=id_field,
                                      n_workers=min(n_processes_streams, 18))
-
             # Basins and weight tables
             # if not glob.glob(os.path.join(save_dir, 'TDX_streamreach_basins*.gpkg')):
             #     dissolve_basins(basins_gpkg, mp_dissolve=MP_BASINS,
             #                     save_dir=save_dir, stream_id_col="streamID", n_process=n_processes_basins)
-            # if len(list(glob.glob(os.path.join(save_dir, 'weight_*.csv')))) < 3:
-            #     for sample_grid in sample_grids:
-            #         make_weight_table(sample_grid, save_dir, n_workers=n_processes_streams)
+            if not glob.glob(os.path.join(save_dir, 'TDX_streamreach_basins*.gpkg')):
+                apply_0_length_basin_fixes(basins_gpkg, save_dir=save_dir,
+                                           stream_id_col="streamID", n_process=n_processes_basins)
+
+            if len(list(glob.glob(os.path.join(save_dir, 'weight_*.csv')))) < 3:
+                for sample_grid in sample_grids:
+                    make_weight_table(sample_grid,
+                                      save_dir,
+                                      basin_gdf_path=basins_gpkg,
+                                      n_workers=n_processes_streams)
 
         except Exception as e:
             logging.info('\n----- ERROR -----\n')
