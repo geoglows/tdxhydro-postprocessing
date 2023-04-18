@@ -274,4 +274,4 @@ def correct_0_length_basins(basins_gpkg: gpd.GeoDataFrame, save_dir: str, stream
     # NO FIXES APPLIED TO BASINS FOR CASE 3 - ALREADY HAVE
 
     basin_gdf.to_file(os.path.join(save_dir, os.path.basename(os.path.splitext(basins_gpkg)[0]) + '_corrected.gpkg'))
-    return basin_gdf
+    return

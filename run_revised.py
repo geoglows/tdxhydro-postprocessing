@@ -74,8 +74,7 @@ if __name__ == '__main__':
         try:
             # determine if the preliminary stream analysis has been completed
             if not all([os.path.exists(os.path.join(save_dir, f)) for f in rp.REQUIRED_MODIFICATION_FILES]):
-                streams_gdf = gpd.read_file(streams_gpkg)
-                rp.analyze.streams(streams_gdf,
+                rp.analyze.streams(gpd.read_file(streams_gpkg),
                                    save_dir=save_dir,
                                    id_field=id_field,
                                    ds_field=ds_field,
@@ -84,8 +83,8 @@ if __name__ == '__main__':
 
             # correct the raw basins files based on the stream checks
             if not glob.glob(os.path.join(save_dir, 'TDX_streamreach_basins*.gpkg')):
-                basins_gdf = rp.correct_network.correct_0_length_basins(basins_gpkg, save_dir=save_dir,
-                                                                        stream_id_col="streamID", buffer_size=.001)
+                rp.correct_network.correct_0_length_basins(basins_gpkg, save_dir=save_dir,
+                                                           stream_id_col="streamID", buffer_size=.001)
 
             # make the raw weight tables
             if len(list(glob.glob(os.path.join(save_dir, 'weight_*_full.csv')))) < 3:
