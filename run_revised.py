@@ -74,7 +74,7 @@ if __name__ == '__main__':
         try:
             # determine if the preliminary stream analysis has been completed
             if not all([os.path.exists(os.path.join(save_dir, f)) for f in rp.REQUIRED_MODIFICATION_FILES]):
-                rp.analyze.streams(gpd.read_file(streams_gpkg),
+                rp.analyze.streams(streams_gpkg,
                                    save_dir=save_dir,
                                    id_field=id_field,
                                    ds_field=ds_field,
