@@ -17,6 +17,9 @@ logger = logging.getLogger(__name__)
 
 def make_weight_table(lsm_sample: str, out_dir: str, basin_gdf_path: str = None, n_workers: int = 1):
     out_name = os.path.join(out_dir, 'weight_' + os.path.basename(os.path.splitext(lsm_sample)[0]) + '_full.csv')
+    if os.path.exists(os.path.join(out_dir, out_name)):
+        logger.info(f"Weight table already exists: {os.path.basename(out_name)}")
+        return
     logger.info(f"Creating weight table: {os.path.basename(out_name)}")
 
     if basin_gdf_path is None:
@@ -87,13 +90,16 @@ def make_weight_table(lsm_sample: str, out_dir: str, basin_gdf_path: str = None,
     ).to_crs(epsg=4326)
 
     # Spatial join the two dataframes using the 'intersects' predicate
+    logger.info('performing spatial join')
     intersections = gpd.sjoin(tg_gdf, sb_gdf, predicate='intersects')
 
+    logger.info('merging dataframes')
     intersections = gpd.GeoDataFrame(
         intersections
         .merge(sb_gdf[['geometry', ]], left_on=['index_right'], right_index=True, suffixes=('_tp', '_sb'))
     )
 
+    logger.info('calculating area')
     intersections['area_sqm'] = (
         gpd.GeoSeries(intersections['geometry_tp'])
         .intersection(gpd.GeoSeries(intersections['geometry_sb']))
@@ -101,7 +107,10 @@ def make_weight_table(lsm_sample: str, out_dir: str, basin_gdf_path: str = None,
         .area
     )
 
+    logger.info('calculating number of points')
     intersections['npoints'] = intersections.groupby('streamID')['streamID'].transform('count')
+
+    logger.info('writing weight table csv')
     (
         intersections[['streamID', 'area_sqm', 'lon_index', 'lat_index', 'npoints', 'lon', 'lat']]
         .sort_values(['streamID', 'area_sqm'])
@@ -133,19 +142,21 @@ def apply_modifications(wt_path: str, save_dir: str):
     with open(os.path.join(save_dir, 'mod_prune_shoots.json'), 'r') as f:
         pruned_shoots = json.load(f)
 
-    all_merged_headwater = set(chain.from_iterable([dissolved_headwaters[rivid] for rivid in dissolved_headwaters.keys()]))
-    all_pruned_shoots = set(chain.from_iterable([pruned_shoots[rivid] for rivid in pruned_shoots.keys()]))
+    all_headwaters = set(chain.from_iterable([dissolved_headwaters[rivid] for rivid in dissolved_headwaters.keys()]))
+    all_pruned = set(chain.from_iterable([pruned_shoots[rivid] for rivid in pruned_shoots.keys()]))
 
     # headwater_rows = [_merge_weight_table_rows(wt, key, values) for key, values in dissolved_headwaters.items()]
     # pruned_rows = [_merge_weight_table_rows(wt, key, values) for key, values in pruned_shoots.items()]
 
     # redo the list comprehension to use a multiprocessing pool
     with Pool() as pool:
-        headwater_rows = pool.starmap(_merge_weight_table_rows, [(wt, key, values) for key, values in dissolved_headwaters.items()])
-        pruned_rows = pool.starmap(_merge_weight_table_rows, [(wt, key, values) for key, values in pruned_shoots.items()])
+        headwater_rows = pool.starmap(_merge_weight_table_rows,
+                                      [(wt, key, values) for key, values in dissolved_headwaters.items()])
+        pruned_rows = pool.starmap(_merge_weight_table_rows,
+                                   [(wt, key, values) for key, values in pruned_shoots.items()])
 
-    wt = wt[~wt['streamID'].isin(all_merged_headwater)]
-    wt = wt[~wt['streamID'].isin(all_pruned_shoots)]
+    wt = wt[~wt['streamID'].isin(all_headwaters)]
+    wt = wt[~wt['streamID'].isin(all_pruned)]
     wt = pd.concat([wt, *headwater_rows, *pruned_rows])
 
     wt.to_csv(wt_path.replace('_full.csv', '.csv'), index=False)

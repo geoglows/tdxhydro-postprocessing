@@ -15,6 +15,8 @@ __all__ = [
     'correct_0_length_basins'
 ]
 
+logger = logging.getLogger(__name__)
+
 
 def merge_headwater_streams(upstream_ids: list, network_gdf: gpd.GeoDataFrame, make_model_version: bool,
                             streamid: str = 'LINKNO', dsid: str = 'DSLINKNO',
@@ -247,6 +249,7 @@ def correct_0_length_basins(basins_gpkg: gpd.GeoDataFrame, save_dir: str, stream
     Returns:
 
     """
+    logger.info('Revising basins with 0 length streams')
     zero_length_df = pd.read_csv(os.path.join(save_dir, 'mod_zero_length_streams.csv'))
 
     basin_gdf = gpd.read_file(basins_gpkg)
