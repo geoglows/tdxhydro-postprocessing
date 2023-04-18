@@ -255,9 +255,11 @@ def correct_0_length_basins(basins_gpkg: gpd.GeoDataFrame, save_dir: str, stream
     basin_gdf = gpd.read_file(basins_gpkg)
 
     # Case 1 - Coastal w/ no upstream or downstream - Delete the stream and its basin
+    logger.info('Handling Case 1 - delete basins')
     basin_gdf = basin_gdf[~basin_gdf[stream_id_col].isin(zero_length_df['case1'])]
 
     # Case 2 - Allow 3-river confluence - Create a basin with small non-zero area, assign small non-zero length
+    logger.info('Handling Case 2 - create small basins')
     boxes = (
         zero_length_df[['case2', 'case2_x', 'case2_y']]
         .dropna(axis=0, how='any')
@@ -276,5 +278,5 @@ def correct_0_length_basins(basins_gpkg: gpd.GeoDataFrame, save_dir: str, stream
     # Case 3 - Coastal w/ upstreams but no downstream - Assign small non-zero length
     # NO FIXES APPLIED TO BASINS FOR CASE 3 - ALREADY HAVE
 
-    basin_gdf.to_file(os.path.join(save_dir, os.path.basename(os.path.splitext(basins_gpkg)[0]) + '_corrected.gpkg'))
-    return
+    # basin_gdf.to_file(os.path.join(save_dir, os.path.basename(os.path.splitext(basins_gpkg)[0]) + '_corrected.gpkg'))
+    return basin_gdf

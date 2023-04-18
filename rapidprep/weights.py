@@ -15,16 +15,26 @@ from multiprocessing import Pool
 logger = logging.getLogger(__name__)
 
 
-def make_weight_table(lsm_sample: str, out_dir: str, basin_gdf_path: str = None, n_workers: int = 1):
+def _intersect_reproject_area(a: gpd.GeoDataFrame, b: gpd.GeoDataFrame):
+    return (
+        gpd
+        .GeoSeries(a, crs='EPSG:4326')
+        .to_crs({'proj': 'cea'})
+        .intersection(
+            gpd.GeoSeries(b, crs='EPSG:4326')
+            .to_crs({'proj': 'cea'})
+        )
+        .area
+        .values[0]
+    )
+
+
+def make_weight_table(lsm_sample: str, out_dir: str, basins_gdf: gpd.GeoDataFrame, n_workers: int = 1):
     out_name = os.path.join(out_dir, 'weight_' + os.path.basename(os.path.splitext(lsm_sample)[0]) + '_full.csv')
     if os.path.exists(os.path.join(out_dir, out_name)):
         logger.info(f"Weight table already exists: {os.path.basename(out_name)}")
         return
     logger.info(f"Creating weight table: {os.path.basename(out_name)}")
-
-    if basin_gdf_path is None:
-        basin_gdf_path = glob.glob(os.path.join(out_dir, 'TDX_streamreach*'))[0]
-    sb_gdf = gpd.read_file(basin_gdf_path)
 
     # Extract xs and ys dimensions from the dataset
     lsm_ds = xr.open_dataset(lsm_sample)
@@ -41,17 +51,21 @@ def make_weight_table(lsm_sample: str, out_dir: str, basin_gdf_path: str = None,
     x_idxs = np.arange(len(xs))
     y_idxs = np.arange(len(ys))
 
-    x_min, y_min, x_max, y_max = sb_gdf.total_bounds
+    x_min, y_min, x_max, y_max = basins_gdf.total_bounds
 
     x_min_idx = np.argmin(np.abs(xs - x_min))
     x_max_idx = np.argmin(np.abs(xs - x_max))
     y_min_idx = np.argmin(np.abs(ys - y_min))
     y_max_idx = np.argmin(np.abs(ys - y_max))
 
+    if x_min_idx > x_max_idx:
+        xs = np.concatenate((xs[x_min_idx:], xs[:x_max_idx + 1]))
+        x_idxs = np.concatenate((x_idxs[x_min_idx:], x_idxs[:x_max_idx + 1]))
+    else:
+        xs = xs[x_min_idx:x_max_idx + 1]
+        x_idxs = x_idxs[x_min_idx:x_max_idx + 1]
     y_min_idx, y_max_idx = min(y_min_idx, y_max_idx), max(y_min_idx, y_max_idx)
-    xs = xs[x_min_idx:x_max_idx + 1]
     ys = ys[y_min_idx:y_max_idx + 1]
-    x_idxs = x_idxs[x_min_idx:x_max_idx + 1]
     y_idxs = y_idxs[y_min_idx:y_max_idx + 1]
 
     resolution = np.abs(xs[1] - xs[0])
@@ -91,21 +105,20 @@ def make_weight_table(lsm_sample: str, out_dir: str, basin_gdf_path: str = None,
 
     # Spatial join the two dataframes using the 'intersects' predicate
     logger.info('performing spatial join')
-    intersections = gpd.sjoin(tg_gdf, sb_gdf, predicate='intersects')
+    intersections = gpd.sjoin(tg_gdf, basins_gdf, predicate='intersects')
 
     logger.info('merging dataframes')
     intersections = gpd.GeoDataFrame(
         intersections
-        .merge(sb_gdf[['geometry', ]], left_on=['index_right'], right_index=True, suffixes=('_tp', '_sb'))
+        .merge(basins_gdf[['geometry', ]], left_on=['index_right'], right_index=True, suffixes=('_tp', '_sb'))
     )
 
-    logger.info('calculating area')
-    intersections['area_sqm'] = (
-        gpd.GeoSeries(intersections['geometry_tp'])
-        .intersection(gpd.GeoSeries(intersections['geometry_sb']))
-        .to_crs({'proj': 'cea'})
-        .area
-    )
+    logger.info('calculating area of intersections')
+    with Pool(n_workers) as p:
+        intersections['area_sqm'] = p.starmap(
+            _intersect_reproject_area,
+            zip(intersections['geometry_tp'], intersections['geometry_sb'])
+        )
 
     logger.info('calculating number of points')
     intersections['npoints'] = intersections.groupby('streamID')['streamID'].transform('count')
@@ -127,7 +140,17 @@ def _merge_weight_table_rows(wt: pd.DataFrame, new_key: str, values_to_merge: li
     return new_row
 
 
-def apply_modifications(wt_path: str, save_dir: str):
+def apply_modifications(wt_path: str, save_dir: str, n_processes: int = None):
+    """
+
+    Args:
+        wt_path:
+        save_dir:
+        n_processes:
+
+    Returns:
+
+    """
     wt = pd.read_csv(wt_path)
 
     # drop the small drainage trees
@@ -149,7 +172,7 @@ def apply_modifications(wt_path: str, save_dir: str):
     # pruned_rows = [_merge_weight_table_rows(wt, key, values) for key, values in pruned_shoots.items()]
 
     # redo the list comprehension to use a multiprocessing pool
-    with Pool() as pool:
+    with Pool(n_processes) as pool:
         headwater_rows = pool.starmap(_merge_weight_table_rows,
                                       [(wt, key, values) for key, values in dissolved_headwaters.items()])
         pruned_rows = pool.starmap(_merge_weight_table_rows,

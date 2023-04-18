@@ -5,7 +5,6 @@ from itertools import chain
 import numpy as np
 import geopandas as gpd
 import pandas as pd
-import dask.dataframe as dd
 import logging
 
 from .trace_streams import create_adjoint_json
@@ -21,8 +20,7 @@ def streams(streams_gdf: str,
             id_field='LINKNO',
             ds_field: str = 'DSLINKNO',
             len_field: str = 'Length',
-            order_field: str = 'strmOrder',
-            n_processes: int = None) -> None:
+            order_field: str = 'strmOrder', ) -> None:
     """
     Analyzes the connectivity of the streams to find errors and places that need to be dissolved
 
@@ -46,7 +44,7 @@ def streams(streams_gdf: str,
         None
     """
     logger.info('Reading streams')
-    streams_df = gpd.read_file(streams_gdf, ignore_geometry=True)
+    streams_df = gpd.read_file(streams_gdf, ignore_geometry=False)
 
     # trace network to create adjoint tree
     logger.info('Tracing network')

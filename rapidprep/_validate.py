@@ -51,6 +51,7 @@ def is_valid_result(directory: str):
 
     # look for geopackages
     missing_geopackages = [f for f in REQUIRED_GEOPACKAGES if len(glob.glob(os.path.join(directory, f))) == 0]
+    count_geopackages = list(glob.glob(os.path.join(directory, '*.gpkg')))
 
     # summarize findings
     logger.info(f'Validating directory: {directory}')
@@ -58,10 +59,10 @@ def is_valid_result(directory: str):
         len(missing_rapid_files) == 0,
         len(weight_tables) >= 3,
         len(missing_network_files) == 0,
-        len(missing_geopackages) == 0
     ]):
         logger.info('All expected files found in this directory')
-        logger.info(f'Found {len(weight_tables)} weight tables')
+        logger.info(f'  Found {len(weight_tables)} weight tables')
+        logger.info(f'  Found {len(count_geopackages)} geopackages')
         logger.info('')
         return True
 

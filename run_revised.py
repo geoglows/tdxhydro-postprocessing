@@ -3,9 +3,9 @@ import json
 import logging
 import os
 import traceback
+import warnings
 
 import pandas as pd
-import geopandas as gpd
 
 import rapidprep as rp
 
@@ -19,6 +19,9 @@ logging.basicConfig(
 
 inputs_path = '/tdxhydro'
 outputs_path = '/tdxrapid'
+# inputs_path = '/Volumes/EB406_T7_2/TDXHydro'
+# outputs_path = '/Volumes/EB406_T7_2/TDXOutputsNew'
+
 MP_STREAMS = True
 MP_BASINS = True
 N_PROCESSES = os.cpu_count()
@@ -26,6 +29,8 @@ id_field = 'LINKNO'
 ds_field = 'DSLINKNO'
 order_field = 'strmOrder'
 length_field = 'Length'
+
+warnings.filterwarnings("ignore")
 
 if __name__ == '__main__':
     sample_grids = glob.glob('./era5_sample_grids/*.nc')
@@ -81,29 +86,37 @@ if __name__ == '__main__':
                                    order_field=order_field,
                                    len_field=length_field)
 
-            # correct the raw basins files based on the stream checks
-            if not glob.glob(os.path.join(save_dir, 'TDX_streamreach_basins*.gpkg')):
-                rp.correct_network.correct_0_length_basins(basins_gpkg, save_dir=save_dir,
-                                                           stream_id_col="streamID", buffer_size=.001)
-
             # make the raw weight tables
             if len(list(glob.glob(os.path.join(save_dir, 'weight_*_full.csv')))) < 3:
+                # edit the basins in memory - not cached to save time
+                basins_gdf = rp.correct_network.correct_0_length_basins(
+                    basins_gpkg,
+                    save_dir=save_dir,
+                    stream_id_col="streamID",
+                    buffer_size=.001
+                )
                 for sample_grid in sample_grids:
-                    rp.weights.make_weight_table(sample_grid,
-                                                 save_dir,
-                                                 basin_gdf_path=basins_gpkg,
-                                                 n_workers=N_PROCESSES)
+                    rp.weights.make_weight_table(
+                        sample_grid,
+                        save_dir,
+                        basins_gdf=basins_gdf,
+                        n_workers=N_PROCESSES
+                    )
+                basins_gdf = None
 
             # modify the weight table based on the modification files
             for wt in glob.glob(os.path.join(save_dir, 'weight_*_full.csv')):
-                rp.weights.apply_modifications(wt, save_dir)
+                rp.weights.apply_modifications(wt, save_dir, n_processes=N_PROCESSES)
 
             if not all([os.path.exists(os.path.join(save_dir, f)) for f in rp.REQUIRED_RAPID_FILES]):
-                rp.inputs.prepare_rapid_inputs(save_dir,
-                                               id_field=id_field,
-                                               ds_field=ds_field,
-                                               order_field=order_field,
-                                               n_workers=N_PROCESSES)
+                rp.inputs.prepare_rapid_inputs(
+                    streams_gpkg,
+                    save_dir=save_dir,
+                    id_field=id_field,
+                    ds_field=ds_field,
+                    order_field=order_field,
+                    n_workers=N_PROCESSES
+                )
 
             # todo dissolve the streams
             if not glob.glob(os.path.join(save_dir, 'TDX_streamnet*.gpkg')):
@@ -115,6 +128,6 @@ if __name__ == '__main__':
             print(traceback.format_exc())
             continue
 
-        logging.info('Done')
-        logging.info('All Regions Processed')
-        logging.info('Normal Termination')
+    logging.info('Done')
+    logging.info('All Regions Processed')
+    logging.info('Normal Termination')
