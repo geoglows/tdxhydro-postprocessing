@@ -20,7 +20,7 @@ logging.basicConfig(
 outputs_path = '/Users/rchales/Data/TDXOutputsDescriptors'
 MP_STREAMS = True
 MP_BASINS = True
-N_PROCESSES = 15
+N_PROCESSES = os.cpu_count()
 id_field = 'LINKNO'
 ds_field = 'DSLINKNO'
 order_field = 'strmOrder'
@@ -42,8 +42,8 @@ if __name__ == '__main__':
     logging.info(f'Completed regions: {completed_regions}')
 
     for streams_gpkg, basins_gpkg in zip(
-            sorted(glob.glob(f'/Users/rchales/Data/TDXHydro/TDX_streamnet*7020065090*.gpkg')),
-            sorted(glob.glob(f'/Users/rchales/Data/TDXHydro/TDX_streamreach_basins*7020065090*.gpkg'))
+            sorted(glob.glob(f'/Users/rchales/Data/TDXHydro/TDX_streamnet*.gpkg')),
+            sorted(glob.glob(f'/Users/rchales/Data/TDXHydro/TDX_streamreach_basins*.gpkg'))
     ):
         # Identify the region being processed
         region_number = int(os.path.basename(streams_gpkg).split('_')[2])
@@ -98,9 +98,12 @@ if __name__ == '__main__':
             for wt in glob.glob(os.path.join(save_dir, 'weight_*_full.csv')):
                 rp.weights.apply_modifications(wt, save_dir)
 
-            # todo calculate the rapid inputs (without dissolving the streams or basins first would be best)
             if not all([os.path.exists(os.path.join(save_dir, f)) for f in rp.REQUIRED_RAPID_FILES]):
-                continue
+                rp.inputs.prepare_rapid_inputs(save_dir,
+                                               id_field=id_field,
+                                               ds_field=ds_field,
+                                               order_field=order_field,
+                                               n_workers=N_PROCESSES)
 
             # todo dissolve the streams
             if not glob.glob(os.path.join(save_dir, 'TDX_streamnet*.gpkg')):
@@ -113,6 +116,5 @@ if __name__ == '__main__':
             continue
 
         logging.info('Done')
-
         logging.info('All Regions Processed')
         logging.info('Normal Termination')

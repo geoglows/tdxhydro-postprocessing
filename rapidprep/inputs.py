@@ -99,6 +99,7 @@ def prepare_rapid_inputs(save_dir: str,
     pruned_shoots = set([ids[-1] for _, ids in pruned_shoots.items()])
     streams_gdf = streams_gdf.loc[~streams_gdf[id_field].isin(pruned_shoots)]
 
+    logger.info('Writing RAPID csvs')
     with Pool(n_workers) as p:
         rapid_connect = p.starmap(_make_rapid_connect_row, [[x, streams_gdf] for x in streams_gdf[id_field].values])
 
