@@ -68,7 +68,7 @@ def is_valid_result(directory: str):
     if len(missing_rapid_files) != 0:
         logger.info('\tMissing RAPID files:')
         for file in missing_rapid_files:
-            logger.info(file)
+            logger.info(f'\t{file}')
 
     logger.info(f'\tFound {len(weight_tables)} weight tables')
     for table in weight_tables:
@@ -77,12 +77,12 @@ def is_valid_result(directory: str):
     if len(missing_network_files) != 0:
         logger.info('\tMissing modification files:')
         for file in missing_network_files:
-            logger.info(file)
+            logger.info(f'\t{file}')
 
     if len(missing_geopackages) != 0:
         logger.info('\tMissing geopackages:')
         for file in missing_geopackages:
-            logger.info(file)
+            logger.info(f'\t{file}')
 
     logger.info('')
     return False
