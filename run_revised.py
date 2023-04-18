@@ -19,8 +19,8 @@ logging.basicConfig(
 
 inputs_path = '/tdxhydro'
 outputs_path = '/tdxrapid'
-# inputs_path = '/Volumes/EB406_T7_2/TDXHydro'
-# outputs_path = '/Volumes/EB406_T7_2/TDXOutputsNew'
+inputs_path = '/Volumes/EB406_T7_2/TDXHydro'
+outputs_path = '/Volumes/EB406_T7_2/TDXOutputsNew'
 
 MP_STREAMS = True
 MP_BASINS = True
@@ -48,8 +48,8 @@ if __name__ == '__main__':
     logging.info(f'Completed regions: {completed_regions}')
 
     for streams_gpkg, basins_gpkg in zip(
-            sorted(glob.glob(os.path.join(inputs_path, 'TDX_streamnet*.gpkg'))),
-            sorted(glob.glob(os.path.join(inputs_path, 'TDX_streamreach_basins*.gpkg')))
+            sorted(glob.glob(os.path.join(inputs_path, 'TDX_streamnet*.gpkg')), reverse=True),
+            sorted(glob.glob(os.path.join(inputs_path, 'TDX_streamreach_basins*.gpkg')), reverse=True)
     ):
         # Identify the region being processed
         region_number = int(os.path.basename(streams_gpkg).split('_')[2])

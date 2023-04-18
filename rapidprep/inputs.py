@@ -17,8 +17,7 @@ def _calculate_geodesic_length(line) -> float:
     """
     Input is shapely geometry, should be all shapely LineString objects
     """
-    geod = Geod(ellps='WGS84')
-    length = geod.geometry_length(line) / 1000  # To convert to km
+    length = Geod(ellps='WGS84').geometry_length(line) / 1000  # To convert to km
 
     # This is for the outliers that have 0 length
     if length < 0.0000001:
@@ -70,45 +69,48 @@ def prepare_rapid_inputs(streams_gpkg: str,
     streams_gdf = streams_gdf.sort_values([order_field, id_field], ascending=[True, True])
 
     logger.info('Calculating lengths')
-    streams_gdf["LENGTH_GEO"] = streams_gdf.geometry.apply(_calculate_geodesic_length)
-    streams_gdf['lat'] = streams_gdf.geometry.apply(lambda geom: geom.xy[1][0]).values
-    streams_gdf['lon'] = streams_gdf.geometry.apply(lambda geom: geom.xy[0][0]).values
 
-    logger.info('Applying unit conversions to k and x')
-    streams_gdf["musk_kfac"] = streams_gdf["LENGTH_GEO"] * 3600
-    streams_gdf["musk_k"] = streams_gdf["musk_kfac"] * default_k
-    streams_gdf["musk_x"] = default_x * 0.1
-    streams_gdf['z'] = 0
-
-    streams_gdf = streams_gdf[[id_field, ds_field, order_field, 'musk_k', 'musk_kfac', 'musk_x', 'lat', 'lon', 'z']]
-
-    # Apply corrections based on the stream modification files
-    logger.info('Applying stream modifications')
-    with open(os.path.join(save_dir, 'mod_dissolve_headwaters.json'), 'r') as f:
-        dissolved_headwaters = json.load(f)
-    all_merged_headwater = set(
-        chain.from_iterable([dissolved_headwaters[rivid] for rivid in dissolved_headwaters.keys()]))
-
-    # corrected_headwater_rows = [_combine_routing_rows(streams_gdf, id_to_preserve, ids_to_merge) for
-    #                             id_to_preserve, ids_to_merge in dissolved_headwaters.items()]
+    # streams_gdf["LENGTH_GEO"] = streams_gdf.geometry.apply(_calculate_geodesic_length)
     with Pool(n_workers) as p:
+        streams_gdf["LENGTH_GEO"] = p.map(_calculate_geodesic_length, streams_gdf.geometry.values)
+
+        streams_gdf['lat'] = streams_gdf.geometry.apply(lambda geom: geom.xy[1][0]).values
+        streams_gdf['lon'] = streams_gdf.geometry.apply(lambda geom: geom.xy[0][0]).values
+
+        logger.info('Applying unit conversions to k and x')
+        streams_gdf["musk_kfac"] = streams_gdf["LENGTH_GEO"] * 3600
+        streams_gdf["musk_k"] = streams_gdf["musk_kfac"] * default_k
+        streams_gdf["musk_x"] = default_x * 0.1
+        streams_gdf['z'] = 0
+
+        streams_gdf = streams_gdf[[id_field, ds_field, order_field, 'musk_k', 'musk_kfac', 'musk_x', 'lat', 'lon', 'z']]
+
+        # Apply corrections based on the stream modification files
+        logger.info('Applying stream modifications')
+        with open(os.path.join(save_dir, 'mod_dissolve_headwaters.json'), 'r') as f:
+            dissolved_headwaters = json.load(f)
+        all_merged_headwater = set(
+            chain.from_iterable([dissolved_headwaters[rivid] for rivid in dissolved_headwaters.keys()]))
+
+        # corrected_headwater_rows = [_combine_routing_rows(streams_gdf, id_to_preserve, ids_to_merge) for
+        #                             id_to_preserve, ids_to_merge in dissolved_headwaters.items()]
         corrected_headwater_rows = p.starmap(
             _combine_routing_rows,
             [[streams_gdf, id_to_keep, ids_to_merge] for id_to_keep, ids_to_merge in dissolved_headwaters.items()]
         )
 
-    streams_gdf = pd.concat([
-        streams_gdf.loc[~streams_gdf[id_field].isin(all_merged_headwater)],
-        *corrected_headwater_rows
-    ])
+        streams_gdf = pd.concat([
+            streams_gdf.loc[~streams_gdf[id_field].isin(all_merged_headwater)],
+            *corrected_headwater_rows
+        ])
 
-    with open(os.path.join(save_dir, 'mod_prune_shoots.json'), 'r') as f:
-        pruned_shoots = json.load(f)
-    pruned_shoots = set([ids[-1] for _, ids in pruned_shoots.items()])
-    streams_gdf = streams_gdf.loc[~streams_gdf[id_field].isin(pruned_shoots)]
+        with open(os.path.join(save_dir, 'mod_prune_shoots.json'), 'r') as f:
+            pruned_shoots = json.load(f)
+        pruned_shoots = set([ids[-1] for _, ids in pruned_shoots.items()])
+        streams_gdf = streams_gdf.loc[~streams_gdf[id_field].isin(pruned_shoots)]
 
-    logger.info('Calculating RAPID connect file')
-    with Pool(n_workers) as p:
+        logger.info('Calculating RAPID connect file')
+
         rapid_connect = p.starmap(_make_rapid_connect_row, [[x, streams_gdf] for x in streams_gdf[id_field].values])
 
     logger.info('Writing RAPID csvs')
