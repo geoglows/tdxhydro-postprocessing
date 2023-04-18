@@ -1,6 +1,8 @@
 import glob
+import json
 import logging
 import os
+from itertools import chain
 from multiprocessing import Pool
 
 import geopandas as gpd
@@ -9,70 +11,6 @@ from pyproj import Geod
 
 # set up logging
 logger = logging.getLogger(__name__)
-
-
-def create_comid_lat_lon_z(streams_gdf: gpd.GeoDataFrame, out_dir: str, id_field: str) -> None:
-    """
-    Assumes that geometry of the network are shapely LineStrings.
-    If there are MultiLineStrings than something has gone wrong in the dissolving step.
-
-    Args:
-        streams_gdf (gpd.GeoDataFrame): GeoDataFrame of the streams
-        out_dir (str): Path to directory where comid_lat_lon_z.csv will be saved
-        id_field (str): Field in streams_gdf that corresponds to the unique id of each stream segment
-
-    Returns:
-        None
-    """
-    logger.info("Creating comid_lat_lon_z.csv")
-    # todo apply lambda to gdf only once
-    temp_network = streams_gdf.sort_values(id_field)
-    lats = temp_network.geometry.apply(lambda geom: geom.xy[1][0]).values
-    lons = temp_network.geometry.apply(lambda geom: geom.xy[0][0]).values
-
-    pd.DataFrame({
-        id_field: temp_network[id_field].values,
-        "lat": lats,
-        "lon": lons,
-        "z": 0
-    }).to_csv(os.path.join(out_dir, "comid_lat_lon_z.csv"), index=False, header=True)
-    return
-
-
-def create_riv_bas_id(streams_gdf: gpd.GeoDataFrame, out_dir: str, id_field: str) -> None:
-    """
-    Creates riv_bas_id.csv. Network is sorted to match the outputs of the ArcGIS tool this was designed from,
-    and it is likely that the second element in the list for ascending may be True without impacting RAPID
-
-    Args:
-        streams_gdf (gpd.GeoDataFrame): GeoDataFrame of the streams
-        out_dir (str): Path to directory where riv_bas_id.csv will be saved
-        id_field (str): Field in streams_gdf that corresponds to the unique id of each stream segment
-
-    Returns:
-        None
-    """
-    logger.info("Creating riv_bas_id.csv")
-    streams_gdf[id_field].to_csv(os.path.join(out_dir, "riv_bas_id.csv"), index=False, header=False)
-    return
-
-
-def calculate_muskingum(streams_gdf: gpd.GeoDataFrame, out_dir: str, k: float, x: float) -> None:
-    """
-    Calculates muskingum parameters by using pyproj's Geod.geometry_length. Note that the network must be in EPSG 4326
-    """
-    logger.info("Creating muskingum parameters")
-
-    # todo split into two functions, one for calculating the parameters and one for writing them to csv
-    streams_gdf["LENGTH_GEO"] = streams_gdf.geometry.apply(_calculate_geodesic_length)
-    streams_gdf["Musk_kfac"] = streams_gdf["LENGTH_GEO"] * 3600
-    streams_gdf["Musk_k"] = streams_gdf["Musk_kfac"] * k
-    streams_gdf["Musk_x"] = x * 0.1
-
-    streams_gdf["Musk_kfac"].to_csv(os.path.join(out_dir, "kfac.csv"), index=False, header=False)
-    streams_gdf["Musk_k"].to_csv(os.path.join(out_dir, "k.csv"), index=False, header=False)
-    streams_gdf["Musk_x"].to_csv(os.path.join(out_dir, "x.csv"), index=False, header=False)
-    return
 
 
 def _calculate_geodesic_length(line) -> float:
@@ -100,54 +38,81 @@ def _make_rapid_connect_row(stream_id, streams_gdf):
     }
 
 
-def create_rapid_connect(streams_gdf: gpd.GeoDataFrame,
-                         save_dir: str, id_field: str,
-                         n_workers: int or None = 1) -> None:
-    """
-    Creates rapid_connect.csv
-
-    rapid_connect is a csv file with no header or index column that contains the following columns:
-        HydroID: the HydroID of the stream
-        NextDownID: the HydroID of the next downstream stream
-        CountUpstreamID: the number of upstream streams
-        UpstreamID1: the HydroID of the first upstream segment, if it exits
-        UpstreamID2: the HydroID of the second upstream segment, if it exits
-
-    Args:
-        streams_gdf: GeoDataFrame of the streams
-        save_dir: Path to directory where rapid_connect.csv will be saved
-        id_field: Field in streams_gdf that corresponds to the unique id of each stream segment
-        n_workers: Number of workers to use for multiprocessing. If None, then all available workers will be used.
-
-    Returns:
-
-    """
-    logger.info("Creating rapid_connect.csv")
-
-    with Pool(n_workers) as p:
-        rapid_connect = p.starmap(_make_rapid_connect_row, [[x, streams_gdf] for x in streams_gdf[id_field].values])
-
-    rapid_connect = (
-        pd
-        .DataFrame(rapid_connect)
-        .fillna(0)
-        .astype(int)
-    )
-    rapid_connect.to_csv(os.path.join(save_dir, 'rapid_connect.csv'), index=False, header=None)
-    return
+def _combine_routing_rows(streams_df: pd.DataFrame, id_to_preserve: str, ids_to_merge: list):
+    target_row = streams_df.loc[streams_df['LINKNO'] == id_to_preserve]
+    musk_k, musk_kfac = streams_df.loc[streams_df['LINKNO'].isin(ids_to_merge), ['musk_k', 'musk_kfac']].sum()
+    musk_x = streams_df
+    return pd.DataFrame({
+        'LINKNO': id_to_preserve,
+        'DSLINKNO': target_row['DSLINKNO'].values[0],
+        'strmOrder': target_row['strmOrder'].values[0],
+        'musk_k': musk_k,
+        'musk_kfac': musk_kfac,
+        'musk_x': musk_x,
+        'lat': target_row['lat'].values[0],
+        'lon': target_row['lon'].values[0],
+        'z': target_row['z'].values[0],
+    })
 
 
 def prepare_rapid_inputs(save_dir: str,
                          id_field: str = 'LINKNO',
+                         ds_field: str = 'DSLINKNO',
                          order_field: str = 'strmOrder',
-                         default_k: float = 0.35, default_x: float = 3,
+                         default_k: float = 0.35,
+                         default_x: float = 3,
                          n_workers: int or None = 1) -> None:
     # Create rapid preprocessing files
     logger.info('Creating RAPID files')
     streams_gdf = gpd.read_file(glob.glob(os.path.join(save_dir, 'TDX_streamnet*_model.gpkg'))[0])
     streams_gdf = streams_gdf.sort_values([order_field, id_field], ascending=[True, True])
-    create_comid_lat_lon_z(streams_gdf, save_dir, id_field=id_field)
-    create_riv_bas_id(streams_gdf, save_dir, id_field=id_field)
-    calculate_muskingum(streams_gdf, save_dir, k=default_k, x=default_x)
-    create_rapid_connect(streams_gdf, save_dir, id_field=id_field, n_workers=n_workers)
+
+    logger.info('Calculating lengths')
+    streams_gdf["LENGTH_GEO"] = streams_gdf.geometry.apply(_calculate_geodesic_length)
+    streams_gdf['lat'] = streams_gdf.geometry.apply(lambda geom: geom.xy[1][0]).values
+    streams_gdf['lon'] = streams_gdf.geometry.apply(lambda geom: geom.xy[0][0]).values
+
+    logger.info('Applying unit conversions to k and x')
+    streams_gdf["musk_kfac"] = streams_gdf["LENGTH_GEO"] * 3600
+    streams_gdf["musk_k"] = streams_gdf["musk_kfac"] * default_k
+    streams_gdf["musk_x"] = default_x * 0.1
+    streams_gdf['z'] = 0
+
+    streams_gdf = streams_gdf[[id_field, ds_field, order_field, 'musk_k', 'musk_kfac', 'musk_x', 'lat', 'lon', 'z']]
+
+    # Apply corrections based on the stream modification files
+    logger.info('Applying stream modifications')
+    with open(os.path.join(save_dir, 'mod_dissolve_headwaters.json'), 'r') as f:
+        dissolved_headwaters = json.load(f)
+    all_merged_headwater = set(
+        chain.from_iterable([dissolved_headwaters[rivid] for rivid in dissolved_headwaters.keys()]))
+
+    corrected_headwater_rows = [_combine_routing_rows(streams_gdf, id_to_preserve, ids_to_merge) for
+                                id_to_preserve, ids_to_merge in dissolved_headwaters.items()]
+    streams_gdf = pd.concat([
+        streams_gdf.loc[~streams_gdf[id_field].isin(all_merged_headwater)],
+        *corrected_headwater_rows
+    ])
+
+    with open(os.path.join(save_dir, 'mod_prune_shoots.json'), 'r') as f:
+        pruned_shoots = json.load(f)
+    pruned_shoots = set([ids[-1] for _, ids in pruned_shoots.items()])
+    streams_gdf = streams_gdf.loc[~streams_gdf[id_field].isin(pruned_shoots)]
+
+    with Pool(n_workers) as p:
+        rapid_connect = p.starmap(_make_rapid_connect_row, [[x, streams_gdf] for x in streams_gdf[id_field].values])
+
+    (
+        pd
+        .DataFrame(rapid_connect)
+        .fillna(0)
+        .astype(int)
+        .to_csv(os.path.join(save_dir, 'rapid_connect.csv'), index=False, header=None)
+    )
+
+    streams_gdf[id_field].to_csv(os.path.join(save_dir, "riv_bas_id.csv"), index=False, header=False)
+    streams_gdf["musk_kfac"].to_csv(os.path.join(save_dir, "kfac.csv"), index=False, header=False)
+    streams_gdf["musk_k"].to_csv(os.path.join(save_dir, "k.csv"), index=False, header=False)
+    streams_gdf["musk_x"].to_csv(os.path.join(save_dir, "x.csv"), index=False, header=False)
+
     return

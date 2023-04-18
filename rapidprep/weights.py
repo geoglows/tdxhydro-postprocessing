@@ -133,11 +133,11 @@ def apply_modifications(wt_path: str, save_dir: str):
     with open(os.path.join(save_dir, 'mod_prune_shoots.json'), 'r') as f:
         pruned_shoots = json.load(f)
 
-    all_pruned_shoots = set(chain.from_iterable([pruned_shoots[rivid] for rivid in pruned_shoots.keys()]))
     all_merged_headwater = set(chain.from_iterable([dissolved_headwaters[rivid] for rivid in dissolved_headwaters.keys()]))
+    all_pruned_shoots = set(chain.from_iterable([pruned_shoots[rivid] for rivid in pruned_shoots.keys()]))
 
-    headwater_rows = [_merge_weight_table_rows(wt, key, values) for key, values in dissolved_headwaters.items()]
-    pruned_rows = [_merge_weight_table_rows(wt, key, values) for key, values in pruned_shoots.items()]
+    # headwater_rows = [_merge_weight_table_rows(wt, key, values) for key, values in dissolved_headwaters.items()]
+    # pruned_rows = [_merge_weight_table_rows(wt, key, values) for key, values in pruned_shoots.items()]
 
     # redo the list comprehension to use a multiprocessing pool
     with Pool() as pool:
