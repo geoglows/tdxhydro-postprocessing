@@ -17,7 +17,8 @@ logging.basicConfig(
     filemode='w'
 )
 
-outputs_path = '/Users/rchales/Data/TDXOutputsDescriptors'
+inputs_path = '/tdxhydro'
+outputs_path = '/tdxrapid'
 MP_STREAMS = True
 MP_BASINS = True
 N_PROCESSES = os.cpu_count()
@@ -42,8 +43,8 @@ if __name__ == '__main__':
     logging.info(f'Completed regions: {completed_regions}')
 
     for streams_gpkg, basins_gpkg in zip(
-            sorted(glob.glob(f'/Users/rchales/Data/TDXHydro/TDX_streamnet*.gpkg')),
-            sorted(glob.glob(f'/Users/rchales/Data/TDXHydro/TDX_streamreach_basins*.gpkg'))
+            sorted(glob.glob(os.path.join(inputs_path, 'TDX_streamnet*.gpkg'))),
+            sorted(glob.glob(os.path.join(inputs_path, 'TDX_streamreach_basins*.gpkg')))
     ):
         # Identify the region being processed
         region_number = int(os.path.basename(streams_gpkg).split('_')[2])
