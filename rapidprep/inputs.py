@@ -39,8 +39,11 @@ def _make_rapid_connect_row(stream_id, streams_gdf):
 
 def _combine_routing_rows(streams_df: pd.DataFrame, id_to_preserve: str, ids_to_merge: list):
     target_row = streams_df.loc[streams_df['LINKNO'] == int(id_to_preserve)]
+    if target_row.empty:
+        print(id_to_preserve)
+        return None
     # todo only sum muskingum parameters if they are part of the branches being kept
-    musk_k, musk_kfac = streams_df.loc[streams_df['LINKNO'].isin(ids_to_merge), ['musk_k', 'musk_kfac']].sum()
+    musk_k, musk_kfac = streams_df.loc[streams_df['LINKNO'].isin(ids_to_merge[1:]), ['musk_k', 'musk_kfac']].sum()
     musk_x = target_row['musk_x'].values[0]
     return pd.DataFrame({
         'LINKNO': int(id_to_preserve),
@@ -68,10 +71,22 @@ def prepare_rapid_inputs(streams_gpkg: str,
     streams_gdf = gpd.read_file(streams_gpkg)
     streams_gdf = streams_gdf.sort_values([order_field, id_field], ascending=[True, True])
 
-    logger.info('Calculating lengths')
+    logger.info('Reading stream modification files')
+    with open(os.path.join(save_dir, 'mod_dissolve_headwaters.json'), 'r') as f:
+        diss_headwaters = json.load(f)
+        all_merged_headwater = set(chain.from_iterable([diss_headwaters[rivid] for rivid in diss_headwaters.keys()]))
+    with open(os.path.join(save_dir, 'mod_prune_shoots.json'), 'r') as f:
+        pruned_shoots = json.load(f)
+        pruned_shoots = set([ids[-1] for _, ids in pruned_shoots.items()])
+    small_trees = pd.read_csv(os.path.join(save_dir, 'mod_drop_small_trees.csv')).values.flatten()
 
-    # streams_gdf["LENGTH_GEO"] = streams_gdf.geometry.apply(_calculate_geodesic_length)
+    logger.info('Dropping small trees')
+    streams_gdf = streams_gdf.loc[~streams_gdf[id_field].isin(small_trees)]
+    logger.info('Dropping pruned shoots')
+    streams_gdf = streams_gdf.loc[~streams_gdf[id_field].isin(pruned_shoots)]
+
     with Pool(n_workers) as p:
+        logger.info('Calculating lengths')
         streams_gdf["LENGTH_GEO"] = p.map(_calculate_geodesic_length, streams_gdf.geometry.values)
 
         streams_gdf['lat'] = streams_gdf.geometry.apply(lambda geom: geom.xy[1][0]).values
@@ -86,31 +101,18 @@ def prepare_rapid_inputs(streams_gpkg: str,
         streams_gdf = streams_gdf[[id_field, ds_field, order_field, 'musk_k', 'musk_kfac', 'musk_x', 'lat', 'lon', 'z']]
 
         # Apply corrections based on the stream modification files
-        logger.info('Applying stream modifications')
-        with open(os.path.join(save_dir, 'mod_dissolve_headwaters.json'), 'r') as f:
-            dissolved_headwaters = json.load(f)
-        all_merged_headwater = set(
-            chain.from_iterable([dissolved_headwaters[rivid] for rivid in dissolved_headwaters.keys()]))
-
-        # corrected_headwater_rows = [_combine_routing_rows(streams_gdf, id_to_preserve, ids_to_merge) for
-        #                             id_to_preserve, ids_to_merge in dissolved_headwaters.items()]
+        logger.info('Merging head water stream segment rows')
         corrected_headwater_rows = p.starmap(
             _combine_routing_rows,
-            [[streams_gdf, id_to_keep, ids_to_merge] for id_to_keep, ids_to_merge in dissolved_headwaters.items()]
+            [[streams_gdf, id_to_keep, ids_to_merge] for id_to_keep, ids_to_merge in diss_headwaters.items()]
         )
-
+        logger.info('Applying corrected rows to gdf')
         streams_gdf = pd.concat([
             streams_gdf.loc[~streams_gdf[id_field].isin(all_merged_headwater)],
             *corrected_headwater_rows
         ])
 
-        with open(os.path.join(save_dir, 'mod_prune_shoots.json'), 'r') as f:
-            pruned_shoots = json.load(f)
-        pruned_shoots = set([ids[-1] for _, ids in pruned_shoots.items()])
-        streams_gdf = streams_gdf.loc[~streams_gdf[id_field].isin(pruned_shoots)]
-
         logger.info('Calculating RAPID connect file')
-
         rapid_connect = p.starmap(_make_rapid_connect_row, [[x, streams_gdf] for x in streams_gdf[id_field].values])
 
     logger.info('Writing RAPID csvs')

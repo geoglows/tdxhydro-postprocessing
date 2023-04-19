@@ -89,6 +89,14 @@ def is_valid_result(directory: str):
     return False
 
 
+def has_base_files(directory: str):
+    if not all([
+        os.path.exists(os.path.join(directory, 'adjoint_tree.json')),
+        os.path.exists(os.path.join(directory, 'mod_zero_length_streams.csv')),
+    ]) and len(glob.glob(os.path.join(directory, 'weight_*_full.csv'))) >= 0:
+        return False
+
+
 def _get_gdf_rows(gpkg):
     return os.path.basename(gpkg).split('_')[2], gpd.read_file(gpkg, ignore_geometry=True).shape[0]
 

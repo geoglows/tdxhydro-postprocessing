@@ -20,7 +20,7 @@ logging.basicConfig(
 inputs_path = '/tdxhydro'
 outputs_path = '/tdxrapid'
 inputs_path = '/Volumes/EB406_T7_2/TDXHydro'
-outputs_path = '/Volumes/EB406_T7_2/TDXOutputsNew'
+outputs_path = '/Volumes/EB406_T7_2/TDXHydroRapid'
 
 MP_STREAMS = True
 MP_BASINS = True
@@ -38,6 +38,7 @@ if __name__ == '__main__':
 
     with open('network_data/regions_to_skip.json', 'r') as f:
         regions_to_skip = json.load(f)
+    completed_regions = []
     completed_regions = [d for d in sorted(glob.glob(os.path.join(outputs_path, '*'))) if rp.is_valid_result(d)]
     completed_regions = [int(os.path.basename(d)) for d in completed_regions]
 
@@ -48,8 +49,8 @@ if __name__ == '__main__':
     logging.info(f'Completed regions: {completed_regions}')
 
     for streams_gpkg, basins_gpkg in zip(
-            sorted(glob.glob(os.path.join(inputs_path, 'TDX_streamnet*.gpkg')), reverse=True),
-            sorted(glob.glob(os.path.join(inputs_path, 'TDX_streamreach_basins*.gpkg')), reverse=True)
+            sorted(glob.glob(os.path.join(inputs_path, 'TDX_streamnet*.gpkg'))),
+            sorted(glob.glob(os.path.join(inputs_path, 'TDX_streamreach_basins*.gpkg')))
     ):
         # Identify the region being processed
         region_number = int(os.path.basename(streams_gpkg).split('_')[2])
@@ -83,40 +84,22 @@ if __name__ == '__main__':
                                    save_dir=save_dir,
                                    id_field=id_field,
                                    ds_field=ds_field,
-                                   order_field=order_field,
-                                   len_field=length_field)
-
-            # make the raw weight tables
-            if len(list(glob.glob(os.path.join(save_dir, 'weight_*_full.csv')))) < 3:
-                # edit the basins in memory - not cached to save time
-                basins_gdf = rp.correct_network.correct_0_length_basins(
-                    basins_gpkg,
-                    save_dir=save_dir,
-                    stream_id_col="streamID",
-                    buffer_size=.001
-                )
-                for sample_grid in sample_grids:
-                    rp.weights.make_weight_table(
-                        sample_grid,
-                        save_dir,
-                        basins_gdf=basins_gdf,
-                        n_workers=N_PROCESSES
-                    )
-                basins_gdf = None
-
-            # modify the weight table based on the modification files
-            for wt in glob.glob(os.path.join(save_dir, 'weight_*_full.csv')):
+                                   order_field=order_field, )
+            for wt in sorted(glob.glob(os.path.join(save_dir, 'weight*_full.csv'))):
                 rp.weights.apply_modifications(wt, save_dir, n_processes=N_PROCESSES)
 
-            if not all([os.path.exists(os.path.join(save_dir, f)) for f in rp.REQUIRED_RAPID_FILES]):
-                rp.inputs.prepare_rapid_inputs(
-                    streams_gpkg,
-                    save_dir=save_dir,
-                    id_field=id_field,
-                    ds_field=ds_field,
-                    order_field=order_field,
-                    n_workers=N_PROCESSES
-                )
+            # if not all([os.path.exists(os.path.join(save_dir, f)) for f in rp.REQUIRED_RAPID_FILES]):
+            rp.inputs.prepare_rapid_inputs(
+                streams_gpkg,
+                save_dir=save_dir,
+                id_field=id_field,
+                ds_field=ds_field,
+                order_field=order_field,
+                n_workers=N_PROCESSES
+            )
+
+            # check that the number of streams in the rapid inputs matches the number of streams in the weight tables
+            # todo
 
             # todo dissolve the streams
             if not glob.glob(os.path.join(save_dir, 'TDX_streamnet*.gpkg')):

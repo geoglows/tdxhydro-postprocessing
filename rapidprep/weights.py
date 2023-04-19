@@ -159,22 +159,22 @@ def apply_modifications(wt_path: str, save_dir: str, n_processes: int = None):
 
     # read rows that are dissolved headwater streams
     with open(os.path.join(save_dir, 'mod_dissolve_headwaters.json'), 'r') as f:
-        dissolved_headwaters = json.load(f)
+        diss_headwaters = json.load(f)
 
     # read rows that are pruned shoots
     with open(os.path.join(save_dir, 'mod_prune_shoots.json'), 'r') as f:
         pruned_shoots = json.load(f)
 
-    all_headwaters = set(chain.from_iterable([dissolved_headwaters[rivid] for rivid in dissolved_headwaters.keys()]))
-    all_pruned = set(chain.from_iterable([pruned_shoots[rivid] for rivid in pruned_shoots.keys()]))
+    all_headwaters = set(chain.from_iterable([diss_headwaters[rivid][1:] for rivid in diss_headwaters.keys()]))
+    all_pruned = set(chain.from_iterable([pruned_shoots[rivid][1:] for rivid in pruned_shoots.keys()]))
 
-    # headwater_rows = [_merge_weight_table_rows(wt, key, values) for key, values in dissolved_headwaters.items()]
+    # headwater_rows = [_merge_weight_table_rows(wt, key, values) for key, values in diss_headwaters.items()]
     # pruned_rows = [_merge_weight_table_rows(wt, key, values) for key, values in pruned_shoots.items()]
 
     # redo the list comprehension to use a multiprocessing pool
     with Pool(n_processes) as pool:
         headwater_rows = pool.starmap(_merge_weight_table_rows,
-                                      [(wt, key, values) for key, values in dissolved_headwaters.items()])
+                                      [(wt, key, values) for key, values in diss_headwaters.items()])
         pruned_rows = pool.starmap(_merge_weight_table_rows,
                                    [(wt, key, values) for key, values in pruned_shoots.items()])
 
