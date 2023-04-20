@@ -38,7 +38,7 @@ if __name__ == '__main__':
 
     with open('network_data/regions_to_skip.json', 'r') as f:
         regions_to_skip = json.load(f)
-    completed_regions = []
+
     completed_regions = [d for d in sorted(glob.glob(os.path.join(outputs_path, '*'))) if rp.is_valid_result(d)]
     completed_regions = [int(os.path.basename(d)) for d in completed_regions]
 
@@ -79,24 +79,19 @@ if __name__ == '__main__':
 
         try:
             # determine if the preliminary stream analysis has been completed
-            if not all([os.path.exists(os.path.join(save_dir, f)) for f in rp.REQUIRED_MODIFICATION_FILES]):
+            if not all([os.path.exists(os.path.join(save_dir, f)) for f in rp.MODIFICATION_FILES]):
                 rp.analyze.streams(streams_gpkg,
                                    save_dir=save_dir,
                                    id_field=id_field,
                                    ds_field=ds_field,
                                    order_field=order_field, )
-            for wt in sorted(glob.glob(os.path.join(save_dir, 'weight*_full.csv'))):
-                rp.weights.apply_modifications(wt, save_dir, n_processes=N_PROCESSES)
 
-            # if not all([os.path.exists(os.path.join(save_dir, f)) for f in rp.REQUIRED_RAPID_FILES]):
-            rp.inputs.prepare_rapid_inputs(
-                streams_gpkg,
-                save_dir=save_dir,
-                id_field=id_field,
-                ds_field=ds_field,
-                order_field=order_field,
-                n_workers=N_PROCESSES
-            )
+            if not len(glob.glob(os.path.join(save_dir, 'weight*0.csv'))) >= len(sample_grids):
+                for wt in sorted(glob.glob(os.path.join(save_dir, 'weight*_full.csv'))):
+                    rp.weights.apply_modifications(wt, save_dir, n_processes=N_PROCESSES)
+
+            if not all([os.path.exists(os.path.join(save_dir, f)) for f in rp.RAPID_FILES]):
+                rp.inputs.rapid_input_csvs(save_dir, id_field=id_field, n_processes=N_PROCESSES)
 
             # check that the number of streams in the rapid inputs matches the number of streams in the weight tables
             # todo
@@ -111,6 +106,5 @@ if __name__ == '__main__':
             print(traceback.format_exc())
             continue
 
-    logging.info('Done')
     logging.info('All Regions Processed')
     logging.info('Normal Termination')

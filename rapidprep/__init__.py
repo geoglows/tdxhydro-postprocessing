@@ -3,8 +3,8 @@ import rapidprep.trace_streams
 import rapidprep.correct_network
 import rapidprep.analyze
 import rapidprep.weights
-from rapidprep._validate import is_valid_result, has_base_files,\
-    REQUIRED_MODIFICATION_FILES, REQUIRED_RAPID_FILES, REQUIRED_GEOPACKAGES
+from rapidprep._validate import is_valid_result, has_base_files, RAPID_MASTER_FILES, NETWORK_TRACE_FILES, \
+    MODIFICATION_FILES, RAPID_FILES, GEOPACKAGES
 
 __all__ = [
     'inputs',

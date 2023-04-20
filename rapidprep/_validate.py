@@ -7,15 +7,23 @@ import geopandas as gpd
 import numpy as np
 import pandas as pd
 
-REQUIRED_MODIFICATION_FILES = [
+
+NETWORK_TRACE_FILES = (
+    'adjoint_tree.json',
+    'mod_zero_length_streams.csv',
+)
+RAPID_MASTER_FILES = (
+    'rapid_connect_master.parquet',
+    'rapid_inputs_master.parquet'
+)
+MODIFICATION_FILES = [
     'adjoint_tree.json',
     'mod_zero_length_streams.csv',
     'mod_drop_small_trees.csv',
     'mod_dissolve_headwaters.json',
     'mod_prune_shoots.json',
 ]
-
-REQUIRED_RAPID_FILES = [
+RAPID_FILES = [
     'rapid_connect.csv',
     'riv_bas_id.csv',
     'comid_lat_lon_z.csv',
@@ -23,8 +31,7 @@ REQUIRED_RAPID_FILES = [
     'kfac.csv',
     'x.csv',
 ]
-
-REQUIRED_GEOPACKAGES = [
+GEOPACKAGES = [
     'TDX_streamnet_*_model.gpkg',
     'TDX_streamnet_*_vis.gpkg',
     'TDX_streamreach_basins_*_corrected.gpkg'
@@ -40,61 +47,41 @@ def is_valid_result(directory: str):
     Args:
         directory (str): Path to the directory to validate
     """
-    # Look for RAPID files
-    missing_rapid_files = [f for f in REQUIRED_RAPID_FILES if not os.path.isfile(os.path.join(directory, f))]
+    logger.info(f'Validating {directory}')
 
-    # look for weight tables
+    has_network_trace_files = all([os.path.exists(os.path.join(directory, f)) for f in NETWORK_TRACE_FILES])
+    has_rapid_master_files = all([os.path.exists(os.path.join(directory, f)) for f in RAPID_MASTER_FILES])
+    has_mod_files = all([os.path.exists(os.path.join(directory, f)) for f in MODIFICATION_FILES])
+    has_rapid_files = all([os.path.exists(os.path.join(directory, f)) for f in RAPID_FILES])
+    # has_geopackages = all([len(glob.glob(os.path.join(directory, f))) > 0 for f in GEOPACKAGES])
+    has_geopackages = True
     weight_tables = glob.glob(os.path.join(directory, 'weight_*.csv'))
 
-    # look for dissolved support files
-    missing_network_files = [f for f in REQUIRED_MODIFICATION_FILES if not os.path.isfile(os.path.join(directory, f))]
-
-    # look for geopackages
-    missing_geopackages = [f for f in REQUIRED_GEOPACKAGES if len(glob.glob(os.path.join(directory, f))) == 0]
-    count_geopackages = list(glob.glob(os.path.join(directory, '*.gpkg')))
-
-    # summarize findings
-    logger.info(f'Validating directory: {directory}')
-    if all([
-        len(missing_rapid_files) == 0,
-        len(weight_tables) >= 3,
-        len(missing_network_files) == 0,
-    ]):
+    if all([has_network_trace_files, has_rapid_master_files, has_mod_files, has_rapid_files, has_geopackages]):
         logger.info('All expected files found in this directory')
         logger.info(f'  Found {len(weight_tables)} weight tables')
-        logger.info(f'  Found {len(count_geopackages)} geopackages')
         logger.info('')
         return True
 
-    if len(missing_rapid_files) != 0:
-        logger.info('\tMissing RAPID files:')
-        for file in missing_rapid_files:
-            logger.info(f'\t{file}')
-
-    logger.info(f'\tFound {len(weight_tables)} weight tables')
-    for table in weight_tables:
-        logger.info(f'\t{table}')
-
-    if len(missing_network_files) != 0:
-        logger.info('\tMissing modification files:')
-        for file in missing_network_files:
-            logger.info(f'\t{file}')
-
-    if len(missing_geopackages) != 0:
-        logger.info('\tMissing geopackages:')
-        for file in missing_geopackages:
-            logger.info(f'\t{file}')
-
+    if not has_network_trace_files:
+        logger.info('  ERROR: Missing network trace files')
+    if not has_rapid_master_files:
+        logger.info('  ERROR: Missing RAPID master files')
+    if not has_mod_files:
+        logger.info('  ERROR: Missing modification files')
+    if not has_rapid_files:
+        logger.info('  ERROR: Missing RAPID files')
+    if not has_geopackages:
+        logger.info('  ERROR: Missing geopackages')
     logger.info('')
     return False
 
 
 def has_base_files(directory: str):
-    if not all([
-        os.path.exists(os.path.join(directory, 'adjoint_tree.json')),
-        os.path.exists(os.path.join(directory, 'mod_zero_length_streams.csv')),
-    ]) and len(glob.glob(os.path.join(directory, 'weight_*_full.csv'))) >= 0:
-        return False
+    has_rapid_master_files = all([os.path.exists(os.path.join(directory, f)) for f in RAPID_MASTER_FILES])
+    has_network_trace_files = all([os.path.exists(os.path.join(directory, f)) for f in NETWORK_TRACE_FILES])
+    has_weight_tables = len(glob.glob(os.path.join(directory, 'weight_*_full.csv'))) >= 3
+    return has_rapid_master_files and has_network_trace_files and has_weight_tables
 
 
 def _get_gdf_rows(gpkg):

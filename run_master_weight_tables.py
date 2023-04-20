@@ -20,7 +20,7 @@ logging.basicConfig(
 inputs_path = '/tdxhydro'
 outputs_path = '/tdxrapid'
 inputs_path = '/Volumes/EB406_T7_2/TDXHydro'
-outputs_path = '/Volumes/EB406_T7_2/TDXOutputsNew'
+outputs_path = '/Volumes/EB406_T7_2/TDXHydroRapid'
 
 MP_STREAMS = True
 MP_BASINS = True
@@ -38,7 +38,7 @@ if __name__ == '__main__':
 
     with open('network_data/regions_to_skip.json', 'r') as f:
         regions_to_skip = json.load(f)
-    completed_regions = [d for d in sorted(glob.glob(os.path.join(outputs_path, '*'))) if rp.has(d)]
+    completed_regions = [d for d in sorted(glob.glob(os.path.join(outputs_path, '*'))) if rp.has_base_files(d)]
     completed_regions = [int(os.path.basename(d)) for d in completed_regions]
 
     logging.info(f'Base Number of processes {N_PROCESSES}')
@@ -48,8 +48,8 @@ if __name__ == '__main__':
     logging.info(f'Completed regions: {completed_regions}')
 
     for streams_gpkg, basins_gpkg in zip(
-            sorted(glob.glob(os.path.join(inputs_path, 'TDX_streamnet*.gpkg')), reverse=True),
-            sorted(glob.glob(os.path.join(inputs_path, 'TDX_streamreach_basins*.gpkg')), reverse=True)
+            sorted(glob.glob(os.path.join(inputs_path, 'TDX_streamnet*.gpkg'))),
+            sorted(glob.glob(os.path.join(inputs_path, 'TDX_streamreach_basins*.gpkg')))
     ):
         # Identify the region being processed
         region_number = int(os.path.basename(streams_gpkg).split('_')[2])
@@ -78,7 +78,7 @@ if __name__ == '__main__':
 
         try:
             # determine if the preliminary stream analysis has been completed
-            if not all([os.path.exists(os.path.join(save_dir, f)) for f in rp.REQUIRED_MODIFICATION_FILES]):
+            if not all([os.path.exists(os.path.join(save_dir, f)) for f in rp.NETWORK_TRACE_FILES]):
                 rp.analyze.streams_0length(streams_gpkg,
                                            save_dir=save_dir,
                                            id_field=id_field,
@@ -86,7 +86,7 @@ if __name__ == '__main__':
                                            len_field=length_field)
 
             # make the raw weight tables
-            if len(list(glob.glob(os.path.join(save_dir, 'weight_*_full.csv')))) < 3:
+            if len(list(glob.glob(os.path.join(save_dir, 'weight_*_full.csv')))) < len(sample_grids):
                 # edit the basins in memory - not cached to save time
                 basins_gdf = rp.correct_network.correct_0_length_basins(
                     basins_gpkg,
@@ -103,6 +103,10 @@ if __name__ == '__main__':
                     )
                 basins_gdf = None
 
+            if not all([os.path.exists(os.path.join(save_dir, f)) for f in rp.RAPID_MASTER_FILES]):
+                rp.inputs.rapid_master_files(streams_gpkg, save_dir=save_dir, id_field=id_field, ds_field=ds_field,
+                                             order_field=order_field, n_workers=N_PROCESSES)
+
         except Exception as e:
             logging.info('\n----- ERROR -----\n')
             logging.info(e)
@@ -110,4 +114,3 @@ if __name__ == '__main__':
             continue
 
     logging.info('All Regions Processed')
-    logging.info('Normal Termination')
