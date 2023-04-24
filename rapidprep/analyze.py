@@ -44,8 +44,6 @@ def streams(streams_gdf: str,
     streams_df = gpd.read_file(streams_gdf, ignore_geometry=True)
 
     # trace network to create adjoint tree
-    logger.info('Tracing network')
-
     with open(os.path.join(save_dir, 'adjoint_tree.json'), 'r') as f:
         adjoint_dict = json.load(f)
 
@@ -56,7 +54,10 @@ def streams(streams_gdf: str,
         streams_df['DSContArea'] < 75_000_000
     ), id_field].values
     small_tree_segments = set(chain.from_iterable([adjoint_dict[str(x)] for x in small_tree_outlet_ids]))
-    pd.DataFrame(small_tree_segments).to_csv(os.path.join(save_dir, 'mod_drop_small_trees.csv'), index=False)
+    (
+        pd.DataFrame(small_tree_segments, columns=['drop'])
+        .to_csv(os.path.join(save_dir, 'mod_drop_small_trees.csv'), index=False)
+    )
 
     # Find headwater streams to be dissolved
     adjoint_order_2_dict = create_adjoint_json(streams_df, id_field=id_field, ds_field=ds_field,

@@ -43,15 +43,14 @@ def _combine_routing_rows(streams_df: pd.DataFrame, id_to_preserve: str, ids_to_
     if target_row.empty:
         return None
     # todo only sum muskingum parameters if they are part of the branches being kept
-    musk_k, musk_kfac = streams_df.loc[streams_df['LINKNO'].isin(ids_to_merge[1:]), ['musk_k', 'musk_kfac']].sum()
-    musk_x = target_row['musk_x'].values[0]
+    musk_k, musk_kfac = streams_df.loc[streams_df['LINKNO'].isin(ids_to_merge[1:]), ['musk_k', 'musk_kfac']].mean()
     return pd.DataFrame({
         'LINKNO': int(id_to_preserve),
         'DSLINKNO': int(target_row['DSLINKNO'].values[0]),
         'strmOrder': int(target_row['strmOrder'].values[0]),
         'musk_k': float(musk_k),
         'musk_kfac': float(musk_kfac),
-        'musk_x': float(musk_x),
+        'musk_x': float(target_row['musk_x'].values[0]),
         'lat': float(target_row['lat'].values[0]),
         'lon': float(target_row['lon'].values[0]),
         'z': int(target_row['z'].values[0]),
@@ -114,6 +113,12 @@ def rapid_input_csvs(save_dir: str,
         pruned_shoots = set([ids[-1] for _, ids in pruned_shoots.items()])
     small_trees = pd.read_csv(os.path.join(save_dir, 'mod_drop_small_trees.csv')).values.flatten()
 
+    logger.info('\tDropping small trees')
+    streams_df = streams_df.loc[~streams_df[id_field].isin(small_trees)]
+
+    logger.info('\tDropping pruned shoots')
+    streams_df = streams_df.loc[~streams_df[id_field].isin(pruned_shoots)]
+
     with Pool(n_processes) as p:
         # Apply corrections based on the stream modification files
         logger.info('\tMerging head water stream segment rows')
@@ -127,27 +132,32 @@ def rapid_input_csvs(save_dir: str,
             *corrected_headwater_rows
         ])
 
-    logger.info('\tDropping small trees')
-    streams_df = streams_df.loc[~streams_df[id_field].isin(small_trees)]
-    rapcon_df = rapcon_df[~rapcon_df.iloc[:, 0].isin(small_trees)]
+    logger.info('\tSorting IDs topologically')
+    sorted_order = sort_topologically(streams_df)
+    streams_df = (
+        streams_df
+        .set_index(pd.Index(streams_df[id_field]))
+        .loc[sorted_order]
+        .reset_index(drop=True)
+    )
+    streams_df[id_field].to_csv(os.path.join(save_dir, "riv_bas_id.csv"), index=False, header=False)
 
-    logger.info('\tDropping pruned shoots')
-    streams_df = streams_df.loc[~streams_df[id_field].isin(pruned_shoots)]
-    rapcon_df = rapcon_df[~rapcon_df.iloc[:, 0].isin(pruned_shoots)]
+    # adjust rapid connect to match
+    rapcon_df = rapcon_df.loc[rapcon_df.iloc[:, 0].isin(streams_df[id_field].values)]
+    rapcon_df = (
+        rapcon_df
+        .set_index(pd.Index(rapcon_df.iloc[:, 0]))
+        .loc[sorted_order]
+        .reset_index(drop=True)
+    )
+    rapcon_df.to_csv(os.path.join(save_dir, "rapid_connect.csv"), index=False, header=False)
 
     logger.info('\tWriting csvs')
-    rapcon_df.to_csv(os.path.join(save_dir, "rapid_connect.csv"), index=False, header=False)
     streams_df["musk_kfac"].to_csv(os.path.join(save_dir, "kfac.csv"), index=False, header=False)
     streams_df["musk_k"].to_csv(os.path.join(save_dir, "k.csv"), index=False, header=False)
     streams_df["musk_x"].to_csv(os.path.join(save_dir, "x.csv"), index=False, header=False)
     streams_df[[id_field, 'lat', 'lon', 'z']].to_csv(os.path.join(save_dir, "comid_lat_lon_z.csv"), index=False)
 
-    logger.info('\tSorting riv_bas_id.csv')
-    sorted_order = sort_topologically(streams_df)
-    # now order the streams_df by the sorted order
-    streams_df.index = pd.Index(streams_df[id_field])
-    streams_df = streams_df.loc[sorted_order]
-    streams_df[id_field].to_csv(os.path.join(save_dir, "riv_bas_id.csv"), index=False, header=False)
     return
 
 

@@ -23,7 +23,6 @@ inputs_path = '/Volumes/EB406_T7_2/TDXHydro'
 outputs_path = '/Volumes/EB406_T7_2/TDXHydroRapid'
 
 MP_STREAMS = True
-MP_BASINS = True
 N_PROCESSES = os.cpu_count()
 id_field = 'LINKNO'
 ds_field = 'DSLINKNO'
@@ -44,7 +43,6 @@ if __name__ == '__main__':
 
     logging.info(f'Base Number of processes {N_PROCESSES}')
     logging.info(f'Use multiprocessing for streams: {MP_STREAMS}')
-    logging.info(f'Use multiprocessing for basins: {MP_BASINS}')
     logging.info(f'Skipping regions: {regions_to_skip}')
     logging.info(f'Completed regions: {completed_regions}')
 
