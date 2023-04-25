@@ -46,13 +46,9 @@ if __name__ == '__main__':
     logging.info(f'Skipping regions: {regions_to_skip}')
     logging.info(f'Completed regions: {completed_regions}')
 
-    for streams_gpkg, basins_gpkg in zip(
-            sorted(glob.glob(os.path.join(inputs_path, 'TDX_streamnet*.gpkg'))),
-            sorted(glob.glob(os.path.join(inputs_path, 'TDX_streamreach_basins*.gpkg')))
-    ):
+    for region_dir in sorted(glob.glob(os.path.join(outputs_path, '*'))):
         # Identify the region being processed
-        region_number = int(os.path.basename(streams_gpkg).split('_')[2])
-
+        region_number = int(os.path.basename(region_dir))
         if region_number in regions_to_skip:
             logging.info(f'Skipping region {region_number} - In regions_to_skip\n')
             continue
@@ -70,16 +66,13 @@ if __name__ == '__main__':
         # log a bunch of stuff
         logging.info('')
         logging.info(region_number)
-        logging.info(streams_gpkg)
-        logging.info(basins_gpkg)
         logging.info(save_dir)
         logging.info(f'Streams: {n_streams}')
 
         try:
             # determine if the preliminary stream analysis has been completed
             if not all([os.path.exists(os.path.join(save_dir, f)) for f in rp.MODIFICATION_FILES]):
-                rp.analyze.streams(streams_gpkg,
-                                   save_dir=save_dir,
+                rp.analyze.streams(save_dir=save_dir,
                                    id_field=id_field,
                                    ds_field=ds_field,
                                    order_field=order_field, )

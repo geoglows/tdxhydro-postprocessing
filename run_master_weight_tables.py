@@ -19,8 +19,8 @@ logging.basicConfig(
 
 inputs_path = '/tdxhydro'
 outputs_path = '/tdxrapid'
-inputs_path = '/Volumes/EB406_T7_2/TDXHydro'
-outputs_path = '/Volumes/EB406_T7_2/TDXHydroRapid'
+# inputs_path = '/Volumes/EB406_T7_2/TDXHydro'
+# outputs_path = '/Volumes/EB406_T7_2/TDXHydroRapid'
 
 MP_STREAMS = True
 MP_BASINS = True
@@ -48,8 +48,8 @@ if __name__ == '__main__':
     logging.info(f'Completed regions: {completed_regions}')
 
     for streams_gpkg, basins_gpkg in zip(
-            sorted(glob.glob(os.path.join(inputs_path, 'TDX_streamnet*702006*.gpkg'))),
-            sorted(glob.glob(os.path.join(inputs_path, 'TDX_streamreach_basins*702006*.gpkg')))
+            sorted(glob.glob(os.path.join(inputs_path, 'TDX_streamnet*.gpkg'))),
+            sorted(glob.glob(os.path.join(inputs_path, 'TDX_streamreach_basins*.gpkg')))
     ):
         # Identify the region being processed
         region_number = int(os.path.basename(streams_gpkg).split('_')[2])
@@ -79,10 +79,7 @@ if __name__ == '__main__':
         try:
             # determine if the preliminary stream analysis has been completed
             if not all([os.path.exists(os.path.join(save_dir, f)) for f in rp.NETWORK_TRACE_FILES]):
-                rp.analyze.streams_0length(streams_gpkg,
-                                           save_dir=save_dir,
-                                           id_field=id_field,
-                                           ds_field=ds_field,
+                rp.analyze.streams_0length(streams_gpkg, save_dir=save_dir, id_field=id_field, ds_field=ds_field,
                                            len_field=length_field)
 
             # make the raw weight tables

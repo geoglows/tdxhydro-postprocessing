@@ -1,19 +1,16 @@
-import glob
 import json
 import logging
 import os
+import warnings
 from itertools import chain
+from multiprocessing import Pool
 
-import dask.dataframe as dd
 import geopandas as gpd
 import numpy as np
 import pandas as pd
-import xarray as xr
-from shapely.geometry import box
-from multiprocessing import Pool
-import shapely.ops
 import shapely.geometry
-import warnings
+import shapely.ops
+import xarray as xr
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +120,7 @@ def make_weight_table(lsm_sample: str, out_dir: str, basins_gdf: gpd.GeoDataFram
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
+        logging.info('Creating Thiessen polygons')
 
         # create a geodataframe from the voronoi polygons
         tg_gdf = gpd.GeoDataFrame(geometry=[region for region in regions.geoms], crs=4326)

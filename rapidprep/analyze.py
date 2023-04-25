@@ -15,8 +15,7 @@ __all__ = ['streams', 'streams_0length']
 logger = logging.getLogger(__name__)
 
 
-def streams(streams_gdf: str,
-            save_dir: str,
+def streams(save_dir: str,
             id_field='LINKNO',
             ds_field: str = 'DSLINKNO',
             order_field: str = 'strmOrder', ) -> None:
@@ -41,7 +40,7 @@ def streams(streams_gdf: str,
         None
     """
     logger.info('Reading streams')
-    streams_df = gpd.read_file(streams_gdf, ignore_geometry=True)
+    rap_inp_df = pd.read_parquet(os.path.join(save_dir, 'rapid_inputs_master.parquet'), engine='fastparquet')
 
     # trace network to create adjoint tree
     with open(os.path.join(save_dir, 'adjoint_tree.json'), 'r') as f:
@@ -49,9 +48,9 @@ def streams(streams_gdf: str,
 
     # Drop trees with small total length/area
     logger.info('Finding small trees')
-    small_tree_outlet_ids = streams_df.loc[np.logical_and(
-        streams_df[ds_field] == -1,
-        streams_df['DSContArea'] < 75_000_000
+    small_tree_outlet_ids = rap_inp_df.loc[np.logical_and(
+        rap_inp_df[ds_field] == -1,
+        rap_inp_df['DSContArea'] < 75_000_000
     ), id_field].values
     small_tree_segments = set(chain.from_iterable([adjoint_dict[str(x)] for x in small_tree_outlet_ids]))
     (
@@ -60,7 +59,7 @@ def streams(streams_gdf: str,
     )
 
     # Find headwater streams to be dissolved
-    adjoint_order_2_dict = create_adjoint_json(streams_df, id_field=id_field, ds_field=ds_field,
+    adjoint_order_2_dict = create_adjoint_json(rap_inp_df, id_field=id_field, ds_field=ds_field,
                                                order_field=order_field, order_filter=2)
 
     # list all ids that were merged, turn a list of lists into a flat list, remove duplicates by converting to a set
@@ -72,11 +71,11 @@ def streams(streams_gdf: str,
 
     # Find order 1 streams that join an order 3+ stream
     logger.info('Looking for order 1 streams that join order 3+')
-    order_1_branches = streams_df.loc[streams_df[order_field] == 1]
-    higher_order_trunks = streams_df.loc[streams_df[order_field] >= 3, id_field].values
+    order_1_branches = rap_inp_df.loc[rap_inp_df[order_field] == 1]
+    higher_order_trunks = rap_inp_df.loc[rap_inp_df[order_field] >= 3, id_field].values
     ds_connections = order_1_branches.loc[order_1_branches[ds_field].isin(higher_order_trunks), ds_field].values
 
-    pairs_to_prune = streams_df.loc[streams_df[id_field].isin(ds_connections), ['USLINKNO1', 'USLINKNO2']]
+    pairs_to_prune = rap_inp_df.loc[rap_inp_df[id_field].isin(ds_connections), ['USLINKNO1', 'USLINKNO2']]
     pairs_to_prune = {str(us1): [us1, us2] for us1, us2 in
                       zip(pairs_to_prune['USLINKNO1'], pairs_to_prune['USLINKNO2'])}
 
@@ -85,16 +84,16 @@ def streams(streams_gdf: str,
     return
 
 
-def streams_0length(streams_gdf: str,
+def streams_0length(streams_gpkg: str,
                     save_dir: str,
                     id_field='LINKNO',
                     ds_field: str = 'DSLINKNO',
-                    len_field: str = 'Length',) -> None:
+                    len_field: str = 'Length', ) -> None:
     """
     Analyzes the connectivity of the streams to find errors and places that need to be dissolved
 
     Args:
-        streams_gdf:
+        streams_gpkg:
         save_dir:
         id_field:
         ds_field:
@@ -104,7 +103,7 @@ def streams_0length(streams_gdf: str,
 
     """
     logger.info('Reading streams')
-    streams_df = gpd.read_file(streams_gdf, ignore_geometry=False)
+    streams_df = gpd.read_file(streams_gpkg, ignore_geometry=False)
 
     adjoint_dict = create_adjoint_json(streams_df, id_field=id_field, ds_field=ds_field, order_field="strmOrder")
     with open(os.path.join(save_dir, 'adjoint_tree.json'), 'w') as f:
