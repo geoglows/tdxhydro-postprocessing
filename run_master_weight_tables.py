@@ -48,8 +48,8 @@ if __name__ == '__main__':
     logging.info(f'Completed regions: {completed_regions}')
 
     for streams_gpkg, basins_gpkg in zip(
-            sorted(glob.glob(os.path.join(inputs_path, 'TDX_streamnet*.gpkg'))),
-            sorted(glob.glob(os.path.join(inputs_path, 'TDX_streamreach_basins*.gpkg')))
+            sorted(glob.glob(os.path.join(inputs_path, 'TDX_streamnet*702006*.gpkg'))),
+            sorted(glob.glob(os.path.join(inputs_path, 'TDX_streamreach_basins*702006*.gpkg')))
     ):
         # Identify the region being processed
         region_number = int(os.path.basename(streams_gpkg).split('_')[2])
@@ -94,7 +94,7 @@ if __name__ == '__main__':
                     stream_id_col="streamID",
                     buffer_size=.001
                 )
-                for sample_grid in sample_grids:
+                for sample_grid in sorted(sample_grids):
                     rp.weights.make_weight_table(
                         sample_grid,
                         save_dir,
@@ -104,8 +104,7 @@ if __name__ == '__main__':
                 basins_gdf = None
 
             if not all([os.path.exists(os.path.join(save_dir, f)) for f in rp.RAPID_MASTER_FILES]):
-                rp.inputs.rapid_master_files(streams_gpkg, save_dir=save_dir, id_field=id_field, ds_field=ds_field,
-                                             order_field=order_field, n_workers=N_PROCESSES)
+                rp.inputs.rapid_master_files(streams_gpkg, save_dir=save_dir, id_field=id_field, n_workers=N_PROCESSES)
 
         except Exception as e:
             logging.info('\n----- ERROR -----\n')
