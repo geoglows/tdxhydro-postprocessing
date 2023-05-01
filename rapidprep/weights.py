@@ -47,6 +47,9 @@ def make_weight_table(lsm_sample: str, out_dir: str, basins_gdf: gpd.GeoDataFram
     # correct irregular x coordinates
     xs[xs > 180] = xs[xs > 180] - 360
 
+    all_xs = xs.copy()
+    all_ys = ys.copy()
+
     # get the resolution of the dataset
     resolution = np.abs(xs[1] - xs[0])
 
@@ -128,8 +131,10 @@ def make_weight_table(lsm_sample: str, out_dir: str, basins_gdf: gpd.GeoDataFram
         tg_gdf['lat'] = tg_gdf.geometry.apply(lambda y: y.centroid.y).astype(float)
         # tg_gdf['lon_index'] = tg_gdf['lon'].apply(lambda x: x_idxs[np.argmin(np.abs(xs - x))])
         # tg_gdf['lat_index'] = tg_gdf['lat'].apply(lambda y: y_idxs[np.argmin(np.abs(ys - y))])
-        tg_gdf['lon_index'] = tg_gdf['lon'].apply(lambda x: x_min_idx + np.argmin(np.abs(xs - x)))
-        tg_gdf['lat_index'] = tg_gdf['lat'].apply(lambda y: y_min_idx + np.argmin(np.abs(ys - y)))
+        # tg_gdf['lon_index'] = tg_gdf['lon'].apply(lambda x: x_min_idx + np.argmin(np.abs(xs - x)))
+        # tg_gdf['lat_index'] = tg_gdf['lat'].apply(lambda y: y_min_idx + np.argmin(np.abs(ys - y)))
+        tg_gdf['lon_index'] = tg_gdf['lon'].apply(lambda x: np.argmin(np.abs(all_xs - x)))
+        tg_gdf['lat_index'] = tg_gdf['lat'].apply(lambda y: np.argmin(np.abs(all_ys - y)))
 
         # Spatial join the two dataframes using the 'intersects' predicate
         logger.info('performing spatial join')
