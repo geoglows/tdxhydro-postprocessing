@@ -29,12 +29,16 @@ def _intersect_reproject_area(a: gpd.GeoDataFrame, b: gpd.GeoDataFrame):
     )
 
 
-def make_weight_table(lsm_sample: str, out_dir: str, basins_gdf: gpd.GeoDataFrame, n_workers: int = 1):
+def make_weight_table(lsm_sample: str,
+                      out_dir: str,
+                      basins_gdf: gpd.GeoDataFrame,
+                      n_workers: int = 1,
+                      basin_id_field: str = 'streamID') -> None:
     out_name = os.path.join(out_dir, 'weight_' + os.path.basename(os.path.splitext(lsm_sample)[0]) + '_full.csv')
     if os.path.exists(os.path.join(out_dir, out_name)):
-        logger.info(f"Weight table already exists: {os.path.basename(out_name)}")
+        logger.info(f'Weight table already exists: {os.path.basename(out_name)}')
         return
-    logger.info(f"Creating weight table: {os.path.basename(out_name)}")
+    logger.info(f'Creating weight table: {os.path.basename(out_name)}')
 
     # Extract xs and ys dimensions from the dataset
     lsm_ds = xr.open_dataset(lsm_sample)
@@ -85,8 +89,8 @@ def make_weight_table(lsm_sample: str, out_dir: str, basins_gdf: gpd.GeoDataFram
     x_idxs, y_idxs = np.meshgrid(x_idxs, y_idxs)
     x_grid = x_grid.flatten()
     y_grid = y_grid.flatten()
-    x_idxs = x_idxs.flatten()
-    y_idxs = y_idxs.flatten()
+    # x_idxs = x_idxs.flatten()
+    # y_idxs = y_idxs.flatten()
     # x_left = x_grid - resolution / 2
     # x_right = x_grid + resolution / 2
     # y_bottom = y_grid - resolution / 2
@@ -115,6 +119,7 @@ def make_weight_table(lsm_sample: str, out_dir: str, basins_gdf: gpd.GeoDataFram
 
     # Create Thiessen polygon based on the point feature
     # the order of polygons in the voronoi diagram is **guaranteed not** the same as the order of the points going in
+    logging.info('\tCreating Thiessen polygons')
     regions = shapely.ops.voronoi_diagram(
         shapely.geometry.MultiPoint(
             [shapely.geometry.Point(x, y) for x, y in zip(x_grid, y_grid)]
@@ -123,43 +128,41 @@ def make_weight_table(lsm_sample: str, out_dir: str, basins_gdf: gpd.GeoDataFram
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        logging.info('Creating Thiessen polygons')
-
+        logging.info('\tadding metadata to voronoi polygons gdf')
         # create a geodataframe from the voronoi polygons
         tg_gdf = gpd.GeoDataFrame(geometry=[region for region in regions.geoms], crs=4326)
         tg_gdf['lon'] = tg_gdf.geometry.apply(lambda x: x.centroid.x).astype(float)
         tg_gdf['lat'] = tg_gdf.geometry.apply(lambda y: y.centroid.y).astype(float)
-        # tg_gdf['lon_index'] = tg_gdf['lon'].apply(lambda x: x_idxs[np.argmin(np.abs(xs - x))])
-        # tg_gdf['lat_index'] = tg_gdf['lat'].apply(lambda y: y_idxs[np.argmin(np.abs(ys - y))])
-        # tg_gdf['lon_index'] = tg_gdf['lon'].apply(lambda x: x_min_idx + np.argmin(np.abs(xs - x)))
-        # tg_gdf['lat_index'] = tg_gdf['lat'].apply(lambda y: y_min_idx + np.argmin(np.abs(ys - y)))
         tg_gdf['lon_index'] = tg_gdf['lon'].apply(lambda x: np.argmin(np.abs(all_xs - x)))
         tg_gdf['lat_index'] = tg_gdf['lat'].apply(lambda y: np.argmin(np.abs(all_ys - y)))
 
         # Spatial join the two dataframes using the 'intersects' predicate
-        logger.info('performing spatial join')
+        logger.info('\tperforming spatial join')
         intersections = gpd.sjoin(tg_gdf, basins_gdf, predicate='intersects')
 
-    logger.info('merging dataframes')
+    logger.info('\tmerging dataframes')
     intersections = gpd.GeoDataFrame(
         intersections
         .merge(basins_gdf[['geometry', ]], left_on=['index_right'], right_index=True, suffixes=('_tp', '_sb'))
     )
 
-    logger.info('calculating area of intersections')
+    logger.info('\tcalculating area of intersections')
     with Pool(n_workers) as p:
         intersections['area_sqm'] = p.starmap(
             _intersect_reproject_area,
             zip(intersections['geometry_tp'], intersections['geometry_sb'])
         )
 
-    logger.info('calculating number of points')
-    intersections['npoints'] = intersections.groupby('streamID')['streamID'].transform('count')
+    logger.info('\tdropping 0 area rows')
+    intersections = intersections[intersections['area_sqm'] > 0]
 
-    logger.info('writing weight table csv')
+    logger.info('\tcalculating number of points')
+    intersections['npoints'] = intersections.groupby(basin_id_field)[basin_id_field].transform('count')
+
+    logger.info('\twriting weight table csv')
     (
-        intersections[['streamID', 'area_sqm', 'lon_index', 'lat_index', 'npoints', 'lon', 'lat']]
-        .sort_values(['streamID', 'area_sqm'])
+        intersections[[basin_id_field, 'area_sqm', 'lon_index', 'lat_index', 'npoints', 'lon', 'lat']]
+        .sort_values([basin_id_field, 'area_sqm'])
         .to_csv(out_name, index=False)
     )
     return
