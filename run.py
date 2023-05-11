@@ -21,13 +21,11 @@ logging.basicConfig(
 
 N_PROCESSES = os.cpu_count()
 inputs_path = '/tdxhydro'
-outputs_path = '/tdxrapid'
+outputs_path = '/tdxrapid/input'
 
-inputs_path = '/Volumes/EB406_T7_2/TDXHydro'
-outputs_path = '/Volumes/EB406_T7_2/TDXHydroRapid_V8'
 gis_iterable = zip(
-    sorted(glob.glob(os.path.join(inputs_path, 'TDX_streamnet_*.gpkg')), reverse=False),
-    sorted(glob.glob(os.path.join(inputs_path, 'TDX_streamreach_basins_*.gpkg')), reverse=False),
+    sorted(glob.glob(os.path.join(inputs_path, 'TDX_streamnet_*.gpkg')), reverse=True),
+    sorted(glob.glob(os.path.join(inputs_path, 'TDX_streamreach_basins_*.gpkg')), reverse=True),
 )
 CORRECT_TAUDEM_ERRORS = True
 SLIM_NETWORK = False
