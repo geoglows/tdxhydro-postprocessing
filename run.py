@@ -69,7 +69,8 @@ if __name__ == '__main__':
 
     for streams_gpkg, basins_gpkg in gis_iterable:
         # Identify the region being processed
-        region_number = os.path.basename(streams_gpkg)
+        # region_number = os.path.basename(streams_gpkg)
+        region_number = region_number.split('_')[2]
 
         if region_number in regions_to_skip:
             logging.info(f'Skipping region {region_number} - In regions_to_skip\n')
@@ -151,6 +152,7 @@ if __name__ == '__main__':
     for region_dir in sorted(glob.glob(os.path.join(outputs_path, '*'))):
         # Identify the region being processed
         region_number = os.path.basename(region_dir)
+        region_number = region_number.split('_')[2]
 
         if region_number in regions_to_skip:
             logging.info(f'Skipping region {region_number} - In regions_to_skip\n')
