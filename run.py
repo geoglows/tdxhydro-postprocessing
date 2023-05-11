@@ -2,6 +2,7 @@ import glob
 import json
 import logging
 import os
+import shutil
 import traceback
 import warnings
 
@@ -21,7 +22,6 @@ logging.basicConfig(
 N_PROCESSES = os.cpu_count()
 inputs_path = '/tdxhydro'
 outputs_path = '/tdxrapid'
-
 
 # inputs_path = '/Volumes/EB406_T7_2/TDXHydro'
 # outputs_path = '/Volumes/EB406_T7_2/tdxrapid'
@@ -185,6 +185,10 @@ if __name__ == '__main__':
             #     if not len(glob.glob(os.path.join(save_dir, 'weight*0.csv'))) >= len(sample_grids):
             #         for wt in sorted(glob.glob(os.path.join(save_dir, 'weight*_full.csv'))):
             #             rp.weights.apply_mods_to_wt(wt, save_dir, n_processes=N_PROCESSES)
+
+            # make copies of all weight_*_full.csv that have the _full removed
+            for wt in sorted(glob.glob(os.path.join(save_dir, 'weight*_full.csv'))):
+                shutil.copyfile(wt, wt.replace('_full', ''))
 
             if not all([os.path.exists(os.path.join(save_dir, f)) for f in rp.RAPID_FILES]):
                 rp.inputs.rapid_input_csvs(save_dir,
