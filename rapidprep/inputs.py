@@ -9,6 +9,7 @@ import networkx as nx
 import numpy as np
 import pandas as pd
 from pyproj import Geod
+from .correct_network import identify_0_length
 
 # set up logging
 logger = logging.getLogger(__name__)
@@ -22,10 +23,11 @@ def _calculate_geodesic_length(line) -> float:
 
     # This is for the outliers that have 0 length
     if length < 0.0000001:
-        length = 0.001
+        length = 0.01
     return length
 
 
+# todo this should be directly from the master table -> why is it different?
 def _make_rapid_connect_row(stream_id, streams_gdf, id_field, ds_id_field):
     upstreams = streams_gdf.loc[streams_gdf[ds_id_field] == stream_id, id_field].values
     return {
@@ -59,9 +61,29 @@ def rapid_master_files(streams_gpkg: str,
                        save_dir: str,
                        id_field: str = 'LINKNO',
                        ds_id_field: str = 'DSLINKNO',
+                       length_field: str = 'Length',
                        default_k: float = 0.35,
-                       default_x: float = 3,
+                       default_x: float = .3,
                        n_workers: int or None = 1) -> None:
+    """
+    Create RAPID master files from a stream network
+
+    Saves the following files to the save_dir:
+        - rapid_connect_master.parquet
+        - rapid_inputs_master.parquet
+    Args:
+        streams_gpkg:
+        save_dir:
+        id_field:
+        ds_id_field:
+        length_field:
+        default_k:
+        default_x:
+        n_workers:
+
+    Returns:
+
+    """
     # Create rapid preprocessing files
     logger.info('Creating RAPID Master files')
     streams_gdf = gpd.read_file(streams_gpkg)
@@ -71,90 +93,106 @@ def rapid_master_files(streams_gpkg: str,
 
     with Pool(n_workers) as p:
         logger.info('\tCalculating lengths')
-        # streams_gdf["length_geod"] = p.map(_calculate_geodesic_length, streams_gdf.geometry.values)
         streams_gdf["length_geod"] = p.map(_calculate_geodesic_length, streams_gdf.geometry.values)
 
+        logger.info('\tCalculating lat, lon, z, k, x')
         streams_gdf['lat'] = streams_gdf.geometry.apply(lambda geom: geom.xy[1][0]).values
         streams_gdf['lon'] = streams_gdf.geometry.apply(lambda geom: geom.xy[0][0]).values
+        streams_gdf['z'] = 0
 
         streams_gdf["musk_k"] = streams_gdf["length_geod"] * 3600 * default_k
         streams_gdf["musk_kfac"] = streams_gdf["musk_k"].values.flatten()
-        streams_gdf["musk_x"] = default_x * 0.1
+        streams_gdf["musk_x"] = default_x
         streams_gdf["musk_xfac"] = streams_gdf["musk_x"].values.flatten()
-        streams_gdf['z'] = 0
-
-        streams_gdf = streams_gdf.drop(columns=['geometry'])
 
         logger.info('\tCalculating RAPID connect file')
         rapid_connect = p.starmap(_make_rapid_connect_row,
                                   [[x, streams_gdf, id_field, ds_id_field] for x in streams_gdf[id_field].values])
+        rapid_connect = (
+            pd
+            .DataFrame(rapid_connect)
+            .fillna(0)
+            .astype(int)
+        )
+
+    # Fix 0 length segments
+    logger.info('\tLooking for 0 length segments')
+    if 0 in streams_gdf[length_field].values:
+        zero_length_fixes_df = identify_0_length(streams_gdf, id_field, ds_id_field, length_field)
+        zero_length_fixes_df.to_csv(os.path.join(save_dir, 'mod_zero_length_streams.csv'), index=False)
+
+    streams_gdf = streams_gdf.drop(columns=['geometry'])
+
+    logger.info('\tSorting streams topologically')
+    sorted_order = sort_topologically(streams_gdf, id_field=id_field, ds_id_field=ds_id_field)
+
+    streams_df = (
+        streams_gdf
+        .set_index(pd.Index(streams_gdf[id_field]))
+        .reindex(sorted_order)
+        .reset_index(drop=True)
+    )
+
+    # adjust rapid connect to match
+    rapid_connect = rapid_connect.loc[rapid_connect.iloc[:, 0].isin(streams_df[id_field].values)]
+    rapid_connect = (
+        rapid_connect
+        .set_index(pd.Index(rapid_connect.iloc[:, 0]))
+        .reindex(sorted_order)
+        .reset_index(drop=True)
+        .astype(int)
+    )
 
     logger.info('\tWriting RAPID master parquets')
-    (
-        pd
-        .DataFrame(rapid_connect)
-        .fillna(0)
-        .astype(int)
-        .to_parquet(os.path.join(save_dir, "rapid_connect_master.parquet"))
-    )
     streams_gdf.to_parquet(os.path.join(save_dir, "rapid_inputs_master.parquet"))
+    rapid_connect.to_parquet(os.path.join(save_dir, "rapid_connect_master.parquet"))
+
     return
 
 
 def rapid_input_csvs(save_dir: str,
+                     streams_df: pd.DataFrame = None,
+                     rapcon_df: pd.DataFrame = None,
                      id_field: str = 'LINKNO',
-                     ds_id_field: str = 'DSLINKNO',
-                     apply_taudem_mods: bool = False,
-                     n_processes: int or None = 1) -> None:
-    logger.info('Creating RAPID input csvs')
-    logger.info('\tReading master files')
-    streams_df = pd.read_parquet(os.path.join(save_dir, 'rapid_inputs_master.parquet'))
-    rapcon_df = pd.read_parquet(os.path.join(save_dir, 'rapid_connect_master.parquet')).astype(int)
+                     ds_id_field: str = 'DSLINKNO', ) -> None:
+    """
+    Create RAPID input csvs from a stream network dataframe
 
-    # if apply_taudem_mods:
-    #     logger.info('\tReading stream modification files')
-    #     with open(os.path.join(save_dir, 'mod_dissolve_headwaters.json'), 'r') as f:
-    #         diss_headwaters = json.load(f)
-    #         all_merged_headwater = set(chain.from_iterable(
-    #             [diss_headwaters[rivid] for rivid in diss_headwaters.keys()]))
-    #     with open(os.path.join(save_dir, 'mod_prune_shoots.json'), 'r') as f:
-    #         pruned_shoots = json.load(f)
-    #         pruned_shoots = set([ids[-1] for _, ids in pruned_shoots.items()])
-    #     small_trees = pd.read_csv(os.path.join(save_dir, 'mod_drop_small_trees.csv')).values.flatten()
-    #
-    #     logger.info('\tDropping small trees')
-    #     streams_df = streams_df.loc[~streams_df[id_field].isin(small_trees)]
-    #
-    #     logger.info('\tDropping pruned shoots')
-    #     streams_df = streams_df.loc[~streams_df[id_field].isin(pruned_shoots)]
-    #
-    #     with Pool(n_processes) as p:
-    #         # Apply corrections based on the stream modification files
-    #         logger.info('\tMerging head water stream segment rows')
-    #         corrected_headwater_rows = p.starmap(
-    #             _combine_routing_rows,
-    #             [[streams_df, id_to_keep, ids_to_merge] for id_to_keep, ids_to_merge in diss_headwaters.items()]
-    #         )
-    #         logger.info('\tApplying corrected rows to gdf')
-    #         streams_df = pd.concat([
-    #             streams_df.loc[~streams_df[id_field].isin(all_merged_headwater)],
-    #             *corrected_headwater_rows
-    #         ])
+    Produces the following files:
+        - rapid_connect.csv
+        - riv_bas_id.csv
+        - k.csv
+        - x.csv
+        - comid_lat_lon_z.csv
+        - kfac.csv
+        - xfac.csv
+
+    Args:
+        save_dir:
+        streams_df:
+        rapcon_df:
+        id_field:
+        ds_id_field:
+
+    Returns:
+
+    """
+    logger.info('Creating RAPID input csvs')
+    if streams_df is None:
+        streams_df = pd.read_parquet(os.path.join(save_dir, 'rapid_inputs_master.parquet'))
+    if rapcon_df is None:
+        rapcon_df = pd.read_parquet(os.path.join(save_dir, 'rapid_connect_master.parquet')).astype(int)
 
     logger.info('\tSorting IDs topologically')
 
+    # todo delete this code block - add function to sort master files if they are not already sorted
     sorted_order = sort_topologically(streams_df, id_field=id_field, ds_id_field=ds_id_field)
-    # sorted_order = streams_df[id_field].values
-
     streams_df = (
         streams_df
         .set_index(pd.Index(streams_df[id_field]))
         .reindex(sorted_order)
         .reset_index(drop=True)
     )
-    streams_df[id_field].to_csv(os.path.join(save_dir, "riv_bas_id.csv"), index=False, header=False)
-
-    # adjust rapid connect to match
     rapcon_df = rapcon_df.loc[rapcon_df.iloc[:, 0].isin(streams_df[id_field].values)]
     rapcon_df = (
         rapcon_df
@@ -162,6 +200,8 @@ def rapid_input_csvs(save_dir: str,
         .reindex(sorted_order)
         .reset_index(drop=True)
     )
+
+    streams_df[id_field].to_csv(os.path.join(save_dir, "riv_bas_id.csv"), index=False, header=False)
     rapcon_df.to_csv(os.path.join(save_dir, "rapid_connect.csv"), index=False, header=False)
 
     logger.info('\tWriting csvs')
@@ -188,76 +228,3 @@ def sort_topologically(df, id_field='LINKNO', ds_id_field='DSLINKNO'):
     # perform topological sorting on the graph
     sorted_nodes = np.array(list(nx.topological_sort(digraph))).astype(int)
     return sorted_nodes
-
-# def make_hash_table(riv_bas_id_list):
-#     hash_table = {}
-#     for river_basin_id_index in range(len(riv_bas_id_list)):
-#         hash_table[riv_bas_id_list[river_basin_id_index]] = river_basin_id_index
-#     return hash_table
-#
-#
-# def check_sorting(rapid_connect_id_list, rapid_connect_ds_list, hash_table, num_rapid_con_ids, num_river_basin_ids):
-#     move_to_end = []
-#     for index_rapid_connect in range(num_rapid_con_ids):
-#         if rapid_connect_id_list[index_rapid_connect] not in hash_table:
-#             continue
-#         idx_id_in_rapid_connect = hash_table[rapid_connect_id_list[index_rapid_connect]]
-#         if rapid_connect_ds_list[index_rapid_connect] in hash_table:
-#             idx_ds_in_rapid_connect = hash_table[rapid_connect_ds_list[index_rapid_connect]]
-#         else:
-#             idx_ds_in_rapid_connect = num_river_basin_ids
-#         if idx_id_in_rapid_connect > idx_ds_in_rapid_connect:
-#             move_to_end.append(rapid_connect_id_list[idx_id_in_rapid_connect])
-#
-#     return move_to_end
-#
-#
-# def sort_rivers(directory):
-#     n_iter = 0
-#     all_ids_to_move = []
-#     rapid_master_file = os.path.join(directory, "rapid_inputs_master.parquet")
-#     rapid_connect_master_file = os.path.join(directory, "rapid_connect_master.parquet")
-#     if not os.path.exists(rapid_master_file) or not os.path.exists(rapid_connect_master_file):
-#         return None
-#     rapid_df = pd.read_parquet(rapid_master_file)
-#     rapid_connect_df = pd.read_parquet(rapid_connect_master_file)
-#     try:
-#         while True:
-#             riv_bas_id_list = rapid_df.values.flatten()
-#             rapid_connect_id_list = rapid_connect_df.iloc[:, 0].values.flatten()
-#             rapid_connect_ds_list = rapid_connect_df.iloc[:, 1].values.flatten()
-#             num_river_basin_ids = len(riv_bas_id_list)
-#             num_rapid_con_ids = len(rapid_connect_id_list)
-#             hash_table = make_hash_table(riv_bas_id_list)
-#             ids_to_move = check_sorting(rapid_connect_id_list, rapid_connect_ds_list, hash_table, num_rapid_con_ids,
-#                                         num_river_basin_ids)
-#             ids_to_move = np.array(ids_to_move).astype(int)
-#             if len(ids_to_move) == 0:
-#                 break
-#
-#             all_ids_to_move.append(ids_to_move)
-#             selector = pd.Series(rapid_df.values.flatten()).isin(ids_to_move)
-#             rapid_df = pd.concat([
-#                 rapid_df[selector],
-#                 rapid_df[~selector],
-#             ]).reset_index(drop=True)
-#
-#             # selector = pd.Series(rapid_connect_df.iloc[:, 0].values.flatten()).isin(ids_to_move)
-#             # rapid_connect_df = pd.concat([
-#             #     rapid_connect_df[selector],
-#             #     rapid_connect_df[~selector],
-#             # ]).reset_index(drop=True)
-#
-#             n_iter += 1
-#             if n_iter > 5_000:
-#                 print('Too many iterations in folder: ' + directory)
-#                 break
-#
-#         logger.info('Done sorting rivers in folder: ' + directory)
-#         logger.info('Number of iterations: ' + str(n_iter))
-#     except Exception as e:
-#         logger.error('Error sorting rivers in folder: ' + directory)
-#         logger.error(e)
-#         return
-#
-#     return rapid_df

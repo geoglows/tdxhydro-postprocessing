@@ -23,11 +23,15 @@ N_PROCESSES = os.cpu_count()
 inputs_path = '/tdxhydro'
 outputs_path = '/tdxrapid'
 
+inputs_path = '/Volumes/EB406_T7_2/TDXHydro'
+outputs_path = '/Volumes/EB406_T7_2/TDXHydroRapid_V8'
 gis_iterable = zip(
-    sorted(glob.glob(os.path.join(inputs_path, 'TDX_streamnet_*.gpkg')), reverse=True),
-    sorted(glob.glob(os.path.join(inputs_path, 'TDX_streamreach_basins_*.gpkg')), reverse=True),
+    sorted(glob.glob(os.path.join(inputs_path, 'TDX_streamnet_*.gpkg')), reverse=False),
+    sorted(glob.glob(os.path.join(inputs_path, 'TDX_streamreach_basins_*.gpkg')), reverse=False),
 )
 CORRECT_TAUDEM_ERRORS = True
+SLIM_NETWORK = False
+MAKE_GPKG = False
 id_field = 'LINKNO'
 basin_id_field = 'streamID'
 ds_field = 'DSLINKNO'
@@ -87,20 +91,40 @@ if __name__ == '__main__':
         # log a bunch of stuff
         logging.info('')
         logging.info(region_number)
+        logging.info(save_dir)
         logging.info(streams_gpkg)
         logging.info(basins_gpkg)
-        logging.info(save_dir)
         logging.info(f'Streams: {n_streams}')
 
         try:
-            if CORRECT_TAUDEM_ERRORS:
-                # determine if the preliminary stream analysis has been completed
-                if not all([os.path.exists(os.path.join(save_dir, f)) for f in rp.NETWORK_TRACE_FILES]):
-                    rp.analyze.streams_0length(streams_gpkg,
-                                               save_dir=save_dir,
-                                               id_field=id_field,
-                                               ds_field=ds_field,
-                                               len_field=length_field)
+            # make the master rapid input files
+            if not all([os.path.exists(os.path.join(save_dir, f)) for f in rp.RAPID_MASTER_FILES]):
+                rp.inputs.rapid_master_files(streams_gpkg,
+                                             save_dir=save_dir,
+                                             id_field=id_field,
+                                             ds_id_field=ds_field,
+                                             length_field=length_field,
+                                             n_workers=N_PROCESSES)
+
+            # look for streams to trim
+            if SLIM_NETWORK and not all([os.path.exists(os.path.join(save_dir, f)) for f in rp.MODIFICATION_FILES]):
+                rp.slim_net.find_streams_to_slim(save_dir, id_field=id_field, order_field=order_field)
+
+            # make the rapid input files
+            if not all([os.path.exists(os.path.join(save_dir, f)) for f in rp.RAPID_FILES]):
+                streams_df = pd.read_parquet(os.path.join(save_dir, 'rapid_inputs_master.parquet'))
+                rapcon_df = pd.read_parquet(os.path.join(save_dir, 'rapid_connect_master.parquet')).astype(int)
+
+                # apply the slimming modifications
+                if SLIM_NETWORK:
+                    streams_df = rp.slim_net.slim_streams_df(save_dir,
+                                                             streams_df,
+                                                             id_field=id_field,
+                                                             n_processes=N_PROCESSES)
+
+                rp.inputs.rapid_input_csvs(save_dir,
+                                           id_field=id_field,
+                                           ds_id_field=ds_field, )
 
             # make the master weight tables
             if len(list(glob.glob(os.path.join(save_dir, 'weight_*_full.csv')))) < len(sample_grids):
@@ -129,79 +153,18 @@ if __name__ == '__main__':
                     )
                 basins_gdf = None
 
-            if not all([os.path.exists(os.path.join(save_dir, f)) for f in rp.RAPID_MASTER_FILES]):
-                rp.inputs.rapid_master_files(streams_gpkg,
-                                             save_dir=save_dir,
-                                             id_field=id_field,
-                                             ds_id_field=ds_field,
-                                             n_workers=N_PROCESSES)
+            # todo slim the weight tables if needed
+            for wt in sorted(glob.glob(os.path.join(save_dir, 'weight_*_full.csv'))):
+                if not os.path.exists(wt.replace('_full', '')):
+                    shutil.copy(wt, wt.replace('_full', ''))
 
-        except Exception as e:
-            logging.info('\n----- ERROR -----\n')
-            logging.info(e)
-            print(traceback.format_exc())
-            continue
-
-    completed_regions = [d for d in sorted(glob.glob(os.path.join(outputs_path, '*'))) if rp.has_base_files(d)]
-    completed_regions = [int(os.path.basename(d)) for d in completed_regions]
-
-    logging.info('Adjusting Master Region Files')
-
-    for region_dir in sorted(glob.glob(os.path.join(outputs_path, '*'))):
-        # Identify the region being processed
-        region_number = os.path.basename(region_dir)
-        region_number = int(region_number)
-
-        if region_number in regions_to_skip:
-            logging.info(f'Skipping region {region_number} - In regions_to_skip\n')
-            continue
-        if region_number in completed_regions:
-            logging.info(f'Skipping region {region_number} - Valid directory already exists\n')
-            continue
-
-        n_streams = region_sizes_df.loc[region_sizes_df['region'] == region_number, 'count'].values[0]
-
-        # create the output folder
-        save_dir = os.path.join(outputs_path, f'{region_number}')
-        if not os.path.exists(save_dir):
-            os.makedirs(save_dir)
-
-        # log a bunch of stuff
-        logging.info('')
-        logging.info(region_number)
-        logging.info(save_dir)
-        # logging.info(f'Streams: {n_streams}')
-
-        try:
-            # # if the master inputs need modifications for tdxhydro errors
-            # if CORRECT_TAUDEM_ERRORS:
-            #     # determine if the preliminary stream analysis has been completed
-            #     if not all([os.path.exists(os.path.join(save_dir, f)) for f in rp.MODIFICATION_FILES]):
-            #         rp.analyze.streams(save_dir=save_dir,
-            #                            id_field=id_field,
-            #                            ds_field=ds_field,
-            #                            order_field=order_field, )
-            #
-            #     if not len(glob.glob(os.path.join(save_dir, 'weight*0.csv'))) >= len(sample_grids):
-            #         for wt in sorted(glob.glob(os.path.join(save_dir, 'weight*_full.csv'))):
-            #             rp.weights.apply_mods_to_wt(wt, save_dir, n_processes=N_PROCESSES)
-
-            # make copies of all weight_*_full.csv that have the _full removed
-            for wt in sorted(glob.glob(os.path.join(save_dir, 'weight*_full.csv'))):
-                shutil.copyfile(wt, wt.replace('_full', ''))
-
-            if not all([os.path.exists(os.path.join(save_dir, f)) for f in rp.RAPID_FILES]):
-                rp.inputs.rapid_input_csvs(save_dir,
-                                           id_field=id_field,
-                                           ds_id_field=ds_field,
-                                           n_processes=N_PROCESSES,
-                                           apply_taudem_mods=CORRECT_TAUDEM_ERRORS)
-
-            # check that the number of streams in the rapid inputs matches the number of streams in the weight tables
-            # todo
+            # check that number streams in rapid inputs matches the number of streams in the weight tables
+            if not rp.count_rivers_in_generated_files(save_dir):
+                logging.info(f'Number of streams in rapid inputs does not match number of streams in weight tables')
+                continue
 
             # todo dissolve the streams
-            if not glob.glob(os.path.join(save_dir, 'TDX_streamnet*.gpkg')):
+            if MAKE_GPKG and not glob.glob(os.path.join(save_dir, 'TDX_streamnet*.gpkg')):
                 continue
 
         except Exception as e:

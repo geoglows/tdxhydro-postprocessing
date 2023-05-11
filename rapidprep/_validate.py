@@ -111,7 +111,7 @@ def count_streams(output_path: str, n_processes: int):
     merged_df.to_csv('network_data/stream_counts_merged.csv', index=False)
 
 
-def count_rivers_in_generated_files(input_dir: str):
+def count_rivers_in_generated_files(input_dir: str) -> bool:
     n_comid_lat_lon_z = pd.read_csv(os.path.join(input_dir, 'comid_lat_lon_z.csv')).shape[0]
     n_rapidconnect = pd.read_csv(os.path.join(input_dir, 'rapid_connect.csv'), header=None).shape[0]
     n_rivbasid = pd.read_csv(os.path.join(input_dir, 'riv_bas_id.csv'), header=None).shape[0]
@@ -121,18 +121,94 @@ def count_rivers_in_generated_files(input_dir: str):
     for f in sorted(glob.glob(os.path.join(input_dir, 'weight_*.csv'))):
         df = pd.read_csv(f)
         n_weights.append((os.path.basename(f), df.iloc[:, 0].unique().shape[0]))
-    # print(f'comid_lat_lon_z: {n_comid_lat_lon_z}')
-    # print(f'rapid_connect: {n_rapidconnect}')
-    # print(f'riv_bas_id: {n_rivbasid}')
-    # print(f'k: {n_k}')
-    # print(f'x: {n_x}')
-    # for f, n in n_weights:
-    #     if 'full' in f:
-    #         continue
-    #     print(f'{f}: {n}')
 
+    logger.info('Checking for consistent numbers of basins in generated files')
     all_nums = [n_comid_lat_lon_z, n_rapidconnect, n_rivbasid, n_k, n_x] + [n for f, n in n_weights if 'full' not in f]
-    print(os.path.basename(input_dir))
-    print(f'All nums: {all_nums}')
-    print(f'All match: {all([n == all_nums[0] for n in all_nums])}')
-    print('')
+    all_match = all([n == all_nums[0] for n in all_nums])
+    logger.info(os.path.basename(input_dir))
+    logger.info(f'\tAll nums: {all_nums}')
+    logger.info(f'\tAll match: {all_match}')
+    logger.info(f'\tcomid_lat_lon_z: {n_comid_lat_lon_z}')
+    logger.info(f'\trapid_connect: {n_rapidconnect}')
+    logger.info(f'\triv_bas_id: {n_rivbasid}')
+    logger.info(f'\tk: {n_k}')
+    logger.info(f'\tx: {n_x}')
+    for f, n in n_weights:
+        if 'full' in f:
+            continue
+        print(f'{f}: {n}')
+    return all_match
+
+
+# def make_hash_table(riv_bas_id_list):
+#     hash_table = {}
+#     for river_basin_id_index in range(len(riv_bas_id_list)):
+#         hash_table[riv_bas_id_list[river_basin_id_index]] = river_basin_id_index
+#     return hash_table
+#
+#
+# def check_sorting(rapid_connect_id_list, rapid_connect_ds_list, hash_table, num_rapid_con_ids, num_river_basin_ids):
+#     move_to_end = []
+#     for index_rapid_connect in range(num_rapid_con_ids):
+#         if rapid_connect_id_list[index_rapid_connect] not in hash_table:
+#             continue
+#         idx_id_in_rapid_connect = hash_table[rapid_connect_id_list[index_rapid_connect]]
+#         if rapid_connect_ds_list[index_rapid_connect] in hash_table:
+#             idx_ds_in_rapid_connect = hash_table[rapid_connect_ds_list[index_rapid_connect]]
+#         else:
+#             idx_ds_in_rapid_connect = num_river_basin_ids
+#         if idx_id_in_rapid_connect > idx_ds_in_rapid_connect:
+#             move_to_end.append(rapid_connect_id_list[idx_id_in_rapid_connect])
+#
+#     return move_to_end
+#
+#
+# def sort_rivers(directory):
+#     n_iter = 0
+#     all_ids_to_move = []
+#     rapid_master_file = os.path.join(directory, "rapid_inputs_master.parquet")
+#     rapid_connect_master_file = os.path.join(directory, "rapid_connect_master.parquet")
+#     if not os.path.exists(rapid_master_file) or not os.path.exists(rapid_connect_master_file):
+#         return None
+#     rapid_df = pd.read_parquet(rapid_master_file)
+#     rapid_connect_df = pd.read_parquet(rapid_connect_master_file)
+#     try:
+#         while True:
+#             riv_bas_id_list = rapid_df.values.flatten()
+#             rapid_connect_id_list = rapid_connect_df.iloc[:, 0].values.flatten()
+#             rapid_connect_ds_list = rapid_connect_df.iloc[:, 1].values.flatten()
+#             num_river_basin_ids = len(riv_bas_id_list)
+#             num_rapid_con_ids = len(rapid_connect_id_list)
+#             hash_table = make_hash_table(riv_bas_id_list)
+#             ids_to_move = check_sorting(rapid_connect_id_list, rapid_connect_ds_list, hash_table, num_rapid_con_ids,
+#                                         num_river_basin_ids)
+#             ids_to_move = np.array(ids_to_move).astype(int)
+#             if len(ids_to_move) == 0:
+#                 break
+#
+#             all_ids_to_move.append(ids_to_move)
+#             selector = pd.Series(rapid_df.values.flatten()).isin(ids_to_move)
+#             rapid_df = pd.concat([
+#                 rapid_df[selector],
+#                 rapid_df[~selector],
+#             ]).reset_index(drop=True)
+#
+#             # selector = pd.Series(rapid_connect_df.iloc[:, 0].values.flatten()).isin(ids_to_move)
+#             # rapid_connect_df = pd.concat([
+#             #     rapid_connect_df[selector],
+#             #     rapid_connect_df[~selector],
+#             # ]).reset_index(drop=True)
+#
+#             n_iter += 1
+#             if n_iter > 5_000:
+#                 print('Too many iterations in folder: ' + directory)
+#                 break
+#
+#         logger.info('Done sorting rivers in folder: ' + directory)
+#         logger.info('Number of iterations: ' + str(n_iter))
+#     except Exception as e:
+#         logger.error('Error sorting rivers in folder: ' + directory)
+#         logger.error(e)
+#         return
+#
+#     return rapid_df
