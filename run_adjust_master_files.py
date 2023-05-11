@@ -79,7 +79,7 @@ if __name__ == '__main__':
 
             if not len(glob.glob(os.path.join(save_dir, 'weight*0.csv'))) >= len(sample_grids):
                 for wt in sorted(glob.glob(os.path.join(save_dir, 'weight*_full.csv'))):
-                    rp.weights.apply_modifications(wt, save_dir, n_processes=N_PROCESSES)
+                    rp.weights.apply_mods_to_wt(wt, save_dir, n_processes=N_PROCESSES)
 
             if not all([os.path.exists(os.path.join(save_dir, f)) for f in rp.RAPID_FILES]):
                 rp.inputs.rapid_input_csvs(save_dir, id_field=id_field, n_processes=N_PROCESSES)

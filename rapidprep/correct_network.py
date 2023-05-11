@@ -167,7 +167,7 @@ def identify_0_length(gdf: gpd.GeoDataFrame, stream_id_col: str, ds_id_col: str,
 
 
 def apply_0_length_stream_fixes(streams_gdf: gpd.GeoDataFrame, zero_length_df: pd.DataFrame,
-                                stream_id_col: str, length_col: str, river_length: float = 0.001) -> gpd.GeoDataFrame:
+                                stream_id_col: str, length_col: str, river_length: float = 10) -> gpd.GeoDataFrame:
     """
     Apply fixes to streams that have 0 length.
 
@@ -196,7 +196,7 @@ def apply_0_length_stream_fixes(streams_gdf: gpd.GeoDataFrame, zero_length_df: p
 
 
 def apply_0_length_basin_fixes(basins_gdf: gpd.GeoDataFrame, zero_length_df: pd.DataFrame,
-                               stream_id_col: str, buffer_size: float = 1) -> gpd.GeoDataFrame:
+                               stream_id_col: str, buffer_size: float = 10) -> gpd.GeoDataFrame:
     """
     Apply fixes to streams that have 0 length.
 
@@ -236,7 +236,7 @@ def apply_0_length_basin_fixes(basins_gdf: gpd.GeoDataFrame, zero_length_df: pd.
     return corrected_basins
 
 
-def correct_0_length_basins(basins_gpkg: gpd.GeoDataFrame, save_dir: str, stream_id_col: str, buffer_size: float = 1):
+def correct_0_length_basins(basins_gpkg: gpd.GeoDataFrame, save_dir: str, stream_id_col: str, buffer_size: float = 10):
     """
     Apply fixes to streams that have 0 length.
 
@@ -256,7 +256,7 @@ def correct_0_length_basins(basins_gpkg: gpd.GeoDataFrame, save_dir: str, stream
 
     # Case 1 - Coastal w/ no upstream or downstream - Delete the stream and its basin
     logger.info('Handling Case 1 - delete basins')
-    basin_gdf = basin_gdf[~basin_gdf[stream_id_col].isin(zero_length_df['case1'])]
+    # basin_gdf = basin_gdf[~basin_gdf[stream_id_col].isin(zero_length_df['case1'])]
 
     # Case 2 - Allow 3-river confluence - Create a basin with small non-zero area, assign small non-zero length
     logger.info('Handling Case 2 - create small basins')
@@ -280,3 +280,7 @@ def correct_0_length_basins(basins_gpkg: gpd.GeoDataFrame, save_dir: str, stream
 
     # basin_gdf.to_file(os.path.join(save_dir, os.path.basename(os.path.splitext(basins_gpkg)[0]) + '_corrected.gpkg'))
     return basin_gdf
+
+
+def apply_mods_to_streams_df(df: pd.DataFrame) -> pd.DataFrame:
+    return

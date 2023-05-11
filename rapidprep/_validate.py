@@ -109,3 +109,30 @@ def count_streams(output_path: str, n_processes: int):
     merged_df['percent_remove_dis'] = merged_df['percent_remove_dis'].round(4)
     merged_df['percent_remove_disdrp'] = merged_df['percent_remove_disdrp'].round(4)
     merged_df.to_csv('network_data/stream_counts_merged.csv', index=False)
+
+
+def count_rivers_in_generated_files(input_dir: str):
+    n_comid_lat_lon_z = pd.read_csv(os.path.join(input_dir, 'comid_lat_lon_z.csv')).shape[0]
+    n_rapidconnect = pd.read_csv(os.path.join(input_dir, 'rapid_connect.csv'), header=None).shape[0]
+    n_rivbasid = pd.read_csv(os.path.join(input_dir, 'riv_bas_id.csv'), header=None).shape[0]
+    n_k = pd.read_csv(os.path.join(input_dir, 'k.csv'), header=None).shape[0]
+    n_x = pd.read_csv(os.path.join(input_dir, 'x.csv'), header=None).shape[0]
+    n_weights = []
+    for f in sorted(glob.glob(os.path.join(input_dir, 'weight_*.csv'))):
+        df = pd.read_csv(f)
+        n_weights.append((os.path.basename(f), df.iloc[:, 0].unique().shape[0]))
+    # print(f'comid_lat_lon_z: {n_comid_lat_lon_z}')
+    # print(f'rapid_connect: {n_rapidconnect}')
+    # print(f'riv_bas_id: {n_rivbasid}')
+    # print(f'k: {n_k}')
+    # print(f'x: {n_x}')
+    # for f, n in n_weights:
+    #     if 'full' in f:
+    #         continue
+    #     print(f'{f}: {n}')
+
+    all_nums = [n_comid_lat_lon_z, n_rapidconnect, n_rivbasid, n_k, n_x] + [n for f, n in n_weights if 'full' not in f]
+    print(os.path.basename(input_dir))
+    print(f'All nums: {all_nums}')
+    print(f'All match: {all([n == all_nums[0] for n in all_nums])}')
+    print('')

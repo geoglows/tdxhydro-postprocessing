@@ -22,9 +22,13 @@ N_PROCESSES = os.cpu_count()
 inputs_path = '/tdxhydro'
 outputs_path = '/tdxrapid'
 
+
+# inputs_path = '/Volumes/EB406_T7_2/TDXHydro'
+# outputs_path = '/Volumes/EB406_T7_2/tdxrapid'
+# outputs_path = '/Volumes/EB406_T7_2/tdxrapid_tests'
 gis_iterable = zip(
-    sorted(glob.glob(os.path.join(inputs_path, 'TDX_streamnet_*.gpkg')), reverse=True),
-    sorted(glob.glob(os.path.join(inputs_path, 'TDX_streamreach_basins_*.gpkg')), reverse=True),
+    sorted(glob.glob(os.path.join(inputs_path, 'TDX_streamnet_*.gpkg')), reverse=False),
+    sorted(glob.glob(os.path.join(inputs_path, 'TDX_streamreach_basins_*.gpkg')), reverse=False),
 )
 CORRECT_TAUDEM_ERRORS = True
 id_field = 'LINKNO'
@@ -33,10 +37,25 @@ ds_field = 'DSLINKNO'
 order_field = 'strmOrder'
 length_field = 'Length'
 
+# gis_iterable = list(
+#     zip(
+#         sorted(glob.glob('/Users/rchales/Data/geoglows_delineation/drainlines_shapefile/j*-drainageline/*.shp')),
+#         sorted(glob.glob('/Users/rchales/Data/geoglows_delineation/catchment_shapefile/j*/*.shp')),
+#     ),
+# )
+# CORRECT_TAUDEM_ERRORS = False
+# outputs_path = '/Users/rchales/Data/GEOGLOWS_1_RAPID_REPEAT'
+# id_field = 'COMID'
+# # basin_id_field = 'DrainLnID'
+# basin_id_field = 'COMID'
+# ds_field = 'NextDownID'
+# order_field = 'order_'
+# length_field = 'Length'
+
 warnings.filterwarnings("ignore")
 
 if __name__ == '__main__':
-    sample_grids = glob.glob('./era5_sample_grids/*.nc')
+    sample_grids = glob.glob('./era5_sample_grids/era5*.nc')
     region_sizes_df = pd.read_csv('network_data/stream_counts_source.csv').astype(int)
 
     with open('network_data/regions_to_skip.json', 'r') as f:
@@ -50,7 +69,7 @@ if __name__ == '__main__':
 
     for streams_gpkg, basins_gpkg in gis_iterable:
         # Identify the region being processed
-        region_number = int(os.path.basename(streams_gpkg).split('_')[2])
+        region_number = os.path.basename(streams_gpkg)
 
         if region_number in regions_to_skip:
             logging.info(f'Skipping region {region_number} - In regions_to_skip\n')
@@ -59,7 +78,7 @@ if __name__ == '__main__':
             logging.info(f'Skipping region {region_number} - Valid directory already exists\n')
             continue
 
-        # n_streams = region_sizes_df.loc[region_sizes_df['region'] == region_number, 'count'].values[0]
+        n_streams = region_sizes_df.loc[region_sizes_df['region'] == int(region_number), 'count'].values[0]
 
         # create the output folder
         save_dir = os.path.join(outputs_path, f'{region_number}')
@@ -72,13 +91,14 @@ if __name__ == '__main__':
         logging.info(streams_gpkg)
         logging.info(basins_gpkg)
         logging.info(save_dir)
-        # logging.info(f'Streams: {n_streams}')
+        logging.info(f'Streams: {n_streams}')
 
         try:
             if CORRECT_TAUDEM_ERRORS:
                 # determine if the preliminary stream analysis has been completed
                 if not all([os.path.exists(os.path.join(save_dir, f)) for f in rp.NETWORK_TRACE_FILES]):
-                    rp.analyze.streams_0length(streams_gpkg, save_dir=save_dir,
+                    rp.analyze.streams_0length(streams_gpkg,
+                                               save_dir=save_dir,
                                                id_field=id_field,
                                                ds_field=ds_field,
                                                len_field=length_field)
@@ -90,8 +110,8 @@ if __name__ == '__main__':
                     basins_gdf = rp.correct_network.correct_0_length_basins(
                         basins_gpkg,
                         save_dir=save_dir,
-                        stream_id_col="streamID",
-                        buffer_size=.001
+                        stream_id_col=basin_id_field,
+                        buffer_size=.1
                     )
                 else:
                     basins_gdf = gpd.read_file(basins_gpkg)
@@ -130,7 +150,8 @@ if __name__ == '__main__':
 
     for region_dir in sorted(glob.glob(os.path.join(outputs_path, '*'))):
         # Identify the region being processed
-        region_number = int(os.path.basename(region_dir))
+        region_number = os.path.basename(region_dir)
+
         if region_number in regions_to_skip:
             logging.info(f'Skipping region {region_number} - In regions_to_skip\n')
             continue
@@ -138,7 +159,7 @@ if __name__ == '__main__':
             logging.info(f'Skipping region {region_number} - Valid directory already exists\n')
             continue
 
-        # n_streams = region_sizes_df.loc[region_sizes_df['region'] == region_number, 'count'].values[0]
+        n_streams = region_sizes_df.loc[region_sizes_df['region'] == int(region_number), 'count'].values[0]
 
         # create the output folder
         save_dir = os.path.join(outputs_path, f'{region_number}')
@@ -152,24 +173,25 @@ if __name__ == '__main__':
         # logging.info(f'Streams: {n_streams}')
 
         try:
-            # if the master inputs need modifications for tdxhydro errors
-            if CORRECT_TAUDEM_ERRORS:
-                # determine if the preliminary stream analysis has been completed
-                if not all([os.path.exists(os.path.join(save_dir, f)) for f in rp.MODIFICATION_FILES]):
-                    rp.analyze.streams(save_dir=save_dir,
-                                       id_field=id_field,
-                                       ds_field=ds_field,
-                                       order_field=order_field, )
-
-                if not len(glob.glob(os.path.join(save_dir, 'weight*0.csv'))) >= len(sample_grids):
-                    for wt in sorted(glob.glob(os.path.join(save_dir, 'weight*_full.csv'))):
-                        rp.weights.apply_modifications(wt, save_dir, n_processes=N_PROCESSES)
+            # # if the master inputs need modifications for tdxhydro errors
+            # if CORRECT_TAUDEM_ERRORS:
+            #     # determine if the preliminary stream analysis has been completed
+            #     if not all([os.path.exists(os.path.join(save_dir, f)) for f in rp.MODIFICATION_FILES]):
+            #         rp.analyze.streams(save_dir=save_dir,
+            #                            id_field=id_field,
+            #                            ds_field=ds_field,
+            #                            order_field=order_field, )
+            #
+            #     if not len(glob.glob(os.path.join(save_dir, 'weight*0.csv'))) >= len(sample_grids):
+            #         for wt in sorted(glob.glob(os.path.join(save_dir, 'weight*_full.csv'))):
+            #             rp.weights.apply_mods_to_wt(wt, save_dir, n_processes=N_PROCESSES)
 
             if not all([os.path.exists(os.path.join(save_dir, f)) for f in rp.RAPID_FILES]):
                 rp.inputs.rapid_input_csvs(save_dir,
                                            id_field=id_field,
                                            ds_id_field=ds_field,
-                                           n_processes=N_PROCESSES, )
+                                           n_processes=N_PROCESSES,
+                                           apply_taudem_mods=CORRECT_TAUDEM_ERRORS)
 
             # check that the number of streams in the rapid inputs matches the number of streams in the weight tables
             # todo

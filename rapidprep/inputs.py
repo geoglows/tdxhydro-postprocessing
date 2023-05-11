@@ -77,9 +77,10 @@ def rapid_master_files(streams_gpkg: str,
         streams_gdf['lat'] = streams_gdf.geometry.apply(lambda geom: geom.xy[1][0]).values
         streams_gdf['lon'] = streams_gdf.geometry.apply(lambda geom: geom.xy[0][0]).values
 
-        streams_gdf["musk_kfac"] = streams_gdf["length_geod"] * 3600
-        streams_gdf["musk_k"] = streams_gdf["musk_kfac"] * default_k
+        streams_gdf["musk_k"] = streams_gdf["length_geod"] * 3600 * default_k
+        streams_gdf["musk_kfac"] = streams_gdf["musk_k"].values.flatten()
         streams_gdf["musk_x"] = default_x * 0.1
+        streams_gdf["musk_xfac"] = streams_gdf["musk_x"].values.flatten()
         streams_gdf['z'] = 0
 
         streams_gdf = streams_gdf.drop(columns=['geometry'])
@@ -110,40 +111,40 @@ def rapid_input_csvs(save_dir: str,
     streams_df = pd.read_parquet(os.path.join(save_dir, 'rapid_inputs_master.parquet'))
     rapcon_df = pd.read_parquet(os.path.join(save_dir, 'rapid_connect_master.parquet')).astype(int)
 
-    if apply_taudem_mods:
-        logger.info('\tReading stream modification files')
-        with open(os.path.join(save_dir, 'mod_dissolve_headwaters.json'), 'r') as f:
-            diss_headwaters = json.load(f)
-            all_merged_headwater = set(chain.from_iterable(
-                [diss_headwaters[rivid] for rivid in diss_headwaters.keys()]))
-        with open(os.path.join(save_dir, 'mod_prune_shoots.json'), 'r') as f:
-            pruned_shoots = json.load(f)
-            pruned_shoots = set([ids[-1] for _, ids in pruned_shoots.items()])
-        small_trees = pd.read_csv(os.path.join(save_dir, 'mod_drop_small_trees.csv')).values.flatten()
-
-        logger.info('\tDropping small trees')
-        streams_df = streams_df.loc[~streams_df[id_field].isin(small_trees)]
-
-        logger.info('\tDropping pruned shoots')
-        streams_df = streams_df.loc[~streams_df[id_field].isin(pruned_shoots)]
-
-        with Pool(n_processes) as p:
-            # Apply corrections based on the stream modification files
-            logger.info('\tMerging head water stream segment rows')
-            corrected_headwater_rows = p.starmap(
-                _combine_routing_rows,
-                [[streams_df, id_to_keep, ids_to_merge] for id_to_keep, ids_to_merge in diss_headwaters.items()]
-            )
-            logger.info('\tApplying corrected rows to gdf')
-            streams_df = pd.concat([
-                streams_df.loc[~streams_df[id_field].isin(all_merged_headwater)],
-                *corrected_headwater_rows
-            ])
+    # if apply_taudem_mods:
+    #     logger.info('\tReading stream modification files')
+    #     with open(os.path.join(save_dir, 'mod_dissolve_headwaters.json'), 'r') as f:
+    #         diss_headwaters = json.load(f)
+    #         all_merged_headwater = set(chain.from_iterable(
+    #             [diss_headwaters[rivid] for rivid in diss_headwaters.keys()]))
+    #     with open(os.path.join(save_dir, 'mod_prune_shoots.json'), 'r') as f:
+    #         pruned_shoots = json.load(f)
+    #         pruned_shoots = set([ids[-1] for _, ids in pruned_shoots.items()])
+    #     small_trees = pd.read_csv(os.path.join(save_dir, 'mod_drop_small_trees.csv')).values.flatten()
+    #
+    #     logger.info('\tDropping small trees')
+    #     streams_df = streams_df.loc[~streams_df[id_field].isin(small_trees)]
+    #
+    #     logger.info('\tDropping pruned shoots')
+    #     streams_df = streams_df.loc[~streams_df[id_field].isin(pruned_shoots)]
+    #
+    #     with Pool(n_processes) as p:
+    #         # Apply corrections based on the stream modification files
+    #         logger.info('\tMerging head water stream segment rows')
+    #         corrected_headwater_rows = p.starmap(
+    #             _combine_routing_rows,
+    #             [[streams_df, id_to_keep, ids_to_merge] for id_to_keep, ids_to_merge in diss_headwaters.items()]
+    #         )
+    #         logger.info('\tApplying corrected rows to gdf')
+    #         streams_df = pd.concat([
+    #             streams_df.loc[~streams_df[id_field].isin(all_merged_headwater)],
+    #             *corrected_headwater_rows
+    #         ])
 
     logger.info('\tSorting IDs topologically')
 
-    # sorted_order = sort_topologically(streams_df, id_field=id_field, ds_id_field=ds_id_field)
-    sorted_order = streams_df[id_field].values
+    sorted_order = sort_topologically(streams_df, id_field=id_field, ds_id_field=ds_id_field)
+    # sorted_order = streams_df[id_field].values
 
     streams_df = (
         streams_df
@@ -164,9 +165,10 @@ def rapid_input_csvs(save_dir: str,
     rapcon_df.to_csv(os.path.join(save_dir, "rapid_connect.csv"), index=False, header=False)
 
     logger.info('\tWriting csvs')
-    streams_df["musk_kfac"].to_csv(os.path.join(save_dir, "kfac.csv"), index=False, header=False)
     streams_df["musk_k"].to_csv(os.path.join(save_dir, "k.csv"), index=False, header=False)
     streams_df["musk_x"].to_csv(os.path.join(save_dir, "x.csv"), index=False, header=False)
+    streams_df["musk_kfac"].to_csv(os.path.join(save_dir, "kfac.csv"), index=False, header=False)
+    streams_df["musk_xfac"].to_csv(os.path.join(save_dir, "xfac.csv"), index=False, header=False)
     streams_df[[id_field, 'lat', 'lon', 'z']].to_csv(os.path.join(save_dir, "comid_lat_lon_z.csv"), index=False)
 
     return

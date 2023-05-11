@@ -58,8 +58,8 @@ def make_weight_table(lsm_sample: str,
     resolution = np.abs(xs[1] - xs[0])
 
     # create an array of the indices for x and y
-    x_idxs = np.arange(len(xs))
-    y_idxs = np.arange(len(ys))
+    # x_idxs = np.arange(len(xs))
+    # y_idxs = np.arange(len(ys))
 
     # buffer the min/max in case any basins are close to the edges
     x_min, y_min, x_max, y_max = basins_gdf.total_bounds
@@ -76,19 +76,19 @@ def make_weight_table(lsm_sample: str,
 
     if x_min_idx > x_max_idx:
         xs = np.concatenate((xs[x_min_idx:], xs[:x_max_idx + 1]))
-        x_idxs = np.concatenate((x_idxs[x_min_idx:], x_idxs[:x_max_idx + 1]))
+        # x_idxs = np.concatenate((x_idxs[x_min_idx:], x_idxs[:x_max_idx + 1]))
     else:
         xs = xs[x_min_idx:x_max_idx + 1]
-        x_idxs = x_idxs[x_min_idx:x_max_idx + 1]
+        # x_idxs = x_idxs[x_min_idx:x_max_idx + 1]
     y_min_idx, y_max_idx = min(y_min_idx, y_max_idx), max(y_min_idx, y_max_idx)
     ys = ys[y_min_idx:y_max_idx + 1]
-    y_idxs = y_idxs[y_min_idx:y_max_idx + 1]
+    # y_idxs = y_idxs[y_min_idx:y_max_idx + 1]
 
     # create thiessen polygons around the 2d array centers and convert to a geodataframe
     x_grid, y_grid = np.meshgrid(xs, ys)
-    x_idxs, y_idxs = np.meshgrid(x_idxs, y_idxs)
     x_grid = x_grid.flatten()
     y_grid = y_grid.flatten()
+    # x_idxs, y_idxs = np.meshgrid(x_idxs, y_idxs)
     # x_idxs = x_idxs.flatten()
     # y_idxs = y_idxs.flatten()
     # x_left = x_grid - resolution / 2
@@ -153,10 +153,14 @@ def make_weight_table(lsm_sample: str,
             zip(intersections['geometry_tp'], intersections['geometry_sb'])
         )
 
-    logger.info('\tdropping 0 area rows')
-    intersections = intersections[intersections['area_sqm'] > 0]
+    # todo find why there are 0 area rows -> some but not all are from the zero length/area basins
+    # logger.info('\tdropping 0 area rows')
+    # intersections = intersections[intersections['area_sqm'] > 0]
 
     logger.info('\tcalculating number of points')
+    # todo fix this
+    if basin_id_field not in intersections.columns:
+        basin_id_field = 'DrainLnID'
     intersections['npoints'] = intersections.groupby(basin_id_field)[basin_id_field].transform('count')
 
     logger.info('\twriting weight table csv')
@@ -176,7 +180,7 @@ def _merge_weight_table_rows(wt: pd.DataFrame, new_key: str, values_to_merge: li
     return new_row
 
 
-def apply_modifications(wt_path: str, save_dir: str, n_processes: int = None):
+def apply_mods_to_wt(wt_path: str, save_dir: str, n_processes: int = None):
     """
 
     Args:
