@@ -23,12 +23,9 @@ N_PROCESSES = os.cpu_count()
 inputs_path = '/tdxhydro'
 outputs_path = '/tdxrapid'
 
-# inputs_path = '/Volumes/EB406_T7_2/TDXHydro'
-# outputs_path = '/Volumes/EB406_T7_2/tdxrapid'
-# outputs_path = '/Volumes/EB406_T7_2/tdxrapid_tests'
 gis_iterable = zip(
-    sorted(glob.glob(os.path.join(inputs_path, 'TDX_streamnet_*.gpkg')), reverse=False),
-    sorted(glob.glob(os.path.join(inputs_path, 'TDX_streamreach_basins_*.gpkg')), reverse=False),
+    sorted(glob.glob(os.path.join(inputs_path, 'TDX_streamnet_*.gpkg')), reverse=True),
+    sorted(glob.glob(os.path.join(inputs_path, 'TDX_streamreach_basins_*.gpkg')), reverse=True),
 )
 CORRECT_TAUDEM_ERRORS = True
 id_field = 'LINKNO'
@@ -69,8 +66,9 @@ if __name__ == '__main__':
 
     for streams_gpkg, basins_gpkg in gis_iterable:
         # Identify the region being processed
-        # region_number = os.path.basename(streams_gpkg)
+        region_number = os.path.basename(streams_gpkg)
         region_number = region_number.split('_')[2]
+        region_number = int(region_number)
 
         if region_number in regions_to_skip:
             logging.info(f'Skipping region {region_number} - In regions_to_skip\n')
@@ -79,7 +77,7 @@ if __name__ == '__main__':
             logging.info(f'Skipping region {region_number} - Valid directory already exists\n')
             continue
 
-        n_streams = region_sizes_df.loc[region_sizes_df['region'] == int(region_number), 'count'].values[0]
+        n_streams = region_sizes_df.loc[region_sizes_df['region'] == region_number, 'count'].values[0]
 
         # create the output folder
         save_dir = os.path.join(outputs_path, f'{region_number}')
@@ -152,7 +150,7 @@ if __name__ == '__main__':
     for region_dir in sorted(glob.glob(os.path.join(outputs_path, '*'))):
         # Identify the region being processed
         region_number = os.path.basename(region_dir)
-        region_number = region_number.split('_')[2]
+        region_number = int(region_number)
 
         if region_number in regions_to_skip:
             logging.info(f'Skipping region {region_number} - In regions_to_skip\n')
@@ -161,7 +159,7 @@ if __name__ == '__main__':
             logging.info(f'Skipping region {region_number} - Valid directory already exists\n')
             continue
 
-        n_streams = region_sizes_df.loc[region_sizes_df['region'] == int(region_number), 'count'].values[0]
+        n_streams = region_sizes_df.loc[region_sizes_df['region'] == region_number, 'count'].values[0]
 
         # create the output folder
         save_dir = os.path.join(outputs_path, f'{region_number}')
