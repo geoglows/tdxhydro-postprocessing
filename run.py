@@ -109,8 +109,12 @@ if __name__ == '__main__':
                                                              n_processes=N_PROCESSES)
 
                 rp.inputs.rapid_input_csvs(save_dir,
+                                           streams_df=streams_df,
+                                           rapcon_df=rapcon_df,
                                            id_field=id_field,
                                            ds_id_field=ds_field, )
+
+                print(pd.read_parquet(os.path.join(save_dir, 'rapid_inputs_master.parquet')).shape[0])
 
             # break for weight tables
             if not MAKE_WEIGHT_TABLES:
