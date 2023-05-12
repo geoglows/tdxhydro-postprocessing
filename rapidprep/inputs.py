@@ -105,15 +105,17 @@ def rapid_master_files(streams_gpkg: str,
         streams_gdf["musk_x"] = default_x
         streams_gdf["musk_xfac"] = streams_gdf["musk_x"].values.flatten()
 
-        logger.info('\tCalculating RAPID connect file')
-        rapid_connect = p.starmap(_make_rapid_connect_row,
-                                  [[x, streams_gdf, id_field, ds_id_field] for x in streams_gdf[id_field].values])
-        rapid_connect = (
-            pd
-            .DataFrame(rapid_connect)
-            .fillna(0)
-            .astype(int)
-        )
+    logger.info('\tCalculating RAPID connect file')
+    rapid_connect = streams_gdf[[id_field, ds_id_field, 'USLINKNO1', 'USLINKNO2']].copy()
+    rapid_connect['CountUS'] = rapid_connect[['USLINKNO1', 'USLINKNO2']].apply(lambda x: len(x[x != -1]), axis=1)
+    rapid_connect = rapid_connect[[id_field, ds_id_field, 'CountUS', 'USLINKNO1', 'USLINKNO2']]
+    rapid_connect.loc[rapid_connect['USLINKNO1'] == -1, 'USLINKNO1'] = 0
+    rapid_connect.loc[rapid_connect['USLINKNO2'] == -1, 'USLINKNO2'] = 0
+    rapid_connect = (
+        rapid_connect
+        .fillna(0)
+        .astype(int)
+    )
 
     # Fix 0 length segments
     logger.info('\tLooking for 0 length segments')
@@ -121,13 +123,21 @@ def rapid_master_files(streams_gpkg: str,
         zero_length_fixes_df = identify_0_length(streams_gdf, id_field, ds_id_field, length_field)
         zero_length_fixes_df.to_csv(os.path.join(save_dir, 'mod_zero_length_streams.csv'), index=False)
 
-    streams_gdf = streams_gdf.drop(columns=['geometry'])
+    # Fix basins with ID of 0
+    if 0 in streams_gdf[id_field].values:
+        logger.info('\tFixing basins with ID of 0')
+        pd.DataFrame({
+            id_field: [0, ],
+            'centroid_x': streams_gdf[streams_gdf[id_field] == 0].centroid.x.values[0],
+            'centroid_y': streams_gdf[streams_gdf[id_field] == 0].centroid.y.values[0]
+        }).to_csv(os.path.join(save_dir, 'mod_basin_zero_centroid.csv'), index=False)
 
     logger.info('\tSorting streams topologically')
     sorted_order = sort_topologically(streams_gdf, id_field=id_field, ds_id_field=ds_id_field)
 
     streams_df = (
         streams_gdf
+        .drop(columns=['geometry'])
         .set_index(pd.Index(streams_gdf[id_field]))
         .reindex(sorted_order)
         .reset_index(drop=True)
@@ -146,6 +156,8 @@ def rapid_master_files(streams_gpkg: str,
     logger.info('\tWriting RAPID master parquets')
     streams_gdf.to_parquet(os.path.join(save_dir, "rapid_inputs_master.parquet"))
     rapid_connect.to_parquet(os.path.join(save_dir, "rapid_connect_master.parquet"))
+
+    logger.info('\ttracing adjoint network')
 
     return
 

@@ -18,10 +18,11 @@ RAPID_MASTER_FILES = (
 )
 MODIFICATION_FILES = [
     'adjoint_tree.json',
-    'mod_zero_length_streams.csv',
     'mod_drop_small_trees.csv',
+    'mod_zero_length_streams.csv',
     'mod_dissolve_headwaters.json',
     'mod_prune_shoots.json',
+    # 'mod_basin_zero_centroid.csv'
 ]
 RAPID_FILES = [
     'rapid_connect.csv',
@@ -125,7 +126,7 @@ def count_rivers_in_generated_files(input_dir: str) -> bool:
     logger.info('Checking for consistent numbers of basins in generated files')
     all_nums = [n_comid_lat_lon_z, n_rapidconnect, n_rivbasid, n_k, n_x] + [n for f, n in n_weights if 'full' not in f]
     all_match = all([n == all_nums[0] for n in all_nums])
-    logger.info(os.path.basename(input_dir))
+    logger.info(f'\t{os.path.basename(input_dir)}')
     logger.info(f'\tAll nums: {all_nums}')
     logger.info(f'\tAll match: {all_match}')
     logger.info(f'\tcomid_lat_lon_z: {n_comid_lat_lon_z}')
@@ -136,7 +137,7 @@ def count_rivers_in_generated_files(input_dir: str) -> bool:
     for f, n in n_weights:
         if 'full' in f:
             continue
-        print(f'{f}: {n}')
+        logger.info(f'{f}: {n}')
     return all_match
 
 

@@ -22,34 +22,22 @@ logging.basicConfig(
 N_PROCESSES = os.cpu_count()
 inputs_path = '/tdxhydro'
 outputs_path = '/tdxrapid/input'
+# inputs_path = '//Volumes/EB406_T7_2//TDXHydro'
+# outputs_path = '/Volumes/EB406_T7_2/TDXHydroRapid_V8/'
 
 gis_iterable = zip(
     sorted(glob.glob(os.path.join(inputs_path, 'TDX_streamnet_*.gpkg')), reverse=True),
     sorted(glob.glob(os.path.join(inputs_path, 'TDX_streamreach_basins_*.gpkg')), reverse=True),
 )
 CORRECT_TAUDEM_ERRORS = True
-SLIM_NETWORK = False
+SLIM_NETWORK = True
+MAKE_WEIGHT_TABLES = True
 MAKE_GPKG = False
 id_field = 'LINKNO'
 basin_id_field = 'streamID'
 ds_field = 'DSLINKNO'
 order_field = 'strmOrder'
 length_field = 'Length'
-
-# gis_iterable = list(
-#     zip(
-#         sorted(glob.glob('/Users/rchales/Data/geoglows_delineation/drainlines_shapefile/j*-drainageline/*.shp')),
-#         sorted(glob.glob('/Users/rchales/Data/geoglows_delineation/catchment_shapefile/j*/*.shp')),
-#     ),
-# )
-# CORRECT_TAUDEM_ERRORS = False
-# outputs_path = '/Users/rchales/Data/GEOGLOWS_1_RAPID_REPEAT'
-# id_field = 'COMID'
-# # basin_id_field = 'DrainLnID'
-# basin_id_field = 'COMID'
-# ds_field = 'NextDownID'
-# order_field = 'order_'
-# length_field = 'Length'
 
 warnings.filterwarnings("ignore")
 
@@ -124,8 +112,13 @@ if __name__ == '__main__':
                                            id_field=id_field,
                                            ds_id_field=ds_field, )
 
+            # break for weight tables
+            if not MAKE_WEIGHT_TABLES:
+                continue
+
             # make the master weight tables
             if len(list(glob.glob(os.path.join(save_dir, 'weight_*_full.csv')))) < len(sample_grids):
+                logging.info('Reading basins')
                 if CORRECT_TAUDEM_ERRORS:
                     # edit the basins in memory - not cached to save time
                     basins_gdf = rp.correct_network.correct_0_length_basins(
@@ -133,6 +126,10 @@ if __name__ == '__main__':
                         save_dir=save_dir,
                         stream_id_col=basin_id_field,
                         buffer_size=.1
+                    )
+                    basins_gdf = rp.correct_network.add_basin_for_linkno_zero(
+                        basins_gdf,
+                        save_dir=save_dir,
                     )
                 else:
                     basins_gdf = gpd.read_file(basins_gpkg)
@@ -158,7 +155,7 @@ if __name__ == '__main__':
 
             # check that number streams in rapid inputs matches the number of streams in the weight tables
             if not rp.count_rivers_in_generated_files(save_dir):
-                logging.info(f'Number of streams in rapid inputs does not match number of streams in weight tables')
+                logging.error(f'Number of streams in rapid inputs does not match number of streams in weight tables')
                 continue
 
             # todo dissolve the streams
