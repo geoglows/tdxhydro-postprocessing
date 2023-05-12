@@ -22,7 +22,7 @@ logging.basicConfig(
 N_PROCESSES = os.cpu_count()
 inputs_path = '/tdxhydro'
 outputs_path = '/tdxrapid/input'
-inputs_path = '//Volumes/EB406_T7_2//TDXHydro'
+inputs_path = '/Volumes/EB406_T7_2/TDXHydro'
 outputs_path = '/Volumes/EB406_T7_2/TDXHydroRapid_V8/'
 
 gis_iterable = zip(
@@ -31,7 +31,7 @@ gis_iterable = zip(
 )
 CORRECT_TAUDEM_ERRORS = True
 SLIM_NETWORK = True
-MAKE_WEIGHT_TABLES = False
+MAKE_WEIGHT_TABLES = True
 MAKE_GPKG = False
 id_field = 'LINKNO'
 basin_id_field = 'streamID'
@@ -152,10 +152,9 @@ if __name__ == '__main__':
                     )
                 basins_gdf = None
 
-            # todo slim the weight tables if needed
-            for wt in sorted(glob.glob(os.path.join(save_dir, 'weight_*_full.csv'))):
-                if not os.path.exists(wt.replace('_full', '')):
-                    shutil.copy(wt, wt.replace('_full', ''))
+            if SLIM_NETWORK:
+                for wt in sorted(glob.glob(os.path.join(save_dir, 'weight_*_full.csv'))):
+                    rp.slim_net.slim_weight_table(save_dir, weight_table_path=wt)
 
             # check that number streams in rapid inputs matches the number of streams in the weight tables
             if not rp.count_rivers_in_generated_files(save_dir):

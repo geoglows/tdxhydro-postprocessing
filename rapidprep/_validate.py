@@ -137,7 +137,7 @@ def count_rivers_in_generated_files(input_dir: str) -> bool:
     for f, n in n_weights:
         if 'full' in f:
             continue
-        logger.info(f'{f}: {n}')
+        logger.info(f'\t{f}: {n}')
     return all_match
 
 

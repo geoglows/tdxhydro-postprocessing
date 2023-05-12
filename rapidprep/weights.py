@@ -57,10 +57,6 @@ def make_weight_table(lsm_sample: str,
     # get the resolution of the dataset
     resolution = np.abs(xs[1] - xs[0])
 
-    # create an array of the indices for x and y
-    # x_idxs = np.arange(len(xs))
-    # y_idxs = np.arange(len(ys))
-
     # buffer the min/max in case any basins are close to the edges
     x_min, y_min, x_max, y_max = basins_gdf.total_bounds
     x_min = x_min - resolution
@@ -76,46 +72,15 @@ def make_weight_table(lsm_sample: str,
 
     if x_min_idx > x_max_idx:
         xs = np.concatenate((xs[x_min_idx:], xs[:x_max_idx + 1]))
-        # x_idxs = np.concatenate((x_idxs[x_min_idx:], x_idxs[:x_max_idx + 1]))
     else:
         xs = xs[x_min_idx:x_max_idx + 1]
-        # x_idxs = x_idxs[x_min_idx:x_max_idx + 1]
     y_min_idx, y_max_idx = min(y_min_idx, y_max_idx), max(y_min_idx, y_max_idx)
     ys = ys[y_min_idx:y_max_idx + 1]
-    # y_idxs = y_idxs[y_min_idx:y_max_idx + 1]
 
     # create thiessen polygons around the 2d array centers and convert to a geodataframe
     x_grid, y_grid = np.meshgrid(xs, ys)
     x_grid = x_grid.flatten()
     y_grid = y_grid.flatten()
-    # x_idxs, y_idxs = np.meshgrid(x_idxs, y_idxs)
-    # x_idxs = x_idxs.flatten()
-    # y_idxs = y_idxs.flatten()
-    # x_left = x_grid - resolution / 2
-    # x_right = x_grid + resolution / 2
-    # y_bottom = y_grid - resolution / 2
-    # y_top = y_grid + resolution / 2
-    #
-    # def _point_to_box(row: pd.Series) -> box:
-    #     return box(row.x_left, row.y_bottom, row.x_right, row.y_top)
-    #
-    # tg_gdf = dd.from_pandas(
-    #     pd.DataFrame(
-    #         np.transpose(np.array([x_left, y_bottom, x_right, y_top, x_idxs, y_idxs, x_grid, y_grid])),
-    #         columns=['x_left', 'y_bottom', 'x_right', 'y_top', 'lon_index', 'lat_index', 'lon', 'lat']
-    #     ),
-    #     npartitions=n_workers
-    # )
-    # tg_gdf['geometry'] = tg_gdf.apply(lambda row: _point_to_box(row), axis=1, meta=('geometry', 'object'))
-    # tg_gdf = tg_gdf.compute()
-    #
-    # # drop the columns used for determining the bounding boxes
-    # tg_gdf = tg_gdf[['lon_index', 'lat_index', 'lon', 'lat', 'geometry']]
-    # tg_gdf = gpd.GeoDataFrame(
-    #     tg_gdf,
-    #     geometry='geometry',
-    #     crs={'proj': 'latlong', 'ellps': 'WGS84', 'datum': 'WGS84', 'no_defs': True}
-    # ).to_crs(epsg=4326)
 
     # Create Thiessen polygon based on the point feature
     # the order of polygons in the voronoi diagram is **guaranteed not** the same as the order of the points going in
@@ -147,11 +112,15 @@ def make_weight_table(lsm_sample: str,
     )
 
     logger.info('\tcalculating area of intersections')
-    with Pool(n_workers) as p:
-        intersections['area_sqm'] = p.starmap(
-            _intersect_reproject_area,
-            zip(intersections['geometry_tp'], intersections['geometry_sb'])
+    intersections['area_sqm'] = (
+        gpd.GeoSeries(intersections['geometry_tp'], crs='EPSG:4326').to_crs({'proj': 'cea'})
+        .intersection(
+            gpd.GeoSeries(intersections['geometry_sb'], crs='EPSG:4326').to_crs({'proj': 'cea'})
         )
+        .area
+    )
+
+    intersections.loc[intersections['streamID'].isna(), 'streamID'] = 0
 
     # todo find why there are 0 area rows -> some but not all are from the zero length/area basins
     # logger.info('\tdropping 0 area rows')

@@ -126,3 +126,15 @@ def slim_streams_df(save_dir: str,
     #     ])
 
     return streams_df
+
+
+def slim_weight_table(save_dir: str, weight_table_path: str) -> None:
+    wt_df = pd.read_csv(weight_table_path)
+
+    logger.info('\tDropping small trees')
+    small_trees = pd.read_csv(os.path.join(save_dir, 'mod_drop_small_trees.csv')).values.flatten()
+    wt_df = wt_df.dropna()
+    wt_df['streamID'] = wt_df['streamID'].astype(int)
+    wt_df = wt_df[~wt_df['streamID'].isin(small_trees)].reset_index(drop=True)
+    wt_df.to_csv(weight_table_path.replace('_full,csv', ''), index=False)
+    return
