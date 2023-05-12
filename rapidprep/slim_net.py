@@ -105,7 +105,7 @@ def slim_streams_df(save_dir: str,
 
     logger.info('\tDropping small trees')
     small_trees = pd.read_csv(os.path.join(save_dir, 'mod_drop_small_trees.csv')).values.flatten()
-    streams_df = streams_df.loc[~streams_df[id_field].isin(small_trees)].reindex(drop=True)
+    streams_df = streams_df.loc[~streams_df[id_field].isin(small_trees)].reset_index(drop=True)
 
     # # todo
     # with Pool(n_processes) as p:
