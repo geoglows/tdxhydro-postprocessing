@@ -22,16 +22,16 @@ logging.basicConfig(
 N_PROCESSES = os.cpu_count()
 inputs_path = '/tdxhydro'
 outputs_path = '/tdxrapid/input'
-# inputs_path = '//Volumes/EB406_T7_2//TDXHydro'
-# outputs_path = '/Volumes/EB406_T7_2/TDXHydroRapid_V8/'
+inputs_path = '//Volumes/EB406_T7_2//TDXHydro'
+outputs_path = '/Volumes/EB406_T7_2/TDXHydroRapid_V8/'
 
 gis_iterable = zip(
-    sorted(glob.glob(os.path.join(inputs_path, 'TDX_streamnet_*.gpkg')), reverse=True),
-    sorted(glob.glob(os.path.join(inputs_path, 'TDX_streamreach_basins_*.gpkg')), reverse=True),
+    sorted(glob.glob(os.path.join(inputs_path, 'TDX_streamnet_*.gpkg')), reverse=False),
+    sorted(glob.glob(os.path.join(inputs_path, 'TDX_streamreach_basins_*.gpkg')), reverse=False),
 )
 CORRECT_TAUDEM_ERRORS = True
 SLIM_NETWORK = True
-MAKE_WEIGHT_TABLES = True
+MAKE_WEIGHT_TABLES = False
 MAKE_GPKG = False
 id_field = 'LINKNO'
 basin_id_field = 'streamID'

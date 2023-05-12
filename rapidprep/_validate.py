@@ -19,9 +19,9 @@ RAPID_MASTER_FILES = (
 MODIFICATION_FILES = [
     'adjoint_tree.json',
     'mod_drop_small_trees.csv',
-    'mod_zero_length_streams.csv',
-    'mod_dissolve_headwaters.json',
-    'mod_prune_shoots.json',
+    # 'mod_zero_length_streams.csv',
+    # 'mod_dissolve_headwaters.json',
+    # 'mod_prune_shoots.json',
     # 'mod_basin_zero_centroid.csv'
 ]
 RAPID_FILES = [
