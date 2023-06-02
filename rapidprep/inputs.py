@@ -29,25 +29,6 @@ def _calculate_geodesic_length(line) -> float:
     return length
 
 
-def _combine_routing_rows(streams_df: pd.DataFrame, id_to_preserve: str, ids_to_merge: list):
-    target_row = streams_df.loc[streams_df['LINKNO'] == int(id_to_preserve)]
-    if target_row.empty:
-        return None
-    # todo only sum muskingum parameters if they are part of the branches being kept
-    musk_k, musk_kfac = streams_df.loc[streams_df['LINKNO'].isin(ids_to_merge[1:]), ['musk_k', 'musk_kfac']].mean()
-    return pd.DataFrame({
-        'LINKNO': int(id_to_preserve),
-        'DSLINKNO': int(target_row['DSLINKNO'].values[0]),
-        'strmOrder': int(target_row['strmOrder'].values[0]),
-        'musk_k': float(musk_k),
-        'musk_kfac': float(musk_kfac),
-        'musk_x': float(target_row['musk_x'].values[0]),
-        'lat': float(target_row['lat'].values[0]),
-        'lon': float(target_row['lon'].values[0]),
-        'z': int(target_row['z'].values[0]),
-    }, index=[0])
-
-
 def rapid_master_files(streams_gpq: str,
                        save_dir: str,
                        id_field: str = 'LINKNO',

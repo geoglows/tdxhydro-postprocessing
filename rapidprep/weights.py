@@ -37,10 +37,6 @@ def make_weight_table(lsm_sample: str,
     # get the resolution of the dataset
     resolution = np.abs(xs[1] - xs[0])
 
-    # # todo modify x/y to move 1/2 resolution to see if they gave us cell edges instead of centers
-    # xs = xs + (resolution / 2)
-    # ys = ys - (resolution / 2)
-
     # correct irregular x coordinates
     xs[xs > 180] = xs[xs > 180] - 360
 

@@ -149,8 +149,6 @@ def has_slimmed_weight_tables(save_dir: str) -> bool:
 
 
 def has_rapid_master_files(save_dir: str) -> bool:
-    inputs_master_parquet = os.path.exists(os.path.join(save_dir, 'rapid_inputs_master.parquet'))
-    # graphs = len(glob.glob(os.path.join(save_dir, 'directed_graph*.gexf'))) == 2
-    # todo
-    graphs = len(glob.glob(os.path.join(save_dir, 'directed_graph*.gexf'))) == 1
-    return all([inputs_master_parquet, graphs])
+    inputs_parquet = os.path.exists(os.path.join(save_dir, 'rapid_inputs_master.parquet'))
+    graphs = len(glob.glob(os.path.join(save_dir, 'digraph*.gexf'))) == 1
+    return all([inputs_parquet, graphs])
