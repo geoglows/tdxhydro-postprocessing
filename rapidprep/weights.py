@@ -15,25 +15,11 @@ import xarray as xr
 logger = logging.getLogger(__name__)
 
 
-def _intersect_reproject_area(a: gpd.GeoDataFrame, b: gpd.GeoDataFrame):
-    return (
-        gpd
-        .GeoSeries(a, crs='EPSG:4326')
-        .to_crs({'proj': 'cea'})
-        .intersection(
-            gpd.GeoSeries(b, crs='EPSG:4326')
-            .to_crs({'proj': 'cea'})
-        )
-        .area
-        .values[0]
-    )
-
-
 def make_weight_table(lsm_sample: str,
                       out_dir: str,
                       basins_gdf: gpd.GeoDataFrame,
-                      n_workers: int = 1,
                       basin_id_field: str = 'streamID') -> None:
+
     out_name = os.path.join(out_dir, 'weight_' + os.path.basename(os.path.splitext(lsm_sample)[0]) + '_full.csv')
     if os.path.exists(os.path.join(out_dir, out_name)):
         logger.info(f'Weight table already exists: {os.path.basename(out_name)}')
@@ -48,14 +34,18 @@ def make_weight_table(lsm_sample: str,
     ys = lsm_ds[y_var].values
     lsm_ds.close()
 
+    # get the resolution of the dataset
+    resolution = np.abs(xs[1] - xs[0])
+
+    # # todo modify x/y to move 1/2 resolution to see if they gave us cell edges instead of centers
+    # xs = xs + (resolution / 2)
+    # ys = ys - (resolution / 2)
+
     # correct irregular x coordinates
     xs[xs > 180] = xs[xs > 180] - 360
 
     all_xs = xs.copy()
     all_ys = ys.copy()
-
-    # get the resolution of the dataset
-    resolution = np.abs(xs[1] - xs[0])
 
     # buffer the min/max in case any basins are close to the edges
     x_min, y_min, x_max, y_max = basins_gdf.total_bounds
@@ -83,7 +73,7 @@ def make_weight_table(lsm_sample: str,
     y_grid = y_grid.flatten()
 
     # Create Thiessen polygon based on the point feature
-    # the order of polygons in the voronoi diagram is **guaranteed not** the same as the order of the points going in
+    # the order of polygons in the voronoi diagram is **guaranteed not** the same as the order of the input points
     logging.info('\tCreating Thiessen polygons')
     regions = shapely.ops.voronoi_diagram(
         shapely.geometry.MultiPoint(
@@ -101,35 +91,12 @@ def make_weight_table(lsm_sample: str,
         tg_gdf['lon_index'] = tg_gdf['lon'].apply(lambda x: np.argmin(np.abs(all_xs - x)))
         tg_gdf['lat_index'] = tg_gdf['lat'].apply(lambda y: np.argmin(np.abs(all_ys - y)))
 
-        # Spatial join the two dataframes using the 'intersects' predicate
-        logger.info('\tperforming spatial join')
-        intersections = gpd.sjoin(tg_gdf, basins_gdf, predicate='intersects')
+    intersections = gpd.overlay(tg_gdf, basins_gdf, how='intersection')
+    intersections['area_sqm'] = intersections.geometry.to_crs({'proj': 'cea'}).area
 
-    logger.info('\tmerging dataframes')
-    intersections = gpd.GeoDataFrame(
-        intersections
-        .merge(basins_gdf[['geometry', ]], left_on=['index_right'], right_index=True, suffixes=('_tp', '_sb'))
-    )
-
-    logger.info('\tcalculating area of intersections')
-    intersections['area_sqm'] = (
-        gpd.GeoSeries(intersections['geometry_tp'], crs='EPSG:4326').to_crs({'proj': 'cea'})
-        .intersection(
-            gpd.GeoSeries(intersections['geometry_sb'], crs='EPSG:4326').to_crs({'proj': 'cea'})
-        )
-        .area
-    )
-
-    intersections.loc[intersections['streamID'].isna(), 'streamID'] = 0
-
-    # todo find why there are 0 area rows -> some but not all are from the zero length/area basins
-    # logger.info('\tdropping 0 area rows')
-    # intersections = intersections[intersections['area_sqm'] > 0]
+    intersections.loc[intersections[basin_id_field].isna(), basin_id_field] = 0
 
     logger.info('\tcalculating number of points')
-    # todo fix this
-    if basin_id_field not in intersections.columns:
-        basin_id_field = 'DrainLnID'
     intersections['npoints'] = intersections.groupby(basin_id_field)[basin_id_field].transform('count')
 
     logger.info('\twriting weight table csv')

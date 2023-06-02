@@ -13,8 +13,9 @@ NETWORK_TRACE_FILES = (
     'mod_zero_length_streams.csv',
 )
 RAPID_MASTER_FILES = (
-    'rapid_connect_master.parquet',
-    'rapid_inputs_master.parquet'
+    'rapid_inputs_master.parquet',
+    'directed_graph_'
+    # 'rapid_connect_master.parquet',
 )
 MODIFICATION_FILES = [
     'adjoint_tree.json',
@@ -141,75 +142,15 @@ def count_rivers_in_generated_files(input_dir: str) -> bool:
     return all_match
 
 
-# def make_hash_table(riv_bas_id_list):
-#     hash_table = {}
-#     for river_basin_id_index in range(len(riv_bas_id_list)):
-#         hash_table[riv_bas_id_list[river_basin_id_index]] = river_basin_id_index
-#     return hash_table
-#
-#
-# def check_sorting(rapid_connect_id_list, rapid_connect_ds_list, hash_table, num_rapid_con_ids, num_river_basin_ids):
-#     move_to_end = []
-#     for index_rapid_connect in range(num_rapid_con_ids):
-#         if rapid_connect_id_list[index_rapid_connect] not in hash_table:
-#             continue
-#         idx_id_in_rapid_connect = hash_table[rapid_connect_id_list[index_rapid_connect]]
-#         if rapid_connect_ds_list[index_rapid_connect] in hash_table:
-#             idx_ds_in_rapid_connect = hash_table[rapid_connect_ds_list[index_rapid_connect]]
-#         else:
-#             idx_ds_in_rapid_connect = num_river_basin_ids
-#         if idx_id_in_rapid_connect > idx_ds_in_rapid_connect:
-#             move_to_end.append(rapid_connect_id_list[idx_id_in_rapid_connect])
-#
-#     return move_to_end
-#
-#
-# def sort_rivers(directory):
-#     n_iter = 0
-#     all_ids_to_move = []
-#     rapid_master_file = os.path.join(directory, "rapid_inputs_master.parquet")
-#     rapid_connect_master_file = os.path.join(directory, "rapid_connect_master.parquet")
-#     if not os.path.exists(rapid_master_file) or not os.path.exists(rapid_connect_master_file):
-#         return None
-#     rapid_df = pd.read_parquet(rapid_master_file)
-#     rapid_connect_df = pd.read_parquet(rapid_connect_master_file)
-#     try:
-#         while True:
-#             riv_bas_id_list = rapid_df.values.flatten()
-#             rapid_connect_id_list = rapid_connect_df.iloc[:, 0].values.flatten()
-#             rapid_connect_ds_list = rapid_connect_df.iloc[:, 1].values.flatten()
-#             num_river_basin_ids = len(riv_bas_id_list)
-#             num_rapid_con_ids = len(rapid_connect_id_list)
-#             hash_table = make_hash_table(riv_bas_id_list)
-#             ids_to_move = check_sorting(rapid_connect_id_list, rapid_connect_ds_list, hash_table, num_rapid_con_ids,
-#                                         num_river_basin_ids)
-#             ids_to_move = np.array(ids_to_move).astype(int)
-#             if len(ids_to_move) == 0:
-#                 break
-#
-#             all_ids_to_move.append(ids_to_move)
-#             selector = pd.Series(rapid_df.values.flatten()).isin(ids_to_move)
-#             rapid_df = pd.concat([
-#                 rapid_df[selector],
-#                 rapid_df[~selector],
-#             ]).reset_index(drop=True)
-#
-#             # selector = pd.Series(rapid_connect_df.iloc[:, 0].values.flatten()).isin(ids_to_move)
-#             # rapid_connect_df = pd.concat([
-#             #     rapid_connect_df[selector],
-#             #     rapid_connect_df[~selector],
-#             # ]).reset_index(drop=True)
-#
-#             n_iter += 1
-#             if n_iter > 5_000:
-#                 print('Too many iterations in folder: ' + directory)
-#                 break
-#
-#         logger.info('Done sorting rivers in folder: ' + directory)
-#         logger.info('Number of iterations: ' + str(n_iter))
-#     except Exception as e:
-#         logger.error('Error sorting rivers in folder: ' + directory)
-#         logger.error(e)
-#         return
-#
-#     return rapid_df
+def has_slimmed_weight_tables(save_dir: str) -> bool:
+    full_wts = sorted(glob.glob(os.path.join(save_dir, 'weight_*_full.csv')))
+    has_slim_tables = [os.path.exists(f.replace('_full.csv', '.csv')) for f in full_wts]
+    return all(has_slim_tables)
+
+
+def has_rapid_master_files(save_dir: str) -> bool:
+    inputs_master_parquet = os.path.exists(os.path.join(save_dir, 'rapid_inputs_master.parquet'))
+    # graphs = len(glob.glob(os.path.join(save_dir, 'directed_graph*.gexf'))) == 2
+    # todo
+    graphs = len(glob.glob(os.path.join(save_dir, 'directed_graph*.gexf'))) == 1
+    return all([inputs_master_parquet, graphs])

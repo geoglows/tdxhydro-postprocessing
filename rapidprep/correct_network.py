@@ -10,20 +10,33 @@ __all__ = [
     'merge_headwater_streams',
     'merge_basins',
     'identify_0_length',
-    'apply_0_length_basin_fixes',
-    'apply_0_length_stream_fixes',
+    'correct_0_length_streams',
     'correct_0_length_basins',
-    'add_basin_for_linkno_zero',
+    'find_headwater_streams_to_dissolve',
 ]
 
 logger = logging.getLogger(__name__)
+
+
+def find_headwater_streams_to_dissolve(sdf: pd.DataFrame or gpd.GeoDataFrame) -> pd.DataFrame:
+    # todo parameterize the column names
+    us_cols = sorted([c for c in sdf.columns if c.startswith('USLINKNO')])
+    o1 = sdf[sdf['strmOrder'] == 1]['LINKNO'].values.flatten()
+    o2 = sdf[sdf['strmOrder'] == 2]
+
+    # select rows where 2+ of the 2+ upstreams are 1st order (ie this is the first 2nd order in the chain)
+    # o2 = o2[us_cols].isin(o1).sum(axis=1) >= 2
+    # alternatively the only upstreams must be 1st orders, all else are -1
+    o2 = o2[o2[us_cols].isin(o1).sum(axis=1) + (o2[us_cols] == -1).sum(axis=1) == len(us_cols)]
+    o2 = o2[['LINKNO', ] + us_cols]
+    return o2
 
 
 def merge_headwater_streams(upstream_ids: list, network_gdf: gpd.GeoDataFrame, make_model_version: bool,
                             streamid: str = 'LINKNO', dsid: str = 'DSLINKNO',
                             length_col: str = 'Length') -> gpd.GeoDataFrame:
     """
-    Selects the stream segments that are upstream of the given stream segments, and merges them into a single geodataframe.
+    Selects stream segments upstream of the given segments and merges them into a single geodataframe.
     """
     if make_model_version:
         # A little ugly, but we use an if/else to return the index to use based on which of the upstream_ids is longer
@@ -95,28 +108,6 @@ def merge_basins(basin_gdf: gpd.GeoDataFrame, upstream_ids: list) -> gpd.GeoData
     return gdf
 
 
-def add_basin_for_linkno_zero(basins_gdf,
-                              save_dir: str,
-                              box_radius_degrees: float = .015,
-                              id_field: str = 'LINKNO'):
-    zero_fix_csv_path = os.path.join(save_dir, 'mod_basin_zero_centroid.csv')
-    if not os.path.exists(zero_fix_csv_path):
-        return basins_gdf
-    basin_zero_centroid = pd.read_csv(zero_fix_csv_path)
-    centroid_x = basin_zero_centroid['centroid_x'].values[0]
-    centroid_y = basin_zero_centroid['centroid_y'].values[0]
-    link_zero_box = gpd.GeoDataFrame({
-        'geometry': [sg.box(
-            centroid_x - box_radius_degrees,
-            centroid_y - box_radius_degrees,
-            centroid_x + box_radius_degrees,
-            centroid_y + box_radius_degrees
-        )],
-        id_field: [0, ]
-    }, crs=basins_gdf.crs)
-    return pd.concat([basins_gdf, link_zero_box])
-
-
 def identify_0_length(gdf: gpd.GeoDataFrame, stream_id_col: str, ds_id_col: str, length_col: str) -> pd.DataFrame:
     """
     Fix streams that have 0 length.
@@ -143,8 +134,6 @@ def identify_0_length(gdf: gpd.GeoDataFrame, stream_id_col: str, ds_id_col: str,
     """
     case1_ids = []
     case2_ids = []
-    case2_xs = []
-    case2_ys = []
     case3_ids = []
     case4_ids = []
 
@@ -158,8 +147,6 @@ def identify_0_length(gdf: gpd.GeoDataFrame, stream_id_col: str, ds_id_col: str,
         # Case 2
         elif feat[ds_id_col].values != -1 and feat['USLINKNO1'].values != -1 and feat['USLINKNO2'].values != -1:
             case2_ids.append(rivid)
-            case2_xs.append(feat['geometry'].values[0].coords[0][0])
-            case2_ys.append(feat['geometry'].values[0].coords[0][1])
 
         # Case 3
         elif feat[ds_id_col].values == -1 and feat['USLINKNO1'].values != -1 and feat['USLINKNO2'].values != -1:
@@ -171,11 +158,9 @@ def identify_0_length(gdf: gpd.GeoDataFrame, stream_id_col: str, ds_id_col: str,
             case4_ids.append(rivid)
 
     # variable length lists with np.nan to make them the same length
-    longest_list = max([len(case1_ids), len(case2_ids), len(case3_ids), len(case4_ids), len(case2_xs), len(case2_ys)])
+    longest_list = max([len(case1_ids), len(case2_ids), len(case3_ids), len(case4_ids), ])
     case1_ids = case1_ids + [np.nan] * (longest_list - len(case1_ids))
     case2_ids = case2_ids + [np.nan] * (longest_list - len(case2_ids))
-    case2_xs = case2_xs + [np.nan] * (longest_list - len(case2_xs))
-    case2_ys = case2_ys + [np.nan] * (longest_list - len(case2_ys))
     case3_ids = case3_ids + [np.nan] * (longest_list - len(case3_ids))
     case4_ids = case4_ids + [np.nan] * (longest_list - len(case4_ids))
 
@@ -184,122 +169,98 @@ def identify_0_length(gdf: gpd.GeoDataFrame, stream_id_col: str, ds_id_col: str,
         'case2': case2_ids,
         'case3': case3_ids,
         'case4': case4_ids,
-        'case2_x': case2_xs,
-        'case2_y': case2_ys
     })
 
 
-def apply_0_length_stream_fixes(streams_gdf: gpd.GeoDataFrame, zero_length_df: pd.DataFrame,
-                                stream_id_col: str, length_col: str, river_length: float = 10) -> gpd.GeoDataFrame:
+def correct_0_length_streams(streams_gdf: gpd.GeoDataFrame, zero_length_df: pd.DataFrame,
+                             id_field: str) -> gpd.GeoDataFrame:
     """
     Apply fixes to streams that have 0 length.
 
     Args:
         streams_gdf:
         zero_length_df:
-        stream_id_col:
-        length_col:
-        river_length:
+        id_field:
 
     Returns:
 
     """
-    corrected_streams = streams_gdf.copy()
+    correct_sgdf = streams_gdf.copy()
 
     # Case 1 - Coastal w/ no upstream or downstream - Delete the stream and its basin
-    corrected_streams = corrected_streams[~corrected_streams[stream_id_col].isin(zero_length_df['case1'])]
+    c1 = zero_length_df['case1'].dropna().astype(int).values
+    correct_sgdf = correct_sgdf[~correct_sgdf[id_field].isin(c1)]
 
-    # Case 2 - Allow 3-river confluence - Create a basin with small non-zero area, assign small non-zero length
-    corrected_streams.loc[corrected_streams[stream_id_col].isin(zero_length_df['case2']), length_col] = river_length
+    # # Case 2 - Allow 3-river confluence - Delete the temporary basin and modify the connectivity properties
+    # Iterate over the rivers to be deleted
+    c2 = zero_length_df['case2'].dropna().astype(int).values
+    for river_id in c2:
+        ids_to_apply = streams_gdf.loc[streams_gdf[id_field] == river_id, ['USLINKNO1', 'USLINKNO2', 'DSLINKNO']]
+        correct_sgdf.loc[
+            correct_sgdf[id_field].isin(ids_to_apply[['USLINKNO1', 'USLINKNO2']].values.flatten()), 'DSLINKNO'] = \
+            ids_to_apply['DSLINKNO'].values[0]
+    # Remove the rows corresponding to the rivers to be deleted
+    correct_sgdf = correct_sgdf[~correct_sgdf['LINKNO'].isin(c2)]
 
     # Case 3 - Coastal w/ upstreams but no downstream - Assign small non-zero length
-    corrected_streams.loc[corrected_streams[stream_id_col].isin(zero_length_df['case3']), length_col] = river_length
+    c3_us_ids = streams_gdf[streams_gdf[id_field].isin(zero_length_df['case3'].dropna().values)][
+        ['USLINKNO1', 'USLINKNO2']].values.flatten()
+    correct_sgdf.loc[correct_sgdf[id_field].isin(c3_us_ids), 'DSLINKNO'] = -1
+    correct_sgdf = correct_sgdf[~correct_sgdf['LINKNO'].isin(zero_length_df['case3'].dropna().values)]
 
-    return corrected_streams
+    return correct_sgdf
 
 
-def apply_0_length_basin_fixes(basins_gdf: gpd.GeoDataFrame, zero_length_df: pd.DataFrame,
-                               stream_id_col: str, buffer_size: float = 10) -> gpd.GeoDataFrame:
+def correct_0_length_basins(basins_gpq: str, save_dir: str, stream_id_col: str) -> gpd.GeoDataFrame:
     """
     Apply fixes to streams that have 0 length.
 
     Args:
-        basins_gdf:
-        zero_length_df:
-        stream_id_col:
-        buffer_size:
-
-    Returns:
-
-    """
-    corrected_basins = basins_gdf.copy()
-
-    # Case 1 - Coastal w/ no upstream or downstream - Delete the stream and its basin
-    corrected_basins = corrected_basins[~corrected_basins[stream_id_col].isin(zero_length_df['case1'])]
-
-    # Case 2 - Allow 3-river confluence - Create a basin with small non-zero area, assign small non-zero length
-    boxes = (
-        zero_length_df[['case2', 'case2_x', 'case2_y']]
-        .dropna(axis=0, how='any')
-        .apply(lambda x: sg.box(
-            x.case2_x - buffer_size,
-            x.case2_y - buffer_size,
-            x.case2_x + buffer_size,
-            x.case2_y + buffer_size
-        ), axis=1)
-    )
-    corrected_basins = pd.concat([
-        corrected_basins,
-        gpd.GeoDataFrame({'geometry': boxes, stream_id_col: zero_length_df['case2']})
-    ])
-
-    # Case 3 - Coastal w/ upstreams but no downstream - Assign small non-zero length
-    # NO FIXES APPLIED TO BASINS FOR CASE 3 - ALREADY HAVE
-
-    return corrected_basins
-
-
-def correct_0_length_basins(basins_gpkg: gpd.GeoDataFrame, save_dir: str, stream_id_col: str, buffer_size: float = 10):
-    """
-    Apply fixes to streams that have 0 length.
-
-    Args:
-        basins_gpkg: Basins to correct
+        basins_gpq: Basins to correct
         save_dir: Directory to save the corrected basins to
         stream_id_col:
-        buffer_size:
 
     Returns:
 
     """
-    logger.info('\tRevising basins with 0 length streams')
-    zero_length_df = pd.read_csv(os.path.join(save_dir, 'mod_zero_length_streams.csv'))
+    basin_gdf = gpd.read_parquet(basins_gpq)
 
-    basin_gdf = gpd.read_file(basins_gpkg)
+    zero_fix_csv_path = os.path.join(save_dir, 'mod_basin_zero_centroid.csv')
+    if os.path.exists(zero_fix_csv_path):
+        box_radius_degrees = 0.015
+        basin_zero_centroid = pd.read_csv(zero_fix_csv_path)
+        centroid_x = basin_zero_centroid['centroid_x'].values[0]
+        centroid_y = basin_zero_centroid['centroid_y'].values[0]
+        link_zero_box = gpd.GeoDataFrame({
+            'geometry': [sg.box(
+                centroid_x - box_radius_degrees,
+                centroid_y - box_radius_degrees,
+                centroid_x + box_radius_degrees,
+                centroid_y + box_radius_degrees
+            )],
+            stream_id_col: [0, ]
+        }, crs=basin_gdf.crs)
+        basin_gdf = pd.concat([basin_gdf, link_zero_box])
 
-    # Case 1 - Coastal w/ no upstream or downstream - Delete the stream and its basin
-    logger.info('\tHandling Case 1 - delete basins')
-    # basin_gdf = basin_gdf[~basin_gdf[stream_id_col].isin(zero_length_df['case1'])]
+    zero_length_csv_path = os.path.join(save_dir, 'mod_zero_length_streams.csv')
+    if os.path.exists(zero_length_csv_path):
+        logger.info('\tRevising basins with 0 length streams')
+        zero_length_df = pd.read_csv(zero_length_csv_path)
+        # Case 1 - Coastal w/ no upstream or downstream - Delete the stream and its basin
+        logger.info('\tHandling Case 1 0 Length Streams - delete basins')
+        basin_gdf = basin_gdf[~basin_gdf[stream_id_col].isin(zero_length_df['case1'])]
+        # Case 2 - Allow 3-river confluence - basin does not exist (try to delete just in case)
+        logger.info('\tHandling Case 2 0 Length Streams - delete basins')
+        basin_gdf = basin_gdf[~basin_gdf[stream_id_col].isin(zero_length_df['case2'])]
+        # Case 3 - Coastal w/ upstreams but no downstream - basin exists so delete it
+        logger.info('\tHandling Case 3 0 Length Streams - delete basins')
+        basin_gdf = basin_gdf[~basin_gdf[stream_id_col].isin(zero_length_df['case3'])]
 
-    # Case 2 - Allow 3-river confluence - Create a basin with small non-zero area, assign small non-zero length
-    logger.info('\tHandling Case 2 - create small basins')
-    boxes = (
-        zero_length_df[['case2', 'case2_x', 'case2_y']]
-        .dropna(axis=0, how='any')
-        .apply(lambda x: sg.box(
-            x.case2_x - buffer_size,
-            x.case2_y - buffer_size,
-            x.case2_x + buffer_size,
-            x.case2_y + buffer_size
-        ), axis=1)
-    )
-    basin_gdf = pd.concat([
-        basin_gdf,
-        gpd.GeoDataFrame({'geometry': boxes, stream_id_col: zero_length_df['case2']})
-    ])
+    small_tree_csv_path = os.path.join(save_dir, 'mod_drop_small_trees.csv')
+    if os.path.exists(small_tree_csv_path):
+        logger.info('\tDeleting small trees')
+        small_tree_df = pd.read_csv(small_tree_csv_path)
+        basin_gdf = basin_gdf[~basin_gdf[stream_id_col].isin(small_tree_df.values.flatten())]
 
-    # Case 3 - Coastal w/ upstreams but no downstream - Assign small non-zero length
-    # NO FIXES APPLIED TO BASINS FOR CASE 3 - ALREADY HAVE
-
-    # basin_gdf.to_file(os.path.join(save_dir, os.path.basename(os.path.splitext(basins_gpkg)[0]) + '_corrected.gpkg'))
+    basin_gdf = basin_gdf.reset_index(drop=True)
     return basin_gdf

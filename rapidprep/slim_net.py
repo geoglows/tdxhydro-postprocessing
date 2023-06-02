@@ -92,8 +92,7 @@ def find_streams_to_slim(save_dir: str,
 
 def slim_streams_df(save_dir: str,
                     streams_df: pd.DataFrame = None,
-                    id_field: str = 'LINKNO',
-                    n_processes: int or None = None) -> pd.DataFrame:
+                    id_field: str = 'LINKNO', ) -> pd.DataFrame:
     if streams_df is None:
         streams_df = pd.read_parquet(os.path.join(save_dir, 'rapid_inputs_master.parquet'), engine='fastparquet')
 
@@ -130,11 +129,10 @@ def slim_streams_df(save_dir: str,
 
 def slim_weight_table(save_dir: str, weight_table_path: str) -> None:
     wt_df = pd.read_csv(weight_table_path)
-
     logger.info('\tDropping small trees')
     small_trees = pd.read_csv(os.path.join(save_dir, 'mod_drop_small_trees.csv')).values.flatten()
     wt_df = wt_df.dropna()
     wt_df['streamID'] = wt_df['streamID'].astype(int)
     wt_df = wt_df[~wt_df['streamID'].isin(small_trees)].reset_index(drop=True)
-    wt_df.to_csv(weight_table_path.replace('_full,csv', ''), index=False)
+    wt_df.to_csv(weight_table_path.replace('_full.csv', '.csv'), index=False)
     return
