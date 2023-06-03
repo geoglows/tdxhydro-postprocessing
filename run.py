@@ -22,8 +22,8 @@ inputs_path = '/Volumes/EB406_T7_2/TDXHydroGeoParquet/'
 outputs_path = '/Volumes/EB406_T7_2/TDXHydroRapid_V10/'
 
 gis_iterable = zip(
-    sorted(glob.glob(os.path.join(inputs_path, 'TDX_streamnet_*.parquet')), reverse=False),
-    sorted(glob.glob(os.path.join(inputs_path, 'TDX_streamreach_basins_*.parquet')), reverse=False),
+    sorted(glob.glob(os.path.join(inputs_path, 'TDX_streamnet_7020065090*.parquet')), reverse=False),
+    sorted(glob.glob(os.path.join(inputs_path, 'TDX_streamreach_basins_7020065090*.parquet')), reverse=False),
 )
 CALCULATE_CONNECTIVITY = False
 CORRECT_TAUDEM_ERRORS = True
