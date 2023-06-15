@@ -2,20 +2,39 @@ import logging
 import os
 
 import geopandas as gpd
+import networkx as nx
 import numpy as np
 import pandas as pd
 import shapely.geometry as sg
 
 __all__ = [
+    'sort_topologically',
+    'create_directed_graphs',
+    'find_headwater_streams_to_dissolve',
     'merge_headwater_streams',
-    'merge_basins',
     'identify_0_length',
     'correct_0_length_streams',
     'correct_0_length_basins',
-    'find_headwater_streams_to_dissolve',
+    'make_vpu_streams',
+    'make_vpu_basins',
 ]
 
 logger = logging.getLogger(__name__)
+
+
+def sort_topologically(digraph_from_headwaters: nx.DiGraph) -> np.array:
+    return np.array(list(nx.topological_sort(digraph_from_headwaters))).astype(int)
+
+
+def create_directed_graphs(df: pd.DataFrame, id_field='LINKNO', ds_id_field='DSLINKNO'):
+    G = nx.DiGraph()
+
+    for node in df[id_field].values:
+        G.add_node(node)
+    for i, row in df.iterrows():
+        if row[ds_id_field] != -1:
+            G.add_edge(row[id_field], row[ds_id_field])
+    return G
 
 
 def find_headwater_streams_to_dissolve(sdf: pd.DataFrame or gpd.GeoDataFrame) -> pd.DataFrame:
@@ -38,6 +57,7 @@ def merge_headwater_streams(upstream_ids: list, network_gdf: gpd.GeoDataFrame, m
     """
     Selects stream segments upstream of the given segments and merges them into a single geodataframe.
     """
+    # todo old, reconfigure and delete
     if make_model_version:
         # A little ugly, but we use an if/else to return the index to use based on which of the upstream_ids is longer
         upstream_ids = [upstream_ids[0], upstream_ids[
@@ -97,15 +117,6 @@ def merge_headwater_streams(upstream_ids: list, network_gdf: gpd.GeoDataFrame, m
     dissolved_feature['MERGEIDS'] = ','.join(str(num) for num in upstream_comids)
 
     return dissolved_feature
-
-
-def merge_basins(basin_gdf: gpd.GeoDataFrame, upstream_ids: list) -> gpd.GeoDataFrame:
-    """
-    Dissolves basins based on list of upstream river ids, and returns that feature.
-    """
-    gdf = basin_gdf[basin_gdf["streamID"].isin(upstream_ids)].dissolve()
-    gdf['streamID'] = upstream_ids[0]  # the first ID should be the most downstream ID
-    return gdf
 
 
 def identify_0_length(gdf: gpd.GeoDataFrame, stream_id_col: str, ds_id_col: str, length_col: str) -> pd.DataFrame:
@@ -172,43 +183,44 @@ def identify_0_length(gdf: gpd.GeoDataFrame, stream_id_col: str, ds_id_col: str,
     })
 
 
-def correct_0_length_streams(streams_gdf: gpd.GeoDataFrame, zero_length_df: pd.DataFrame,
+def correct_0_length_streams(sgdf: gpd.GeoDataFrame, zero_length_df: pd.DataFrame,
                              id_field: str) -> gpd.GeoDataFrame:
     """
     Apply fixes to streams that have 0 length.
 
     Args:
-        streams_gdf:
+        sgdf:
         zero_length_df:
         id_field:
 
     Returns:
 
     """
-    correct_sgdf = streams_gdf.copy()
-
     # Case 1 - Coastal w/ no upstream or downstream - Delete the stream and its basin
     c1 = zero_length_df['case1'].dropna().astype(int).values
-    correct_sgdf = correct_sgdf[~correct_sgdf[id_field].isin(c1)]
-
-    # # Case 2 - Allow 3-river confluence - Delete the temporary basin and modify the connectivity properties
-    # Iterate over the rivers to be deleted
-    c2 = zero_length_df['case2'].dropna().astype(int).values
-    for river_id in c2:
-        ids_to_apply = streams_gdf.loc[streams_gdf[id_field] == river_id, ['USLINKNO1', 'USLINKNO2', 'DSLINKNO']]
-        correct_sgdf.loc[
-            correct_sgdf[id_field].isin(ids_to_apply[['USLINKNO1', 'USLINKNO2']].values.flatten()), 'DSLINKNO'] = \
-            ids_to_apply['DSLINKNO'].values[0]
-    # Remove the rows corresponding to the rivers to be deleted
-    correct_sgdf = correct_sgdf[~correct_sgdf['LINKNO'].isin(c2)]
+    sgdf = sgdf[~sgdf[id_field].isin(c1)]
 
     # Case 3 - Coastal w/ upstreams but no downstream - Assign small non-zero length
-    c3_us_ids = streams_gdf[streams_gdf[id_field].isin(zero_length_df['case3'].dropna().values)][
+    # Apply before case 2 to handle some edges cases where zero length basins drain into other zero length basins
+    c3_us_ids = sgdf[sgdf[id_field].isin(zero_length_df['case3'].dropna().values)][
         ['USLINKNO1', 'USLINKNO2']].values.flatten()
-    correct_sgdf.loc[correct_sgdf[id_field].isin(c3_us_ids), 'DSLINKNO'] = -1
-    correct_sgdf = correct_sgdf[~correct_sgdf['LINKNO'].isin(zero_length_df['case3'].dropna().values)]
+    sgdf.loc[sgdf[id_field].isin(c3_us_ids), 'DSLINKNO'] = -1
+    sgdf = sgdf[~sgdf['LINKNO'].isin(zero_length_df['case3'].dropna().values)]
 
-    return correct_sgdf
+    # Case 2 - Allow 3-river confluence - Delete the temporary basin and modify the connectivity properties
+    # Sort by DSLINKNO to handle some edges cases where zero length basins drain into other zero length basins
+    c2 = sgdf[sgdf['LINKNO'].isin(zero_length_df['case2'].dropna().astype(int).values)]
+    c2 = c2.sort_values(by=['DSLINKNO'], ascending=True)
+    c2 = c2['LINKNO'].values
+    for river_id in c2:
+        ids_to_apply = sgdf.loc[sgdf[id_field] == river_id, ['USLINKNO1', 'USLINKNO2', 'DSLINKNO']]
+        sgdf.loc[
+            sgdf[id_field].isin(ids_to_apply[['USLINKNO1', 'USLINKNO2']].values.flatten()), 'DSLINKNO'] = \
+            ids_to_apply['DSLINKNO'].values[0]
+    # Remove the rows corresponding to the rivers to be deleted
+    sgdf = sgdf[~sgdf['LINKNO'].isin(c2)]
+
+    return sgdf
 
 
 def correct_0_length_basins(basins_gpq: str, save_dir: str, stream_id_col: str) -> gpd.GeoDataFrame:
@@ -264,3 +276,68 @@ def correct_0_length_basins(basins_gpq: str, save_dir: str, stream_id_col: str) 
 
     basin_gdf = basin_gdf.reset_index(drop=True)
     return basin_gdf
+
+
+def make_vpu_streams(final_inputs_directory: str, inputs_directory: str, gpq: str, id_field: str = 'LINKNO') -> None:
+    # todo
+    vpu = 123
+    save_path = os.path.join(save_dir, f'geoglows2_streams_vpu_{vpu}.gpkg')
+    logging.info(f'Making GeoPackage:{save_path}')
+    gdf = gpd.read_parquet(streams_gpq)
+
+    streams_to_drop = pd.read_csv(os.path.join(save_dir, 'mod_drop_small_trees.csv'))
+    gdf = gdf[~gdf[id_field].isin(streams_to_drop.values.flatten())]
+
+    streams_to_dissolve = pd.read_csv(os.path.join(save_dir, 'mod_dissolve_headwater.csv'))
+    gdf = dissolve_headwater_table(gdf,
+                                   streams_to_dissolve,
+                                   geometry_diss=lambda x: x.unary_union)
+
+    gpd.GeoDataFrame(gdf).to_file(save_path, driver='GPKG')  # groupby returns DF not GDF
+    return
+
+
+def make_vpu_basins(final_inputs_directory: str,
+                    gpq_dir: str,
+                    id_field: str = 'LINKNO',
+                    basin_id_field: str = 'streamID', ):
+    master_table = pd.read_parquet(os.path.join(final_inputs_directory, 'master_table.parquet'))
+    for tdxnumber in sorted(master_table['TDXHydroNumber'].unique()):
+        print(tdxnumber)
+        gpq = os.path.join(gpq_dir, f'TDX_streamreach_basins_{tdxnumber}_01.parquet')
+        output_file = os.path.join(final_inputs_directory, 'gis', f'vpu_basins_{tdxnumber}.geoparquet')
+        if os.path.exists(output_file):
+            continue
+
+        heads = pd.read_csv(f'/Volumes/EB406_T7_2/TDXHydroRapid_V11/{tdxnumber}/mod_dissolve_headwater.csv')
+        idvpudf = (
+            master_table
+            .loc[master_table['TDXHydroNumber'] == tdxnumber, [id_field, 'VPUCode']]
+            .reset_index(drop=True)
+        )
+        for vpucode in sorted(idvpudf['VPUCode'].unique()):
+            matching_rows = heads[heads[id_field].isin(idvpudf[idvpudf['VPUCode'] == vpucode][id_field])]
+            all_ids = (
+                set(matching_rows[id_field].values)
+                .union(matching_rows.iloc[:, 1:].values.flatten())
+            )
+            idvpudf = pd.concat([
+                pd.DataFrame({'LINKNO': list(all_ids), 'VPUCode': vpucode}),
+                idvpudf
+            ])
+        idvpudf = idvpudf.drop_duplicates(subset=['LINKNO', 'VPUCode'])
+        (
+            gpd
+            .read_parquet(gpq)
+            .merge(
+                idvpudf,
+                left_on=basin_id_field,
+                right_on=id_field,
+                how='inner'
+            )
+            .drop(columns=[basin_id_field, id_field, ])
+            .dissolve(by='VPUCode')
+            .reset_index()
+            .to_parquet(output_file)
+        )
+    return

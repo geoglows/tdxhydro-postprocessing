@@ -1,8 +1,9 @@
-name: rapid_prep
+name: tdxhydrorapid
 channels:
 - conda-forge
 - defaults
 dependencies:
+  - python=3.11
   - geopandas
   - netcdf4
   - numpy
@@ -11,3 +12,4 @@ dependencies:
   - pyproj
   - dask
   - xarray
+  - scikit-learn

@@ -7,7 +7,6 @@ import geopandas as gpd
 import numpy as np
 import pandas as pd
 
-
 NETWORK_TRACE_FILES = (
     'adjoint_tree.json',
     'mod_zero_length_streams.csv',
@@ -150,5 +149,6 @@ def has_slimmed_weight_tables(save_dir: str) -> bool:
 
 def has_rapid_master_files(save_dir: str) -> bool:
     inputs_parquet = os.path.exists(os.path.join(save_dir, 'rapid_inputs_master.parquet'))
-    graphs = len(glob.glob(os.path.join(save_dir, 'digraph*.gexf'))) == 1
+    # graphs = len(glob.glob(os.path.join(save_dir, 'digraph*.gexf'))) == 1
+    graphs = True
     return all([inputs_parquet, graphs])

@@ -14,19 +14,23 @@ import xarray as xr
 
 logger = logging.getLogger(__name__)
 
+__all__ = [
+    'make_weight_table',
+    'apply_mods_to_wt'
+]
+
 
 def make_weight_table(lsm_sample: str,
                       out_dir: str,
                       basins_gdf: gpd.GeoDataFrame,
                       basin_id_field: str = 'streamID') -> None:
-
     out_name = os.path.join(out_dir, 'weight_' + os.path.basename(os.path.splitext(lsm_sample)[0]) + '_full.csv')
     if os.path.exists(os.path.join(out_dir, out_name)):
         logger.info(f'Weight table already exists: {os.path.basename(out_name)}')
         return
     logger.info(f'Creating weight table: {os.path.basename(out_name)}')
 
-    # Extract xs and ys dimensions from the dataset
+    # Extract xs and ys dimensions from the ds
     lsm_ds = xr.open_dataset(lsm_sample)
     x_var = [v for v in lsm_ds.variables if v in ('lon', 'longitude',)][0]
     y_var = [v for v in lsm_ds.variables if v in ('lat', 'latitude',)][0]
@@ -34,7 +38,7 @@ def make_weight_table(lsm_sample: str,
     ys = lsm_ds[y_var].values
     lsm_ds.close()
 
-    # get the resolution of the dataset
+    # get the resolution of the ds
     resolution = np.abs(xs[1] - xs[0])
 
     # correct irregular x coordinates
