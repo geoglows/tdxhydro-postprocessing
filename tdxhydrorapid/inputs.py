@@ -81,9 +81,14 @@ def rapid_master_files(streams_gpq: str,
     sgdf['USLINKNO2'] = sgdf['USLINKNO2'].astype(int)
     sgdf['strmOrder'] = sgdf['strmOrder'].astype(int)
     sgdf['Length'] = sgdf['Length'].astype(float)
-    sgdf['lat'] = sgdf['lat'].astype(float)
-    sgdf['lon'] = sgdf['lon'].astype(float)
-    sgdf['z'] = sgdf['z'].astype(int)
+    try:
+        sgdf['lat'] = sgdf['lat'].astype(float)
+        sgdf['lon'] = sgdf['lon'].astype(float)
+        sgdf['z'] = sgdf['z'].astype(int)
+    except:
+        sgdf['lat'] = sgdf.geometry.apply(lambda x: x.centroid.x).astype(float)
+        sgdf['lon'] = sgdf.geometry.apply(lambda x: x.centroid.y).astype(float)
+        sgdf['z'] = 0
 
     # length is in m, convert to km, then multiply by 3600 to get km/hr, then multiply by default k (velocity)
     logger.info('\t Calculating Muskingum k and x')
@@ -113,7 +118,7 @@ def rapid_master_files(streams_gpq: str,
         }).to_csv(os.path.join(save_dir, 'mod_basin_zero_centroid.csv'), index=False)
 
     logger.info('\t Creating Directed Graph')
-    G = create_directed_graphs(sgdf, save_dir, ds_id_field=ds_id_field)
+    G = create_directed_graphs(sgdf, id_field, ds_id_field=ds_id_field)
 
     # Drop trees with small total length/area
     logger.info('\t Finding and removing small trees')
@@ -143,7 +148,8 @@ def rapid_master_files(streams_gpq: str,
     sgdf[upstream_columns] = sgdf[upstream_columns].fillna(-1).astype(int)
 
     logger.info('\t Finding headwater streams to dissolve')
-    head_to_dissolve = find_headwater_streams_to_dissolve(sgdf)
+    #head_to_dissolve = find_headwater_streams_to_dissolve(sgdf)
+    head_to_dissolve = find_upstream_of(3, G, id_field, sgdf)
     head_to_dissolve.to_csv(os.path.join(save_dir, 'mod_dissolve_headwater.csv'), index=False)
     sgdf = dissolve_headwater_table(sgdf, head_to_dissolve)
 
@@ -207,9 +213,11 @@ def dissolve_headwater_table(streams_df: pd.DataFrame, head_to_dissolve: pd.Data
         'z': 'last',
         'geometry': geometry_diss,
     }
+
     if all([x in streams_df.columns for x in ['musk_k', 'musk_x', 'musk_kfac', 'musk_xfac', 'CountUS', ]]):
         agg_rules.update({
-            'musk_k': lambda x: x.iloc[-1] + x.iloc[:-1].max() if len(x) > 1 else x.iloc[0],
+            # 'musk_k': lambda x: x.iloc[-1] + x.iloc[:-1].max() if len(x) > 1 else x.iloc[0],
+            'musk_k': lambda x: x.mean() * 3.5 if len(x) > 1 else x.iloc[0],
             'musk_x': 'last',
             'musk_kfac': lambda x: x.iloc[-1] + x.iloc[:-1].max() if len(x) > 1 else x.iloc[0],
             'musk_xfac': 'last',
@@ -221,7 +229,20 @@ def dissolve_headwater_table(streams_df: pd.DataFrame, head_to_dissolve: pd.Data
     streams_df = streams_df.groupby('LINKNO').agg(agg_rules).reset_index()
     return streams_df
 
+def find_upstream_of(order, G, id_field, streams_df):
+    ancestors_list = []
+    for order_3 in streams_df[streams_df['strmOrder'] == order][id_field]:
+        # Check if upstreams are greater or equal to the order; if so, skip
+        if streams_df[streams_df['DSLINKNO'] == order_3]['strmOrder'].max() >= order:
+            continue
 
+        ancestors = [order_3] + list(nx.ancestors(G, order_3))
+        ancestors_list.append(ancestors)
+
+    # Returned Dataframe has nan values filled with 0
+    return pd.DataFrame(ancestors_list).fillna(0).astype(int)
+
+    
 def assign_vpu_by_kmeans(sgdf: gpd.GeoDataFrame) -> pd.DataFrame:
     logger.info('\t Preparing attributes for clustering')
     sgdf['geometry'] = sgdf['geometry'].apply(lambda x: Point(x.coords[0]))
