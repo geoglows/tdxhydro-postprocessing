@@ -93,7 +93,7 @@ def find_branches_to_prune(sdf: gpd.GeoDataFrame,
         # In the case where there is a 3 river confluence, there may be more than 1 order 1 stream that must be merged. 
         # Instead of creating a dictionary to store these values (which can only have one unique key), we use a DataFrame directly
         new_row = {'LINKNO': siblings[0], 'LINKTODROP': row[id_field]}
-        sibling_pairs = sibling_pairs.append(new_row, ignore_index = True)
+        sibling_pairs.loc[sibling_pairs.shape[0]] = new_row
         # sibling_pairs[siblings[0]] = row[id_field]
 
     # sibling_pairs = pd.DataFrame.from_dict(sibling_pairs, orient='index').reset_index()
