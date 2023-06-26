@@ -63,13 +63,15 @@ def find_branches_to_prune(sdf: gpd.GeoDataFrame,
                            G: nx.DiGraph,
                            id_field: str = 'LINKNO',
                            ds_id_field: str = 'DSLINKNO', ) -> pd.DataFrame:
-    # find all order 1 and 3+ branches
+    # find all order 1 and 2+ branches
     order1s = sdf.loc[sdf['strmOrder'] == 1]
-    # select the order 1s whose downstream is 3+
-    order1s = order1s.loc[order1s[ds_id_field].isin(sdf.loc[sdf['strmOrder'] >= 3, id_field].values)]
+    # select the order 1s whose downstream is 2+
+    order1s = order1s.loc[order1s[ds_id_field].isin(sdf.loc[sdf['strmOrder'] >= 2, id_field].values)]
 
-    sibling_pairs = {}
+    sibling_pairs = pd.DataFrame(columns=['LINKNO', 'LINKTODROP'])
     for index, row in order1s.iterrows():
+        if row[id_field] == 22800:
+            pass
         siblings = list(G.predecessors(row[ds_id_field]))
         siblings = [s for s in siblings if s != row[id_field]]
         if len(siblings) > 1:
@@ -88,10 +90,14 @@ def find_branches_to_prune(sdf: gpd.GeoDataFrame,
             )
             siblings = [siblings, ]
 
-        sibling_pairs[siblings[0]] = row[id_field]
+        # In the case where there is a 3 river confluence, there may be more than 1 order 1 stream that must be merged. 
+        # Instead of creating a dictionary to store these values (which can only have one unique key), we use a DataFrame directly
+        new_row = {'LINKNO': siblings[0], 'LINKTODROP': row[id_field]}
+        sibling_pairs = sibling_pairs.append(new_row, ignore_index = True)
+        # sibling_pairs[siblings[0]] = row[id_field]
 
-    sibling_pairs = pd.DataFrame.from_dict(sibling_pairs, orient='index').reset_index()
-    sibling_pairs.columns = ['LINKNO', 'LINKTODROP']
+    # sibling_pairs = pd.DataFrame.from_dict(sibling_pairs, orient='index').reset_index()
+    # sibling_pairs.columns = ['LINKNO', 'LINKTODROP']
     return sibling_pairs
 
 
@@ -193,8 +199,13 @@ def correct_0_length_streams(sgdf: gpd.GeoDataFrame, zero_length_df: pd.DataFram
         sgdf.loc[
             sgdf[id_field].isin(ids_to_apply[['USLINKNO1', 'USLINKNO2']].values.flatten()), 'DSLINKNO'] = \
             ids_to_apply['DSLINKNO'].values[0]
+        
+        # If one of the streams is an orde, delete them and merge their area
+
     # Remove the rows corresponding to the rivers to be deleted
     sgdf = sgdf[~sgdf['LINKNO'].isin(c2)]
+
+
 
     return sgdf
 
