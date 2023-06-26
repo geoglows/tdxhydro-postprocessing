@@ -94,10 +94,7 @@ def find_branches_to_prune(sdf: gpd.GeoDataFrame,
         # Instead of creating a dictionary to store these values (which can only have one unique key), we use a DataFrame directly
         new_row = {'LINKNO': siblings[0], 'LINKTODROP': row[id_field]}
         sibling_pairs.loc[sibling_pairs.shape[0]] = new_row
-        # sibling_pairs[siblings[0]] = row[id_field]
 
-    # sibling_pairs = pd.DataFrame.from_dict(sibling_pairs, orient='index').reset_index()
-    # sibling_pairs.columns = ['LINKNO', 'LINKTODROP']
     return sibling_pairs
 
 
@@ -200,12 +197,8 @@ def correct_0_length_streams(sgdf: gpd.GeoDataFrame, zero_length_df: pd.DataFram
             sgdf[id_field].isin(ids_to_apply[['USLINKNO1', 'USLINKNO2']].values.flatten()), 'DSLINKNO'] = \
             ids_to_apply['DSLINKNO'].values[0]
         
-        # If one of the streams is an orde, delete them and merge their area
-
     # Remove the rows corresponding to the rivers to be deleted
     sgdf = sgdf[~sgdf['LINKNO'].isin(c2)]
-
-
 
     return sgdf
 
