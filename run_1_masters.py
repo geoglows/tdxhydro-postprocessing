@@ -19,7 +19,7 @@ logging.basicConfig(
 )
 
 inputs_path = '/Volumes/EB406_T7_2/TDXHydroGeoParquet/'
-outputs_path = '/Volumes/EB406_T7_2/TDXHydroRapid_V11/'
+outputs_path = '/Volumes/EB406_T7_2/TDXHydroRapid_V12/'
 
 gis_iterable = zip(
     sorted(glob.glob(os.path.join(inputs_path, 'TDX_streamnet_*.parquet')), reverse=False),
@@ -78,6 +78,7 @@ if __name__ == '__main__':
             if not rp.has_rapid_master_files(save_dir):
                 rp.inputs.rapid_master_files(streams_gpq,
                                              save_dir=save_dir,
+                                             region_number=region_number,
                                              id_field=id_field,
                                              ds_id_field=ds_field,
                                              length_field=length_field)
@@ -88,7 +89,8 @@ if __name__ == '__main__':
 
             # make the rapid input files
             if not all([os.path.exists(os.path.join(save_dir, f)) for f in rp.RAPID_FILES]):
-                rp.inputs.rapid_input_csvs(save_dir,
+                rp.inputs.rapid_input_csvs(pd.read_parquet(os.path.join(save_dir, 'rapid_inputs_master.parquet')),
+                                           save_dir,
                                            id_field=id_field,
                                            ds_id_field=ds_field, )
 
@@ -130,10 +132,23 @@ if __name__ == '__main__':
                 # mod the weight tables
                 wt = pd.read_csv(weight_table)
                 if SLIM_NETWORK:
-                    o2_to_dissolve = pd.read_csv(os.path.join(save_dir, 'mod_dissolve_headwater.csv')).astype(int)
+                    o2_to_dissolve = (
+                        pd
+                        .read_csv(os.path.join(save_dir, 'mod_dissolve_headwater.csv'))
+                        .fillna(-1)
+                        .astype(int)
+                    )
                     # consolidate the weight table rows
                     for streams_to_merge in o2_to_dissolve.values:
                         wt.loc[wt[basin_id_field].isin(streams_to_merge), basin_id_field] = streams_to_merge[0]
+
+                    ids_to_prune = (
+                        pd
+                        .read_csv(os.path.join(save_dir, 'mod_prune_streams.csv'))
+                        .astype(int)
+                        .set_index('LINKTODROP')
+                    )
+                    wt[basin_id_field] = wt[basin_id_field].replace(ids_to_prune['LINKNO'])
 
                     # group the weight table by matching columns except for area_sqm then sum by that column
                     wt['npoints'] = wt.groupby(basin_id_field)[basin_id_field].transform('count')
@@ -148,7 +163,6 @@ if __name__ == '__main__':
             if not rp.count_rivers_in_generated_files(save_dir):
                 logging.error(f'Number of streams in rapid inputs does not match number of streams in weight tables')
                 continue
-
 
         except Exception as e:
             logging.info('\n----- ERROR -----\n')

@@ -10,8 +10,7 @@ import shapely.geometry as sg
 __all__ = [
     'sort_topologically',
     'create_directed_graphs',
-    'find_headwater_streams_to_dissolve',
-    'merge_headwater_streams',
+    'find_branches_to_dissolve',
     'identify_0_length',
     'correct_0_length_streams',
     'correct_0_length_basins',
@@ -37,86 +36,63 @@ def create_directed_graphs(df: pd.DataFrame, id_field='LINKNO', ds_id_field='DSL
     return G
 
 
-def find_headwater_streams_to_dissolve(sdf: pd.DataFrame or gpd.GeoDataFrame) -> pd.DataFrame:
+def find_branches_to_dissolve(sdf: pd.DataFrame or gpd.GeoDataFrame,
+                              G: nx.DiGraph,
+                              min_order_to_keep: int, ) -> pd.DataFrame:
     # todo parameterize the column names
     us_cols = sorted([c for c in sdf.columns if c.startswith('USLINKNO')])
-    o1 = sdf[sdf['strmOrder'] == 1]['LINKNO'].values.flatten()
-    o2 = sdf[sdf['strmOrder'] == 2]
+    order1 = sdf[sdf['strmOrder'] == (min_order_to_keep - 1)]['LINKNO'].values.flatten()
+    order2 = sdf[sdf['strmOrder'] == min_order_to_keep]
 
-    # select rows where 2+ of the 2+ upstreams are 1st order (ie this is the first 2nd order in the chain)
-    # o2 = o2[us_cols].isin(o1).sum(axis=1) >= 2
     # alternatively the only upstreams must be 1st orders, all else are -1
-    o2 = o2[o2[us_cols].isin(o1).sum(axis=1) + (o2[us_cols] == -1).sum(axis=1) == len(us_cols)]
-    o2 = o2[['LINKNO', ] + us_cols]
-    return o2
+    # order2 = order2[order2[us_cols].isin(order1).sum(axis=1) + (order2[us_cols] == -1).sum(axis=1) == len(us_cols)]
+    # select rows where 2+ of the 2+ upstreams are 1st order (ie this is the first 2nd order in the chain)
+    order2 = order2[order2[us_cols].isin(order1).sum(axis=1) >= 2]
+    order2 = order2[['LINKNO', ]]
+
+    # get a dictionary of all streams upstream of the new headwater streams
+    upstream_df = {x: list(nx.ancestors(G, x)) for x in order2['LINKNO'].values.flatten()}
+    upstream_df = pd.DataFrame.from_dict(upstream_df, orient='index').fillna(-1).astype(int)
+    upstream_df.index.name = 'LINKNO'
+    upstream_df.columns = [f'USLINKNO{i}' for i in range(1, len(upstream_df.columns) + 1)]
+    upstream_df = upstream_df.reset_index()
+    return upstream_df
 
 
-def merge_headwater_streams(upstream_ids: list, network_gdf: gpd.GeoDataFrame, make_model_version: bool,
-                            streamid: str = 'LINKNO', dsid: str = 'DSLINKNO',
-                            length_col: str = 'Length') -> gpd.GeoDataFrame:
-    """
-    Selects stream segments upstream of the given segments and merges them into a single geodataframe.
-    """
-    # todo old, reconfigure and delete
-    if make_model_version:
-        # A little ugly, but we use an if/else to return the index to use based on which of the upstream_ids is longer
-        upstream_ids = [upstream_ids[0], upstream_ids[
-            2 if network_gdf[network_gdf[streamid] == upstream_ids[1]][length_col].values <=
-                 network_gdf[network_gdf[streamid] == upstream_ids[2]][length_col].values else 1]]
+def find_branches_to_prune(sdf: gpd.GeoDataFrame,
+                           G: nx.DiGraph,
+                           id_field: str = 'LINKNO',
+                           ds_id_field: str = 'DSLINKNO', ) -> pd.DataFrame:
+    # find all order 1 and 3+ branches
+    order1s = sdf.loc[sdf['strmOrder'] == 1]
+    # select the order 1s whose downstream is 3+
+    order1s = order1s.loc[order1s[ds_id_field].isin(sdf.loc[sdf['strmOrder'] >= 3, id_field].values)]
 
-    dissolved_feature = network_gdf[network_gdf[streamid].isin(upstream_ids)]
-    if len(upstream_ids) == 2:
-        # This is for when we merge only two upstream streams, and this is where only using GeoPandas dissolve may
-        # create MultiLineString objects (because geoms in wrong order?)
-        line1 = list(dissolved_feature.iloc[0].geometry.coords)
-        line2 = list(dissolved_feature.iloc[1].geometry.coords)
-        line1_start = line1[0]
-        line2_end = line2[-1]
-        if line1_start == line2_end:
-            newline = line2 + line1
-            line = sg.LineString(newline)
-        else:  # We assume that the end of line1 is the beginning of line2
-            newline = line1 + line2
-            line = sg.LineString(newline)
-        dissolved_feature = gpd.GeoDataFrame(geometry=[line], crs=network_gdf.crs)
-    else:
-        dissolved_feature = dissolved_feature.dissolve()
+    sibling_pairs = {}
+    for index, row in order1s.iterrows():
+        siblings = list(G.predecessors(row[ds_id_field]))
+        siblings = [s for s in siblings if s != row[id_field]]
+        if len(siblings) > 1:
+            # find the nearest sibling
+            siblings = sdf[sdf[id_field].isin(siblings)]
+            siblings['dist'] = (
+                gpd
+                .GeoSeries(siblings.geometry)
+                .distance(row.geometry.centroid)
+            )
+            siblings = (
+                siblings
+                .sort_values('dist')
+                .iloc[0]
+                .loc[id_field]
+            )
+            siblings = [siblings, ]
 
-    order2_stream = network_gdf[network_gdf[streamid] == upstream_ids[0]]
-    downstream_id = order2_stream[dsid].values[0]
-    dscontarea = order2_stream['DSContArea'].values[0]
-    length = sum(network_gdf[network_gdf[streamid].isin(upstream_ids)][length_col].values)
-    magnitude = order2_stream['Magnitude'].values[0]
-    strm_drop = sum(network_gdf[network_gdf[streamid].isin(upstream_ids)]['strmDrop'].values)
-    wsno = order2_stream['WSNO'].values[0]
-    doutend = order2_stream['DOUTEND'].values[0]
-    doutstart = network_gdf[network_gdf[streamid] == upstream_ids[1]]["DOUTSTART"].values[0]
-    dsnodeid = order2_stream['DSNODEID'].values[0]
-    upstream_comids = upstream_ids[1:]
+        sibling_pairs[siblings[0]] = row[id_field]
 
-    if dsnodeid != -1:
-        logging.warning(f"  The stream {upstream_ids[0]} has a DSNODEID other than -1...")
-
-    dissolved_feature[streamid] = upstream_ids[0]
-    dissolved_feature[dsid] = downstream_id
-    dissolved_feature["USLINKNO1"] = -1
-    dissolved_feature["USLINKNO2"] = -1
-    dissolved_feature["DSNODEID"] = dsnodeid
-    dissolved_feature["strmOrder"] = 2
-    dissolved_feature[length_col] = length
-    dissolved_feature["Magnitude"] = magnitude
-    dissolved_feature["DSContArea"] = dscontarea
-    dissolved_feature["strmDrop"] = strm_drop
-    dissolved_feature["Slope"] = strm_drop / length
-    dissolved_feature["StraightL"] = -1
-    dissolved_feature["USContArea"] = -1
-    dissolved_feature["WSNO"] = wsno
-    dissolved_feature["DOUTEND"] = doutend
-    dissolved_feature["DOUTSTART"] = doutstart
-    dissolved_feature["DOUTMID"] = round((doutend + doutstart) / 2, 2)
-    dissolved_feature['MERGEIDS'] = ','.join(str(num) for num in upstream_comids)
-
-    return dissolved_feature
+    sibling_pairs = pd.DataFrame.from_dict(sibling_pairs, orient='index').reset_index()
+    sibling_pairs.columns = ['LINKNO', 'LINKTODROP']
+    return sibling_pairs
 
 
 def identify_0_length(gdf: gpd.GeoDataFrame, stream_id_col: str, ds_id_col: str, length_col: str) -> pd.DataFrame:
