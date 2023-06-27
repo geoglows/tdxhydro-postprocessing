@@ -70,8 +70,6 @@ def find_branches_to_prune(sdf: gpd.GeoDataFrame,
 
     sibling_pairs = pd.DataFrame(columns=['LINKNO', 'LINKTODROP'])
     for index, row in order1s.iterrows():
-        if row[id_field] == 22800:
-            pass
         siblings = list(G.predecessors(row[ds_id_field]))
         siblings = [s for s in siblings if s != row[id_field]]
         if len(siblings) > 1:

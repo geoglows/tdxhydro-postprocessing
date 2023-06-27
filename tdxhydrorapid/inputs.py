@@ -82,10 +82,6 @@ def rapid_master_files(streams_gpq: str,
     sgdf['USLINKNO2'] = sgdf['USLINKNO2'].astype(int)
     sgdf['strmOrder'] = sgdf['strmOrder'].astype(int)
     sgdf['Length'] = sgdf['Length'].astype(float)
-    if 'lat' not in sgdf.columns:
-        sgdf['lat'] = 0
-        sgdf['lon'] = 0
-        sgdf['z'] = 0
     sgdf['lat'] = sgdf['lat'].astype(float)
     sgdf['lon'] = sgdf['lon'].astype(float)
     sgdf['z'] = sgdf['z'].astype(int)
