@@ -23,7 +23,7 @@ __all__ = [
 def make_weight_table(lsm_sample: str,
                       out_dir: str,
                       basins_gdf: gpd.GeoDataFrame,
-                      basin_id_field: str = 'streamID') -> None:
+                      basin_id_field: str = 'TDXHydroLinkNo') -> None:
     out_name = os.path.join(out_dir, 'weight_' + os.path.basename(os.path.splitext(lsm_sample)[0]) + '_full.csv')
     if os.path.exists(os.path.join(out_dir, out_name)):
         logger.info(f'Weight table already exists: {os.path.basename(out_name)}')

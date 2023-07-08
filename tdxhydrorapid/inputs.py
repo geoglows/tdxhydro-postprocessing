@@ -8,7 +8,6 @@ import geopandas as gpd
 import networkx as nx
 import numpy as np
 import pandas as pd
-from pyproj import Geod
 from shapely.geometry import Point, MultiPoint
 from sklearn.cluster import KMeans
 
@@ -26,33 +25,17 @@ __all__ = [
     'rapid_master_files',
     'dissolve_branches',
     'assign_vpu_by_kmeans',
-    'make_quick_visuals',
-    'fix_vpus',
     'rapid_input_csvs',
-    'rapid_csvs_final',
+    'vpu_files_from_masters',
 ]
-
-
-def _calculate_geodesic_length(line) -> float:
-    """
-    Input is shapely geometry, should be all shapely LineString objects
-
-    returns length in meters
-    """
-    length = Geod(ellps='WGS84').geometry_length(line)
-
-    # This is for the outliers that have 0 length
-    if length < 0.0000001:
-        length = 0.01
-    return length
 
 
 def rapid_master_files(streams_gpq: str,
                        save_dir: str,
-                       region_number: int,
                        id_field: str = 'LINKNO',
                        ds_id_field: str = 'DSLINKNO',
                        length_field: str = 'Length',
+                       cache_geometry: bool = True,
                        default_k: float = 0.35,
                        default_x: float = .3, ) -> None:
     """
@@ -60,52 +43,31 @@ def rapid_master_files(streams_gpq: str,
 
     Saves the following files to the save_dir:
         - rapid_inputs_master.parquet
+        - {region_number}_dissolved_network.gpkg
+
     Args:
-        streams_gpq:
-        save_dir:
-        region_number:
-        id_field:
-        ds_id_field:
-        length_field:
-        default_k:
-        default_x:
+        streams_gpq: str, path to the streams geoparquet
+        save_dir: str, path to the directory to save the master files
+        id_field: str, field name for the link id
+        ds_id_field: str, field name for the downstream link id
+        length_field: str, field name for the length of the stream segment
+        cache_geometry: bool, save the dissolved geometry as a geoparquet
+        default_k: float, default velocity factor (k) for Muskingum routing
+        default_x: float, default attenuation factor (x) for Muskingum routing
 
     Returns:
 
     """
     sgdf = gpd.read_parquet(streams_gpq)
 
-    logger.info('\tEnforcing data types')
-    sgdf['LINKNO'] = sgdf['LINKNO'].astype(int)
-    sgdf['DSLINKNO'] = sgdf['DSLINKNO'].astype(int)
-    sgdf['USLINKNO1'] = sgdf['USLINKNO1'].astype(int)
-    sgdf['USLINKNO2'] = sgdf['USLINKNO2'].astype(int)
-    sgdf['strmOrder'] = sgdf['strmOrder'].astype(int)
-    sgdf['Length'] = sgdf['Length'].astype(float)
-    sgdf['lat'] = sgdf['lat'].astype(float)
-    sgdf['lon'] = sgdf['lon'].astype(float)
-    sgdf['z'] = sgdf['z'].astype(int)
-
     # length is in m, convert to km, then multiply by 3600 to get km/hr, then multiply by default k (velocity)
     logger.info('\tCalculating Muskingum k and x')
-    sgdf["musk_k"] = sgdf['geometry'].apply(_calculate_geodesic_length) / 1000 * 3600 * default_k
-    sgdf["musk_kfac"] = sgdf["musk_k"].values.flatten()
+    sgdf["musk_k"] = sgdf['LengthGeodesicMeters'] / 1000 * 3600 * default_k
     sgdf["musk_x"] = default_x
-    sgdf["musk_xfac"] = default_x
     sgdf['musk_k'] = sgdf['musk_k'].round(3)
-    sgdf['musk_kfac'] = sgdf['musk_kfac'].round(3)
     sgdf['musk_x'] = sgdf['musk_x'].round(3)
-    sgdf['musk_xfac'] = sgdf['musk_xfac'].round(3)
 
-    # add globally unique ID numbers
-    with open(os.path.join(os.path.dirname(__file__), 'network_data', 'tdx_header_numbers.json')) as f:
-        tdx_header_numbers = json.load(f)
-    sgdf['TDXHydroNumber'] = region_number
-    sgdf['TDXHydroHeaderNumber'] = int(tdx_header_numbers[str(region_number)])
-    sgdf['TDXHydroLeadingDigit'] = str(region_number)[0]
-    sgdf['TDXHydroLinkNo'] = sgdf['TDXHydroHeaderNumber'] * 10_000_000 + sgdf['LINKNO']
-
-    logger.info('\tLooking for 0 length segments')
+    logger.info('\tRemoving 0 length segments')
     if 0 in sgdf[length_field].values:
         zero_length_fixes_df = identify_0_length(sgdf, id_field, ds_id_field, length_field)
         zero_length_fixes_df.to_csv(os.path.join(save_dir, 'mod_zero_length_streams.csv'), index=False)
@@ -128,6 +90,8 @@ def rapid_master_files(streams_gpq: str,
         .set_index(pd.Index(sgdf[id_field]))
         .reindex(sorted_order)
         .reset_index(drop=True)
+        .dropna(axis=0, subset=[id_field])
+        .astype(sgdf.dtypes.to_dict())
         .set_index(pd.Index(range(1, len(sgdf) + 1)).rename('TopologicalOrder'))
         .reset_index()
         .dropna()
@@ -162,10 +126,13 @@ def rapid_master_files(streams_gpq: str,
     sgdf[upstream_columns] = sgdf[upstream_columns].fillna(-1).astype(int)
 
     logger.info('\tFinding headwater streams to dissolve')
+    geometry_diss = 'last'
+    if cache_geometry:
+        geometry_diss = lambda x: gpd.GeoSeries(x).unary_union
     branches_1 = find_branches_to_dissolve(sgdf, G, 2)
-    sgdf = dissolve_branches(sgdf, branches_1, k_agg_func=_k_agg_order_2)
+    sgdf = dissolve_branches(sgdf, branches_1, k_agg_func=_k_agg_order_2, geometry_diss=geometry_diss)
     branches_2 = find_branches_to_dissolve(sgdf, G, 3)
-    sgdf = dissolve_branches(sgdf, branches_2, k_agg_func=_k_agg_order_3)
+    sgdf = dissolve_branches(sgdf, branches_2, k_agg_func=_k_agg_order_3, geometry_diss=geometry_diss)
     (
         pd
         .concat([branches_1, branches_2])
@@ -184,14 +151,13 @@ def rapid_master_files(streams_gpq: str,
         sgdf.loc[sgdf[id_field].isin(list(nx.ancestors(G, term_node)) + [term_node, ]), 'TerminalNode'] = term_node
     sgdf['TerminalNode'] = sgdf['TerminalNode'].astype(int)
 
-    # prepare attribute for clustering to make VPUs
-    logger.info('\tAssigning VPUs')
-    if sgdf.shape[0] > 100_000:
-        sgdf = assign_vpu_by_kmeans(sgdf)
-    else:
-        sgdf['VPU'] = 101
+    if cache_geometry:
+        logger.info('\tWriting altered geometry to geopackage')
+        region_number = sgdf['TDXHydroRegion'].values[0]
+        gpd.GeoDataFrame(sgdf)[['TDXHydroLinkNo', 'geometry']].to_parquet(
+            os.path.join(save_dir, f"{region_number}_altered_network.geoparquet"))
 
-    logger.info('\tWriting RAPID master parquets')
+    logger.info('\tWriting RAPID master parquet')
     sgdf.drop(columns=['geometry', ]).to_parquet(os.path.join(save_dir, "rapid_inputs_master.parquet"))
     return
 
@@ -219,23 +185,20 @@ def dissolve_branches(streams_df: pd.DataFrame,
         'DOUTEND': 'last',
         'DOUTSTART': lambda x: x.iloc[:-1].max() if len(x) > 1 else x.iloc[0],
         'DOUTMID': lambda x: x.mean() if len(x) > 1 else x.iloc[0],
+        'LengthGeodesicMeters': 'last',
         'lat': 'last',
         'lon': 'last',
         'z': 'last',
-        'TDXHydroNumber': 'last',
-        'TDXHydroHeaderNumber': 'last',
-        'TDXHydroLeadingDigit': 'last',
+        'TDXHydroRegion': 'last',
         'TDXHydroLinkNo': 'last',
         'TopologicalOrder': 'last',
         'geometry': geometry_diss,
     }
 
-    if all([x in streams_df.columns for x in ['musk_k', 'musk_x', 'musk_kfac', 'musk_xfac', 'CountUS', ]]):
+    if all([x in streams_df.columns for x in ['musk_k', 'musk_x', 'CountUS', ]]):
         agg_rules.update({
             'musk_k': k_agg_func,
-            'musk_kfac': k_agg_func,
             'musk_x': 'last',
-            'musk_xfac': 'last',
             'CountUS': lambda x: 0 if len(x) else x,
         })
     agg_rules.update({
@@ -260,133 +223,6 @@ def _geom_diss(x: pd.Series or gpd.GeoSeries):
     return gpd.GeoSeries(x).unary_union
 
 
-def assign_vpu_by_kmeans(sgdf: gpd.GeoDataFrame) -> pd.DataFrame:
-    logger.info('\tPreparing attributes for clustering')
-    sgdf['geometry'] = sgdf['geometry'].apply(lambda x: Point(x.coords[0]))
-    sgdf_grouped = sgdf.groupby('TerminalNode')
-    n_samples = 20
-    xdf = (
-        sgdf_grouped
-        .agg({'geometry': lambda x: MultiPoint(x.tolist())})
-        .reset_index()
-    )
-    xdf = xdf.merge(
-        pd
-        .DataFrame(
-            sgdf_grouped['geometry']
-            .apply(lambda x: np.random.choice(x, n_samples))
-            .apply(lambda x: np.array([[a.x, a.y] for a in x]).flatten()).values.tolist()
-        ),
-        left_index=True,
-        right_index=True
-    )
-    xdf = xdf.set_index('TerminalNode')
-    xdf['x_centroid'] = xdf['geometry'].apply(lambda x: x.centroid.x)
-    xdf['y_centroid'] = xdf['geometry'].apply(lambda x: x.centroid.y)
-    outlets = sgdf[sgdf['DSLINKNO'] == -1].set_index('TerminalNode')['geometry'].apply(lambda x: x.xy)
-    outlets = pd.DataFrame(outlets.apply(lambda x: [x[0][0], x[1][0]]).values.tolist(), index=outlets.index)
-    xdf = xdf.merge(outlets, left_index=True, right_index=True)
-    xdf = xdf.drop(columns=['geometry'])
-
-    # make VPU clusters
-    logger.info('\tMaking KMeans VPU clusters')
-    kmeans = KMeans(n_clusters=int(np.ceil(sgdf.shape[0] / 60_000)))
-    xdf['VPU'] = kmeans.fit_predict(xdf.values).astype(int) + 101
-    xdf = xdf[['VPU', ]]
-    return sgdf.merge(xdf, left_on='TerminalNode', right_index=True)
-
-
-def make_quick_visuals(save_dir: str, gpq: str) -> None:
-    logger.info('Making VPU Exploration Datasets')
-    labels = (
-        pd
-        .read_parquet(os.path.join(save_dir, "rapid_inputs_master.parquet"),
-                      columns=['LINKNO', 'TerminalNode', 'VPU', ], )
-        .set_index('LINKNO')
-    )
-    sgdf = gpd.read_parquet(gpq, columns=['LINKNO', 'geometry'])
-    sgdf = sgdf[['LINKNO', 'geometry']].set_index('LINKNO')
-    sgdf = sgdf.merge(labels, left_index=True, right_index=True, how='inner')
-    sgdf['geometry'] = sgdf['geometry'].apply(lambda x: x.simplify(0.025))
-
-    sgdf = (
-        sgdf
-        .merge(
-            sgdf
-            .groupby('VPU')
-            .count()
-            [['TerminalNode', ]]
-            .rename(columns={'TerminalNode': 'Count'})
-            .reset_index(),
-            left_on='VPU',
-            right_on='VPU',
-        )
-    )
-
-    region_number = os.path.basename(gpq)
-    region_number = region_number.split('_')[2]
-    region_number = int(region_number)
-    sgdf.to_file(os.path.join(save_dir, f'vpus_{region_number}.gpkg'), driver='GPKG')
-    return
-
-
-def fix_vpus(inputs_directory: str, final_inputs_dir: str, vpu_fixes_csv: str) -> None:
-    """
-    Use the vpu_csv to fix the tdx_table. Order of vpu_df is important, do not modify
-    """
-    input_dirs = [x for x in glob.glob(os.path.join(inputs_directory, '*')) if os.path.isdir(x)]
-    vpu_df = pd.read_csv(vpu_fixes_csv)
-
-    # Step 1: Fix VPUs and concat into a single master table
-    all_dfs = []
-    for input_dir in input_dirs:
-        network_name = int(os.path.basename(input_dir))
-        vpu_corrections = vpu_df[vpu_df['Hydrobasin'] == network_name]
-        rapid_inputs_master = os.path.join(input_dir, 'rapid_inputs_master.parquet')
-
-        tdx_table = pd.read_parquet(rapid_inputs_master)
-        if vpu_corrections.shape[0] != 0:
-            for _, row in vpu_corrections.iterrows():
-                if pd.isnull(row['old_vpu']):
-                    # Assign new_vpu to features with matching TERMINALNODE
-                    tdx_table.loc[tdx_table['TerminalNode'] == row['TerminalNode'], 'VPU'] = row['new_vpu']
-                elif pd.isnull(row['TerminalNode']):
-                    # Assign new_vpu to features with matching old_vpu
-                    tdx_table.loc[tdx_table['VPU'] == row['old_vpu'], 'VPU'] = row['new_vpu']
-        else:
-            print(f'No corrections made for {network_name}')
-
-        all_dfs.append(tdx_table)
-
-    master_table = pd.concat(all_dfs)
-    all_dfs = []
-
-    # Step 2: assign globally unqiue IDs
-    unique_vpus_codes_df = []
-    for tdxnumber in master_table['TDXHydroLeadingDigit'].unique():
-        matching_rows = master_table['TDXHydroLeadingDigit'] == tdxnumber
-        df = master_table.loc[matching_rows].groupby(['TDXHydroNumber', 'VPU']).count()
-        df = df.reset_index()[['TDXHydroNumber', 'VPU']]
-        df['VPUIndexNumber'] = df.reset_index().index.to_series() + 1
-        unique_vpus_codes_df.append(df)
-    master_table = master_table.merge(pd.concat(unique_vpus_codes_df), on=['TDXHydroNumber', 'VPU'], how='outer')
-    master_table['VPUIndexNumber'] = master_table['VPUIndexNumber'].astype(int)
-
-    master_table['VPUCode'] = (
-            master_table['TDXHydroLeadingDigit'].astype(str) +
-            master_table['VPUIndexNumber'].astype(str).str.pad(2, fillchar='0')
-    )
-    master_table['geoglowsID'] = (
-            master_table['VPUCode'].astype(str) + '-' + master_table['TDXHydroLinkNo'].astype(str)
-    )
-
-    master_table = master_table.drop(columns=['TDXHydroLeadingDigit', 'VPUIndexNumber', 'VPU'])
-
-    logger.info('Writing single master table')
-    master_table.to_parquet(os.path.join(final_inputs_dir, 'master_table.parquet'))
-    return
-
-
 def rapid_input_csvs(sdf: pd.DataFrame,
                      save_dir: str,
                      id_field: str = 'LINKNO',
@@ -404,7 +240,6 @@ def rapid_input_csvs(sdf: pd.DataFrame,
         - xfac.csv
 
     Args:
-        vpu_df:
         save_dir:
         id_field:
         ds_id_field:
@@ -412,19 +247,7 @@ def rapid_input_csvs(sdf: pd.DataFrame,
     Returns:
 
     """
-    # todo check change in arguments and usage
     logger.info('Creating RAPID input csvs')
-    # upstream_columns = sorted([x for x in sdf.columns if 'USLINKNO' in x])
-    # rapcon_columns = [id_field, ds_id_field, 'CountUS', ] + upstream_columns
-    # rapcon_df = sdf[rapcon_columns].copy()
-    # rapcon_df[upstream_columns] = rapcon_df[upstream_columns].replace(-1, 0)
-    #
-    # (
-    #     rapcon_df
-    #     .fillna(0)
-    #     .astype(int)
-    #     .to_csv(os.path.join(save_dir, "rapid_connect.csv"), index=False, header=False)
-    # )
 
     downstream_field = ds_id_field
     rapid_connect = []
@@ -452,33 +275,50 @@ def rapid_input_csvs(sdf: pd.DataFrame,
 
     logger.info('\tWriting Rapid Connect CSV')
     df = pd.DataFrame(rapid_connect)
-    df[df != 0] = df + int(sdf['TDXHydroHeaderNumber'].values.flatten()[0] * 10_000_000)
+
+    header_number = _get_tdxhydro_header_number(sdf['TDXHydroRegion'].values.flatten()[0])
+    df[df != 0] = df + int(header_number * 10_000_000)
     df.to_csv(os.path.join(save_dir, 'rapid_connect.csv'), index=False, header=None)
 
     logger.info('\tWriting RAPID Input CSVS')
     sdf['TDXHydroLinkNo'].to_csv(os.path.join(save_dir, "riv_bas_id.csv"), index=False, header=False)
     sdf["musk_k"].to_csv(os.path.join(save_dir, "k.csv"), index=False, header=False)
     sdf["musk_x"].to_csv(os.path.join(save_dir, "x.csv"), index=False, header=False)
-    sdf["musk_kfac"].to_csv(os.path.join(save_dir, "kfac.csv"), index=False, header=False)
-    sdf["musk_xfac"].to_csv(os.path.join(save_dir, "xfac.csv"), index=False, header=False)
+    sdf["musk_k"].to_csv(os.path.join(save_dir, "kfac.csv"), index=False, header=False)
+    sdf["musk_x"].to_csv(os.path.join(save_dir, "xfac.csv"), index=False, header=False)
     sdf[['TDXHydroLinkNo', 'lat', 'lon', 'z']].to_csv(os.path.join(save_dir, "comid_lat_lon_z.csv"), index=False)
-
     return
 
 
-def rapid_csvs_final(final_inputs_directory: str, tdxinputs_directory: str) -> None:
-    df = pd.read_parquet(os.path.join(final_inputs_directory, 'master_table.parquet'))
+def _get_tdxhydro_header_number(region_number: int) -> int:
+    with open(os.path.join(os.path.dirname(__file__), 'network_data', 'tdx_header_numbers.json')) as f:
+        header_numbers = json.load(f)
+    return int(header_numbers[str(region_number)])
+
+
+def vpu_files_from_masters(df: pd.DataFrame, final_inputs_directory: str, tdxinputs_directory: str) -> None:
     for vpu in sorted(df['VPUCode'].unique()):
         vpu_df = df.loc[df['VPUCode'] == vpu]
-        vpu_dir = os.path.join(final_inputs_directory, vpu)
+        tdx_region = str(vpu_df['TDXHydroRegion'].unique()[0])
+
+        vpu_dir = os.path.join(final_inputs_directory, str(vpu))
         os.makedirs(vpu_dir, exist_ok=True)
         rapid_input_csvs(vpu_df, vpu_dir)
 
-        tdx_region = vpu_df['TDXHydroNumber'].unique()[0]
-        weight_tables = glob.glob(os.path.join(tdxinputs_directory, str(tdx_region), f'weight*.csv'))
+        weight_tables = glob.glob(os.path.join(tdxinputs_directory, tdx_region, f'weight*.csv'))
         weight_tables = [x for x in weight_tables if '_full.csv' not in x]
         for weight_table in weight_tables:
             a = pd.read_csv(weight_table)
             a = a[a.iloc[:, 0].astype(int).isin(vpu_df['LINKNO'].values)]
             a.to_csv(os.path.join(vpu_dir, os.path.basename(weight_table)), index=False)
+
+        altered_network = os.path.join(tdxinputs_directory, tdx_region, f'{tdx_region}_altered_network.geoparquet')
+        vpu_network = os.path.join(vpu_dir, f'vpu_{vpu}_streams.gpkg')
+        if os.path.exists(altered_network):
+            (
+                gpd
+                .read_parquet(altered_network)
+                .merge(vpu_df, on='TDXHydroLinkNo', how='inner')
+                .to_file(vpu_network, driver='GPKG')
+            )
     return
