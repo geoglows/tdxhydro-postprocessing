@@ -8,8 +8,6 @@ import geopandas as gpd
 import networkx as nx
 import numpy as np
 import pandas as pd
-from shapely.geometry import Point, MultiPoint
-from sklearn.cluster import KMeans
 
 from .network import correct_0_length_streams
 from .network import create_directed_graphs
@@ -24,7 +22,6 @@ logger = logging.getLogger(__name__)
 __all__ = [
     'rapid_master_files',
     'dissolve_branches',
-    'assign_vpu_by_kmeans',
     'rapid_input_csvs',
     'vpu_files_from_masters',
 ]
@@ -296,29 +293,46 @@ def _get_tdxhydro_header_number(region_number: int) -> int:
     return int(header_numbers[str(region_number)])
 
 
-def vpu_files_from_masters(df: pd.DataFrame, final_inputs_directory: str, tdxinputs_directory: str) -> None:
-    for vpu in sorted(df['VPUCode'].unique()):
-        vpu_df = df.loc[df['VPUCode'] == vpu]
-        tdx_region = str(vpu_df['TDXHydroRegion'].unique()[0])
+def concat_tdxregions(tdxinputs_dir: str, vpu_dir: str, vpu_table: str) -> None:
+    mdf = pd.concat([pd.read_parquet(f) for f in glob.glob(os.path.join(tdxinputs_dir, '*', 'rapid_inputs*.parquet'))])
 
-        vpu_dir = os.path.join(final_inputs_directory, str(vpu))
-        os.makedirs(vpu_dir, exist_ok=True)
-        rapid_input_csvs(vpu_df, vpu_dir)
+    # relabel the terminal nodes as globally unique IDs
+    mdf['TerminalNode'] = (
+            mdf['TDXHydroLinkNo'].astype(str).str[:2].astype(int) * 10_000_000 + mdf['TerminalNode']
+    ).astype(int)
 
-        weight_tables = glob.glob(os.path.join(tdxinputs_directory, tdx_region, f'weight*.csv'))
-        weight_tables = [x for x in weight_tables if '_full.csv' not in x]
-        for weight_table in weight_tables:
-            a = pd.read_csv(weight_table)
-            a = a[a.iloc[:, 0].astype(int).isin(vpu_df['LINKNO'].values)]
-            a.to_csv(os.path.join(vpu_dir, os.path.basename(weight_table)), index=False)
+    vpu_df = pd.read_csv(vpu_table)
+    mdf = mdf.merge(vpu_df, on='TerminalNode', how='left')
 
-        altered_network = os.path.join(tdxinputs_directory, tdx_region, f'{tdx_region}_altered_network.geoparquet')
-        vpu_network = os.path.join(vpu_dir, f'vpu_{vpu}_streams.gpkg')
-        if os.path.exists(altered_network):
-            (
-                gpd
-                .read_parquet(altered_network)
-                .merge(vpu_df, on='TDXHydroLinkNo', how='inner')
-                .to_file(vpu_network, driver='GPKG')
-            )
+    if not mdf[mdf['VPUCode'].isna()].empty:
+        raise RuntimeError('Some terminal nodes are not in the VPU table and must be fixed before continuing.')
+
+    mdf.to_parquet(os.path.join(vpu_dir, 'master_table.parquet'))
+    return
+
+
+def vpu_files_from_masters(vpu_df: pd.DataFrame, vpu_dir: str, tdxinputs_directory: str) -> None:
+    tdx_region = vpu_df['TDXHydroRegion'].values[0]
+    vpu = vpu_df['VPUCode'].values[0]
+
+    # make the rapid input files
+    rapid_input_csvs(vpu_df, vpu_dir)
+
+    # subset the weight tables
+    weight_tables = glob.glob(os.path.join(tdxinputs_directory, tdx_region, f'weight*.csv'))
+    weight_tables = [x for x in weight_tables if '_full.csv' not in x]
+    for weight_table in weight_tables:
+        a = pd.read_csv(weight_table)
+        a = a[a.iloc[:, 0].astype(int).isin(vpu_df['TDXHydroLinkNo'].values)]
+        a.to_csv(os.path.join(vpu_dir, os.path.basename(weight_table)), index=False)
+
+    altered_network = os.path.join(tdxinputs_directory, tdx_region, f'{tdx_region}_altered_network.geoparquet')
+    vpu_network = os.path.join(vpu_dir, f'vpu_{vpu}_streams.gpkg')
+    if os.path.exists(altered_network):
+        (
+            gpd
+            .read_parquet(altered_network)
+            .merge(vpu_df, on='TDXHydroLinkNo', how='inner')
+            .to_file(vpu_network, driver='GPKG')
+        )
     return

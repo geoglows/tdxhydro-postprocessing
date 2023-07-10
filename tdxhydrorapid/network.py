@@ -16,7 +16,6 @@ __all__ = [
     'correct_0_length_streams',
     'correct_0_length_basins',
     'make_vpu_streams',
-    'make_vpu_basins',
 ]
 
 logger = logging.getLogger(__name__)
@@ -208,7 +207,8 @@ def correct_0_length_streams(sgdf: gpd.GeoDataFrame, zero_length_df: pd.DataFram
         ids_to_apply = sgdf.loc[sgdf[id_field] == river_id, ['USLINKNO1', 'USLINKNO2', 'DSLINKNO']]
         # if the downstream basin is also a zero length basin, find the basin 1 step further downstream
         if ids_to_apply['DSLINKNO'].values[0] in c2:
-            ids_to_apply['DSLINKNO'] = sgdf.loc[sgdf[id_field] == ids_to_apply['DSLINKNO'].values[0], 'DSLINKNO'].values[0]
+            ids_to_apply['DSLINKNO'] = \
+            sgdf.loc[sgdf[id_field] == ids_to_apply['DSLINKNO'].values[0], 'DSLINKNO'].values[0]
         sgdf.loc[
             sgdf[id_field].isin(ids_to_apply[['USLINKNO1', 'USLINKNO2']].values.flatten()), 'DSLINKNO'] = \
             ids_to_apply['DSLINKNO'].values[0]
@@ -293,7 +293,7 @@ def make_vpu_streams(final_inputs_directory: str, tdxhydro_gpq_dir: str) -> None
         # todo select which properties to include
         gdf = gdf.merge(subset[['LINKNO', 'VPUCode', 'TerminalNode', ]], on='LINKNO', how='inner')
         gdf = gdf[['LINKNO', 'VPUCode', 'TerminalNode', 'geometry']]
-        # gdf.to_file(os.path.join(final_inputs_directory, f'vpu_{vpu_code}_streams.gpkg'), driver='GPKG')
+        # gdf.to_file(os.path.join(vpu_inputs_dir, f'vpu_{vpu_code}_streams.gpkg'), driver='GPKG')
         master_gdf = pd.concat([master_gdf, gdf])
     master_gdf.to_file(os.path.join(final_inputs_directory, 'vpu_streams.gpkg'), driver='GPKG')
     return
