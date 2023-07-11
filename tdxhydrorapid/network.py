@@ -1,3 +1,4 @@
+import glob
 import logging
 import os
 
@@ -6,7 +7,6 @@ import networkx as nx
 import numpy as np
 import pandas as pd
 import shapely.geometry as sg
-from shapely.geometry import Point
 
 __all__ = [
     'sort_topologically',
@@ -15,7 +15,7 @@ __all__ = [
     'identify_0_length',
     'correct_0_length_streams',
     'correct_0_length_basins',
-    'make_vpu_streams',
+    'make_final_streams',
 ]
 
 logger = logging.getLogger(__name__)
@@ -208,7 +208,7 @@ def correct_0_length_streams(sgdf: gpd.GeoDataFrame, zero_length_df: pd.DataFram
         # if the downstream basin is also a zero length basin, find the basin 1 step further downstream
         if ids_to_apply['DSLINKNO'].values[0] in c2:
             ids_to_apply['DSLINKNO'] = \
-            sgdf.loc[sgdf[id_field] == ids_to_apply['DSLINKNO'].values[0], 'DSLINKNO'].values[0]
+                sgdf.loc[sgdf[id_field] == ids_to_apply['DSLINKNO'].values[0], 'DSLINKNO'].values[0]
         sgdf.loc[
             sgdf[id_field].isin(ids_to_apply[['USLINKNO1', 'USLINKNO2']].values.flatten()), 'DSLINKNO'] = \
             ids_to_apply['DSLINKNO'].values[0]
@@ -274,26 +274,23 @@ def correct_0_length_basins(basins_gpq: str, save_dir: str, stream_id_col: str) 
     return basin_gdf
 
 
-def make_vpu_streams(final_inputs_directory: str, tdxhydro_gpq_dir: str) -> None:
-    mdf = pd.read_parquet(os.path.join(final_inputs_directory, 'master_table.parquet'))
+def make_final_streams(final_inputs_directory: str,
+                       final_gis_directory: str,
+                       tdxrapid_dir: str, ) -> None:
+    print('reading modified geoparquets')
+    modified_gpqs = sorted(glob.glob(os.path.join(tdxrapid_dir, '*', '*.geoparquet')))
+    mgdf = pd.concat([gpd.read_parquet(gpq) for gpq in modified_gpqs])
 
-    master_gdf = gpd.GeoDataFrame(columns=['LINKNO', 'VPUCode', 'TerminalNode', 'geometry'])
-    for vpu_code in sorted(mdf['VPUCode'].unique()):
+    print('merging with master table')
+    mgdf = mgdf.merge(pd.read_parquet(os.path.join(final_inputs_directory, 'master_table.parquet')),
+                      on='TDXHydroLinkNo', how='inner')
+
+    # write full stream network to file
+    # print('writing full stream network to gpkg')
+    # mgdf.to_file(os.path.join(final_inputs_directory, 'global_stream_network.gpkg'),
+    #              layer='global_stream_network', driver='GPKG')
+
+    for vpu_code in sorted(mgdf['VPUCode'].unique()):
         print(vpu_code)
-        subset = mdf[mdf['VPUCode'] == vpu_code]
-        tdxhydro_region = subset['TDXHydroRegion'].values.flatten()[0]
-        gdf = gpd.read_parquet(os.path.join(tdxhydro_gpq_dir, f'TDX_streamnet_{tdxhydro_region}_01.parquet'),
-                               columns=['LINKNO', 'geometry'])
-
-        # todo apply geometry alterations
-
-        # todo do a unary union
-        gdf['geometry'] = gdf['geometry'].apply(lambda x: Point(x.coords[0]))
-
-        # todo select which properties to include
-        gdf = gdf.merge(subset[['LINKNO', 'VPUCode', 'TerminalNode', ]], on='LINKNO', how='inner')
-        gdf = gdf[['LINKNO', 'VPUCode', 'TerminalNode', 'geometry']]
-        # gdf.to_file(os.path.join(vpu_inputs_dir, f'vpu_{vpu_code}_streams.gpkg'), driver='GPKG')
-        master_gdf = pd.concat([master_gdf, gdf])
-    master_gdf.to_file(os.path.join(final_inputs_directory, 'vpu_streams.gpkg'), driver='GPKG')
+        mgdf[mgdf['VPUCode'] == vpu_code].to_file(os.path.join(final_gis_directory, f'vpu_{vpu_code}_streams.gpkg'))
     return

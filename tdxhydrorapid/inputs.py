@@ -272,9 +272,9 @@ def rapid_input_csvs(sdf: pd.DataFrame,
 
     logger.info('\tWriting Rapid Connect CSV')
     df = pd.DataFrame(rapid_connect)
-
+    upstream_columns = [x for x in df.columns if x.startswith('UpstreamID')]
     header_number = _get_tdxhydro_header_number(sdf['TDXHydroRegion'].values.flatten()[0])
-    df[df != 0] = df + int(header_number * 10_000_000)
+    df[df[['HydroID', 'NextDownID', *upstream_columns]] > 0] += int(header_number * 10_000_000)
     df.to_csv(os.path.join(save_dir, 'rapid_connect.csv'), index=False, header=None)
 
     logger.info('\tWriting RAPID Input CSVS')
@@ -311,7 +311,10 @@ def concat_tdxregions(tdxinputs_dir: str, vpu_dir: str, vpu_table: str) -> None:
     return
 
 
-def vpu_files_from_masters(vpu_df: pd.DataFrame, vpu_dir: str, tdxinputs_directory: str) -> None:
+def vpu_files_from_masters(vpu_df: pd.DataFrame,
+                           vpu_dir: str,
+                           tdxinputs_directory: str,
+                           make_gpkg: bool = False) -> None:
     tdx_region = vpu_df['TDXHydroRegion'].values[0]
     vpu = vpu_df['VPUCode'].values[0]
 
@@ -326,6 +329,8 @@ def vpu_files_from_masters(vpu_df: pd.DataFrame, vpu_dir: str, tdxinputs_directo
         a = a[a.iloc[:, 0].astype(int).isin(vpu_df['TDXHydroLinkNo'].values)]
         a.to_csv(os.path.join(vpu_dir, os.path.basename(weight_table)), index=False)
 
+    if not make_gpkg:
+        return
     altered_network = os.path.join(tdxinputs_directory, tdx_region, f'{tdx_region}_altered_network.geoparquet')
     vpu_network = os.path.join(vpu_dir, f'vpu_{vpu}_streams.gpkg')
     if os.path.exists(altered_network):

@@ -9,7 +9,7 @@ import pandas as pd
 import tdxhydrorapid as rp
 
 tdx_inputs_dir = '/Volumes/EB406_T7_2/TDXHydroRapid_V15'
-vpu_inputs_dir = '/Volumes/EB406_T7_2/VPUInputs/'
+vpu_inputs_dir = '/Volumes/EB406_T7_2/geoglows2/vpu_inputs/'
 vpu_table = './vpu_table_for_revisions.csv'
 
 logging.basicConfig(
@@ -51,7 +51,7 @@ for vpu in sorted(mdf['VPUCode'].unique()):
 
     try:
         os.makedirs(vpu_dir, exist_ok=True)
-        rp.inputs.vpu_files_from_masters(vpu_df, vpu_dir, tdx_inputs_dir)
+        rp.inputs.vpu_files_from_masters(vpu_df, vpu_dir, tdx_inputs_dir, make_gpkg=True)
     except Exception as e:
         print(vpu)
         print(tdx_region)
