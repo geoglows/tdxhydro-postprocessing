@@ -1,4 +1,6 @@
-#!/usr/bin/env bash
+#!/usr/bin/env bash --login
+
+conda activate data
 
 python run_1_gpkg_to_geoparquet.py
 python run_1_netcdfs_to_grids.py

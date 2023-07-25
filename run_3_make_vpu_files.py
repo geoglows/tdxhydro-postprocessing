@@ -8,8 +8,11 @@ import pandas as pd
 
 import tdxhydrorapid as rp
 
-tdx_inputs_dir = '/Volumes/EB406_T7_2/TDXHydroRapid_V15'
-vpu_inputs_dir = '/Volumes/EB406_T7_2/geoglows2/vpu_inputs/'
+
+tdx_inputs_dir = '/Volumes/EB406_T7_2/TDXHydroRapid_V17'
+final_output_dir = '/Volumes/EB406_T7_2/geoglows2v3/'
+vpu_inputs_dir = os.path.join(final_output_dir, 'inputs')
+gpkg_dir = os.path.join(final_output_dir, 'gis')
 vpu_table = './vpu_table_for_revisions.csv'
 
 logging.basicConfig(
@@ -20,27 +23,28 @@ logging.basicConfig(
     filemode='w'
 )
 
-if not os.path.exists(vpu_inputs_dir):
-    os.mkdir(vpu_inputs_dir)
+os.makedirs(vpu_inputs_dir, exist_ok=True)
+os.makedirs(gpkg_dir, exist_ok=True)
 
-print('making master table')
+logging.info('Creating Model Master Table')
 if not os.path.exists(os.path.join(vpu_inputs_dir, 'master_table.parquet')):
     rp.inputs.concat_tdxregions(tdx_inputs_dir, vpu_inputs_dir, vpu_table)
 mdf = pd.read_parquet(os.path.join(vpu_inputs_dir, 'master_table.parquet'))
+logging.info(f'Total streams: {len(mdf)}')
 
-if not os.path.exists(os.path.join(vpu_inputs_dir, 'global_streams_simplified.gpkg')):
-    print('Concat global simplified streams')
+if not os.path.exists(os.path.join(vpu_inputs_dir, 'global_streams_simplified.geoparquet')):
+    logging.info('Concat global simplified streams')
     mgdf = pd.concat([gpd.read_parquet(f) for f in glob.glob(os.path.join(tdx_inputs_dir, '*', '*.geoparquet'))])
-    print('Simplifying geometry')
+    logging.info('Simplifying geometry')
     mgdf['geometry'] = mgdf['geometry'].apply(lambda x: x.simplify(0.005, preserve_topology=False))
-    print('Adding attributes')
+    logging.info('Adding attributes')
     mgdf = mgdf.merge(mdf[['VPUCode', 'TDXHydroLinkNo']], on='TDXHydroLinkNo')
-    print('Writing to file')
+    logging.info('Writing to file')
     mgdf.to_parquet(os.path.join(vpu_inputs_dir, 'global_streams_simplified.geoparquet'))
     mgdf = None
 
 for vpu in sorted(mdf['VPUCode'].unique()):
-    print(vpu)
+    logging.info(vpu)
     vpu_df = mdf.loc[mdf['VPUCode'] == vpu]
     tdx_region = str(vpu_df['TDXHydroRegion'].values[0])
 
@@ -51,11 +55,15 @@ for vpu in sorted(mdf['VPUCode'].unique()):
 
     try:
         os.makedirs(vpu_dir, exist_ok=True)
-        rp.inputs.vpu_files_from_masters(vpu_df, vpu_dir, tdx_inputs_dir, make_gpkg=True)
+        rp.inputs.vpu_files_from_masters(vpu_df,
+                                         vpu_dir,
+                                         tdxinputs_directory=tdx_inputs_dir,
+                                         make_gpkg=False,
+                                         gpkg_dir=gpkg_dir, )
     except Exception as e:
-        print(vpu)
-        print(tdx_region)
-        print(e)
+        logging.info(vpu)
+        logging.info(tdx_region)
+        logging.info(e)
         shutil.rmtree(vpu_dir)
         continue
 

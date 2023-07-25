@@ -6,6 +6,7 @@ import pandas as pd
 
 __all__ = [
     'check_outputs_are_valid',
+    'tdxhydro_corrections_consistent',
     'RAPID_FILES',
 ]
 
@@ -18,6 +19,22 @@ RAPID_FILES = [
 ]
 
 logger = logging.getLogger(__name__)
+
+
+def tdxhydro_corrections_consistent(input_dir: str) -> bool:
+    n_streams = pd.read_parquet(os.path.join(input_dir, 'rapid_inputs_master.parquet')).shape[0]
+    weights = sorted(glob.glob(os.path.join(input_dir, 'weight_*.csv')))
+    weights = [x for x in weights if 'full' not in x]
+    n_weights = [pd.read_csv(x).iloc[:, 0].unique().shape[0] for x in weights]
+    logger.info(f'Validating {os.path.basename(input_dir)}')
+    logger.info(f'\tNumber of streams: {n_streams}')
+    for w, n in zip(weights, n_weights):
+        logger.info(f'\t{os.path.basename(w)}: {n}')
+    if all([n == n_streams for n in n_weights]):
+        logger.info(f'\t---Inputs Match---')
+        return True
+    logger.error(f'\tInputs Do Not Match')
+    return False
 
 
 def check_outputs_are_valid(input_dir: str) -> bool:

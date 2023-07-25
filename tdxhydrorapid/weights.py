@@ -15,6 +15,7 @@ __all__ = [
     'make_thiessen_grid_from_netcdf_sample',
     'make_weight_table_from_thiessen_grid',
     'make_weight_table_from_netcdf',
+    'apply_weight_table_simplifications',
 ]
 
 
@@ -189,9 +190,48 @@ def make_weight_table_from_netcdf(lsm_sample: str,
     return
 
 
-def _merge_weight_table_rows(wt: pd.DataFrame, new_key: str, values_to_merge: list):
-    new_row = wt.loc[wt['streamID'].isin(values_to_merge)]
-    new_row = new_row.groupby(['lon_index', 'lat_index', 'lon', 'lat']).sum().reset_index()
-    new_row['streamID'] = int(new_key)
-    new_row['npoints'] = new_row.shape[0]
-    return new_row
+def apply_weight_table_simplifications(save_dir: str,
+                                       weight_table_in_path: str,
+                                       weight_table_out_path: str,
+                                       basin_id_field: str = 'streamID') -> None:
+    logging.info(f'Processing {weight_table_in_path}')
+
+    wt = pd.read_csv(weight_table_in_path)
+
+    headwater_dissolve_path = os.path.join(save_dir, 'mod_dissolve_headwater.csv')
+    if os.path.exists(headwater_dissolve_path):
+        o2_to_dissolve = (
+            pd
+            .read_csv(headwater_dissolve_path)
+            .fillna(-1)
+            .astype(int)
+        )
+        for streams_to_merge in o2_to_dissolve.values:
+            wt.loc[wt[basin_id_field].isin(streams_to_merge), basin_id_field] = streams_to_merge[0]
+
+    streams_to_prune_path = os.path.join(save_dir, 'mod_prune_streams.csv')
+    if os.path.exists(streams_to_prune_path):
+        ids_to_prune = (
+            pd
+            .read_csv(streams_to_prune_path)
+            .astype(int)
+            .set_index('LINKTODROP')
+        )
+        wt[basin_id_field] = wt[basin_id_field].replace(ids_to_prune['LINKNO'])
+
+    drop_streams_path = os.path.join(save_dir, 'mod_drop_small_trees.csv')
+    if os.path.exists(drop_streams_path):
+        ids_to_drop = (
+            pd
+            .read_csv(drop_streams_path)
+            .astype(int)
+        )
+        wt = wt[~wt[basin_id_field].isin(ids_to_drop.values.flatten())]
+
+    # group by matching values in columns except for area_sqm and sum the areas in grouped rows
+    wt = wt.groupby(wt.columns.drop('area_sqm').tolist()).sum().reset_index()
+    wt = wt.sort_values([basin_id_field, 'area_sqm'], ascending=[True, False])
+    wt['npoints'] = wt.groupby(basin_id_field)[basin_id_field].transform('count')
+
+    wt.to_csv(weight_table_out_path, index=False)
+    return

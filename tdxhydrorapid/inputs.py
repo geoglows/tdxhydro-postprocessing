@@ -11,8 +11,8 @@ import pandas as pd
 
 from .network import correct_0_length_streams
 from .network import create_directed_graphs
-from .network import find_branches_to_dissolve
 from .network import find_branches_to_prune
+from .network import find_headwater_branches_to_dissolve
 from .network import identify_0_length
 from .network import sort_topologically
 
@@ -22,7 +22,9 @@ logger = logging.getLogger(__name__)
 __all__ = [
     'rapid_master_files',
     'dissolve_branches',
+    'prune_branches',
     'rapid_input_csvs',
+    'concat_tdxregions',
     'vpu_files_from_masters',
 ]
 
@@ -32,15 +34,26 @@ def rapid_master_files(streams_gpq: str,
                        id_field: str = 'LINKNO',
                        ds_id_field: str = 'DSLINKNO',
                        length_field: str = 'Length',
+                       default_k: float = 0.8,
+                       default_x: float = .3,
+                       drop_small_watersheds: bool = True,
+                       dissolve_headwaters: bool = True,
+                       prune_branches_from_main_stems: bool = True,
                        cache_geometry: bool = True,
-                       default_k: float = 0.35,
-                       default_x: float = .3, ) -> None:
+                       min_drainage_area_m2: float = 200_000_000,
+                       min_headwater_stream_order: int = 3, ) -> None:
     """
     Create RAPID master files from a stream network
 
     Saves the following files to the save_dir:
         - rapid_inputs_master.parquet
         - {region_number}_dissolved_network.gpkg
+        - mod_zero_length_streams.csv (if any 0 length streams are found)
+        - mod_basin_zero_centroid.csv (if any basins have an ID of 0 and geometry is not available)
+        - mod_drop_small_streams.csv (if drop_small_watersheds is True)
+        - mod_dissolved_headwaters.csv (if dissolve_headwaters is True)
+        - mod_pruned_branches.csv (if prune_branches_from_main_stems is True)
+
 
     Args:
         streams_gpq: str, path to the streams geoparquet
@@ -48,18 +61,24 @@ def rapid_master_files(streams_gpq: str,
         id_field: str, field name for the link id
         ds_id_field: str, field name for the downstream link id
         length_field: str, field name for the length of the stream segment
-        cache_geometry: bool, save the dissolved geometry as a geoparquet
         default_k: float, default velocity factor (k) for Muskingum routing
         default_x: float, default attenuation factor (x) for Muskingum routing
 
-    Returns:
+        drop_small_watersheds: bool, drop small watersheds
+        dissolve_headwaters: bool, dissolve headwater branches
+        prune_branches_from_main_stems: bool, prune branches from main stems
+        cache_geometry: bool, save the dissolved geometry as a geoparquet
+        min_drainage_area_m2: float, minimum drainage area in m2 to keep a watershed
+        min_headwater_stream_order: int, minimum stream order to keep a headwater branch
 
+    Returns:
+        None
     """
     sgdf = gpd.read_parquet(streams_gpq)
 
-    # length is in m, convert to km, then multiply by 3600 to get km/hr, then multiply by default k (velocity)
+    # length is in m, divide by estimated m/s to get k in seconds
     logger.info('\tCalculating Muskingum k and x')
-    sgdf["musk_k"] = sgdf['LengthGeodesicMeters'] / 1000 * 3600 * default_k
+    sgdf["musk_k"] = sgdf['LengthGeodesicMeters'] / default_k
     sgdf["musk_x"] = default_x
     sgdf['musk_k'] = sgdf['musk_k'].round(3)
     sgdf['musk_x'] = sgdf['musk_x'].round(3)
@@ -96,19 +115,20 @@ def rapid_master_files(streams_gpq: str,
     )
 
     # Drop trees with small total length/area
-    logger.info('\tFinding and removing small trees')
-    small_tree_outlet_ids = sgdf.loc[np.logical_and(
-        sgdf[ds_id_field] == -1,
-        sgdf['DSContArea'] < 100_000_000
-    ), id_field].values
-    small_tree_segments = [nx.ancestors(G, x) for x in small_tree_outlet_ids]
-    small_tree_segments = set().union(*small_tree_segments).union(small_tree_outlet_ids)
-    (
-        pd
-        .DataFrame(small_tree_segments, columns=['drop'])
-        .to_csv(os.path.join(save_dir, 'mod_drop_small_trees.csv'), index=False)
-    )
-    sgdf = sgdf.loc[~sgdf[id_field].isin(small_tree_segments)]
+    if drop_small_watersheds:
+        logger.info('\tFinding and removing small trees')
+        small_tree_outlet_ids = sgdf.loc[np.logical_and(
+            sgdf[ds_id_field] == -1,
+            sgdf['DSContArea'] < min_drainage_area_m2
+        ), id_field].values
+        small_tree_segments = [nx.ancestors(G, x) for x in small_tree_outlet_ids]
+        small_tree_segments = set().union(*small_tree_segments).union(small_tree_outlet_ids)
+        (
+            pd
+            .DataFrame(small_tree_segments, columns=['drop'])
+            .to_csv(os.path.join(save_dir, 'mod_drop_small_trees.csv'), index=False)
+        )
+        sgdf = sgdf.loc[~sgdf[id_field].isin(small_tree_segments)]
 
     logger.info('\tCalculating RAPID connect columns')
     us_ids = sgdf[id_field].apply(lambda x: list(G.predecessors(x)))
@@ -122,26 +142,31 @@ def rapid_master_files(streams_gpq: str,
     sgdf = sgdf.drop(columns=[x for x in sgdf.columns if x.startswith('USLINKNO')]).join(us_ids)
     sgdf[upstream_columns] = sgdf[upstream_columns].fillna(-1).astype(int)
 
-    logger.info('\tFinding headwater streams to dissolve')
-    geometry_diss = 'last'
-    if cache_geometry:
-        geometry_diss = lambda x: gpd.GeoSeries(x).unary_union
-    branches_1 = find_branches_to_dissolve(sgdf, G, 2)
-    sgdf = dissolve_branches(sgdf, branches_1, k_agg_func=_k_agg_order_2, geometry_diss=geometry_diss)
-    branches_2 = find_branches_to_dissolve(sgdf, G, 3)
-    sgdf = dissolve_branches(sgdf, branches_2, k_agg_func=_k_agg_order_3, geometry_diss=geometry_diss)
-    (
-        pd
-        .concat([branches_1, branches_2])
-        .fillna(-1)
-        .astype(int)
-        .to_csv(os.path.join(save_dir, 'mod_dissolve_headwater.csv'), index=False)
-    )
+    if dissolve_headwaters:
+        logger.info('\tFinding headwater streams to dissolve')
+        geometry_diss = lambda x: gpd.GeoSeries(x).unary_union if cache_geometry else 'last'
+        headwater_dissolve_dfs = []
+        for strmorder in range(2, min_headwater_stream_order + 1):
+            branches = find_headwater_branches_to_dissolve(sgdf, G, strmorder)
+            if strmorder == 2:
+                sgdf = dissolve_branches(sgdf, branches, geometry_diss=geometry_diss, k_agg_func=_k_agg_order_2)
+            elif strmorder == 3:
+                sgdf = dissolve_branches(sgdf, branches, geometry_diss=geometry_diss, k_agg_func=_k_agg_order_3)
+            headwater_dissolve_dfs.append(branches)
+        (
+            pd
+            .concat(headwater_dissolve_dfs)
+            .fillna(-1)
+            .astype(int)
+            .to_csv(os.path.join(save_dir, 'mod_dissolve_headwater.csv'), index=False)
+        )
+        headwater_dissolve_dfs = []
 
-    logger.info('\tFinding branches to prune')
-    streams_to_prune = find_branches_to_prune(sgdf, G)
-    sgdf = prune_branches(sgdf, streams_to_prune)
-    streams_to_prune.to_csv(os.path.join(save_dir, 'mod_prune_streams.csv'), index=False)
+    if prune_branches_from_main_stems:
+        logger.info('\tFinding branches to prune')
+        streams_to_prune = find_branches_to_prune(sgdf, G)
+        streams_to_prune.to_csv(os.path.join(save_dir, 'mod_prune_streams.csv'), index=False)
+        sgdf = prune_branches(sgdf, streams_to_prune)
 
     logger.info('\tLabeling watersheds by terminal node')
     for term_node in sgdf[sgdf[ds_id_field] == -1][id_field].values:
@@ -159,13 +184,26 @@ def rapid_master_files(streams_gpq: str,
     return
 
 
-def dissolve_branches(streams_df: pd.DataFrame,
+def dissolve_branches(sgdf: pd.DataFrame,
                       head_to_dissolve: pd.DataFrame,
                       geometry_diss: types.FunctionType or str = 'last',
                       k_agg_func: types.FunctionType or str = 'last', ) -> pd.DataFrame:
+    """
+    Use pandas groupby to "dissolve" streams in the table by combining rows and handle metadata correctly
+    # todo describe shape of the head_to_dissolve dataframe
+
+    Args:
+        sgdf: streams geodataframe with all the metadata columns from the source files
+        head_to_dissolve: dataframe with the values of streams to be dissolved and the ID they are dissolved to
+        geometry_diss: a string or function to use in groupby to handle combining the geometry column
+        k_agg_func: a string or function to use in groupby to handle combining the k_agg column
+
+    Returns:
+        a copy of the streams geodataframe with rows dissolved
+    """
     logger.info('\tDissolving headwater streams in inputs master')
     for streams_to_merge in head_to_dissolve.values:
-        streams_df.loc[streams_df['LINKNO'].isin(streams_to_merge), 'LINKNO'] = streams_to_merge[0]
+        sgdf.loc[sgdf['LINKNO'].isin(streams_to_merge), 'LINKNO'] = streams_to_merge[0]
     agg_rules = {
         # 'LINKNO': 'last',
         'DSLINKNO': 'last',
@@ -192,32 +230,20 @@ def dissolve_branches(streams_df: pd.DataFrame,
         'geometry': geometry_diss,
     }
 
-    if all([x in streams_df.columns for x in ['musk_k', 'musk_x', 'CountUS', ]]):
+    if all([x in sgdf.columns for x in ['musk_k', 'musk_x', 'CountUS', ]]):
         agg_rules.update({
             'musk_k': k_agg_func,
             'musk_x': 'last',
             'CountUS': lambda x: 0 if len(x) else x,
         })
     agg_rules.update({
-        col: (lambda x: -1 if len(x) > 1 else x) for col in sorted(streams_df.columns) if col.startswith('USLINKNO')
+        col: (lambda x: -1 if len(x) > 1 else x) for col in sorted(sgdf.columns) if col.startswith('USLINKNO')
     })
-    return streams_df.groupby('LINKNO').agg(agg_rules).reset_index().sort_values('TopologicalOrder')
+    return sgdf.groupby('LINKNO').agg(agg_rules).reset_index().sort_values('TopologicalOrder')
 
 
 def prune_branches(sdf: pd.DataFrame, streams_to_prune: pd.DataFrame) -> pd.DataFrame:
     return sdf[~sdf['LINKNO'].isin(streams_to_prune.iloc[:, 1].values.flatten())]
-
-
-def _k_agg_order_3(x: pd.Series) -> np.ndarray:
-    return x.mean() * 3.5 if len(x) > 1 else x.iloc[0]
-
-
-def _k_agg_order_2(x: pd.Series) -> np.ndarray:
-    return x.iloc[-1] + x.iloc[:-1].max() if len(x) > 1 else x.iloc[0]
-
-
-def _geom_diss(x: pd.Series or gpd.GeoSeries):
-    return gpd.GeoSeries(x).unary_union
 
 
 def rapid_input_csvs(sdf: pd.DataFrame,
@@ -233,13 +259,12 @@ def rapid_input_csvs(sdf: pd.DataFrame,
         - k.csv
         - x.csv
         - comid_lat_lon_z.csv
-        - kfac.csv
-        - xfac.csv
 
     Args:
-        save_dir:
-        id_field:
-        ds_id_field:
+        sdf: stream network dataframe
+        save_dir: directory to save the regions outputs
+        id_field: the field in the dataframe that contains the unique ID for each stream
+        ds_id_field: the field in the dataframe that contains the unique ID for the downstream stream
 
     Returns:
 
@@ -281,16 +306,8 @@ def rapid_input_csvs(sdf: pd.DataFrame,
     sdf['TDXHydroLinkNo'].to_csv(os.path.join(save_dir, "riv_bas_id.csv"), index=False, header=False)
     sdf["musk_k"].to_csv(os.path.join(save_dir, "k.csv"), index=False, header=False)
     sdf["musk_x"].to_csv(os.path.join(save_dir, "x.csv"), index=False, header=False)
-    sdf["musk_k"].to_csv(os.path.join(save_dir, "kfac.csv"), index=False, header=False)
-    sdf["musk_x"].to_csv(os.path.join(save_dir, "xfac.csv"), index=False, header=False)
     sdf[['TDXHydroLinkNo', 'lat', 'lon', 'z']].to_csv(os.path.join(save_dir, "comid_lat_lon_z.csv"), index=False)
     return
-
-
-def _get_tdxhydro_header_number(region_number: int) -> int:
-    with open(os.path.join(os.path.dirname(__file__), 'network_data', 'tdx_header_numbers.json')) as f:
-        header_numbers = json.load(f)
-    return int(header_numbers[str(region_number)])
 
 
 def concat_tdxregions(tdxinputs_dir: str, vpu_dir: str, vpu_table: str) -> None:
@@ -314,7 +331,8 @@ def concat_tdxregions(tdxinputs_dir: str, vpu_dir: str, vpu_table: str) -> None:
 def vpu_files_from_masters(vpu_df: pd.DataFrame,
                            vpu_dir: str,
                            tdxinputs_directory: str,
-                           make_gpkg: bool = False) -> None:
+                           make_gpkg: bool,
+                           gpkg_dir: str, ) -> None:
     tdx_region = vpu_df['TDXHydroRegion'].values[0]
     vpu = vpu_df['VPUCode'].values[0]
 
@@ -332,7 +350,7 @@ def vpu_files_from_masters(vpu_df: pd.DataFrame,
     if not make_gpkg:
         return
     altered_network = os.path.join(tdxinputs_directory, tdx_region, f'{tdx_region}_altered_network.geoparquet')
-    vpu_network = os.path.join(vpu_dir, f'vpu_{vpu}_streams.gpkg')
+    vpu_network = os.path.join(gpkg_dir, f'vpu_{vpu}_streams.gpkg')
     if os.path.exists(altered_network):
         (
             gpd
@@ -341,3 +359,21 @@ def vpu_files_from_masters(vpu_df: pd.DataFrame,
             .to_file(vpu_network, driver='GPKG')
         )
     return
+
+
+def _k_agg_order_3(x: pd.Series) -> np.ndarray:
+    return x.mean() * 3.5 if len(x) > 1 else x.iloc[0]
+
+
+def _k_agg_order_2(x: pd.Series) -> np.ndarray:
+    return x.iloc[-1] + x.iloc[:-1].max() if len(x) > 1 else x.iloc[0]
+
+
+def _geom_diss(x: pd.Series or gpd.GeoSeries):
+    return gpd.GeoSeries(x).unary_union
+
+
+def _get_tdxhydro_header_number(region_number: int) -> int:
+    with open(os.path.join(os.path.dirname(__file__), 'network_data', 'tdx_header_numbers.json')) as f:
+        header_numbers = json.load(f)
+    return int(header_numbers[str(region_number)])

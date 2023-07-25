@@ -11,7 +11,8 @@ import shapely.geometry as sg
 __all__ = [
     'sort_topologically',
     'create_directed_graphs',
-    'find_branches_to_dissolve',
+    'find_headwater_branches_to_dissolve',
+    'find_branches_to_prune',
     'identify_0_length',
     'correct_0_length_streams',
     'correct_0_length_basins',
@@ -25,7 +26,9 @@ def sort_topologically(digraph_from_headwaters: nx.DiGraph) -> np.array:
     return np.array(list(nx.topological_sort(digraph_from_headwaters))).astype(int)
 
 
-def create_directed_graphs(df: pd.DataFrame, id_field='LINKNO', ds_id_field='DSLINKNO'):
+def create_directed_graphs(df: pd.DataFrame,
+                           id_field='LINKNO',
+                           ds_id_field='DSLINKNO', ):
     G = nx.DiGraph()
 
     for node in df[id_field].values:
@@ -36,9 +39,9 @@ def create_directed_graphs(df: pd.DataFrame, id_field='LINKNO', ds_id_field='DSL
     return G
 
 
-def find_branches_to_dissolve(sdf: pd.DataFrame or gpd.GeoDataFrame,
-                              G: nx.DiGraph,
-                              min_order_to_keep: int, ) -> pd.DataFrame:
+def find_headwater_branches_to_dissolve(sdf: pd.DataFrame or gpd.GeoDataFrame,
+                                        G: nx.DiGraph,
+                                        min_order_to_keep: int, ) -> pd.DataFrame:
     # todo parameterize the column names
     us_cols = sorted([c for c in sdf.columns if c.startswith('USLINKNO')])
     order1 = sdf[sdf['strmOrder'] == (min_order_to_keep - 1)]['LINKNO'].values.flatten()
@@ -108,7 +111,10 @@ def find_branches_to_prune(sdf: gpd.GeoDataFrame or pd.DataFrame,
     return sibling_pairs
 
 
-def identify_0_length(gdf: gpd.GeoDataFrame, stream_id_col: str, ds_id_col: str, length_col: str) -> pd.DataFrame:
+def identify_0_length(gdf: gpd.GeoDataFrame,
+                      stream_id_col: str,
+                      ds_id_col: str,
+                      length_col: str, ) -> pd.DataFrame:
     """
     Fix streams that have 0 length.
     General Error Cases:
@@ -172,8 +178,9 @@ def identify_0_length(gdf: gpd.GeoDataFrame, stream_id_col: str, ds_id_col: str,
     })
 
 
-def correct_0_length_streams(sgdf: gpd.GeoDataFrame, zero_length_df: pd.DataFrame,
-                             id_field: str) -> gpd.GeoDataFrame:
+def correct_0_length_streams(sgdf: gpd.GeoDataFrame,
+                             zero_length_df: pd.DataFrame,
+                             id_field: str, ) -> gpd.GeoDataFrame:
     """
     Apply fixes to streams that have 0 length.
 
@@ -219,7 +226,9 @@ def correct_0_length_streams(sgdf: gpd.GeoDataFrame, zero_length_df: pd.DataFram
     return sgdf
 
 
-def correct_0_length_basins(basins_gpq: str, save_dir: str, stream_id_col: str) -> gpd.GeoDataFrame:
+def correct_0_length_basins(basins_gpq: str,
+                            save_dir: str,
+                            stream_id_col: str, ) -> gpd.GeoDataFrame:
     """
     Apply fixes to streams that have 0 length.
 
