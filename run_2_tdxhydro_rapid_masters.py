@@ -18,13 +18,20 @@ logging.basicConfig(
 )
 
 inputs_path = '/Volumes/EB406_T7_2/TDXHydroGeoParquet'
-outputs_path = '/Volumes/EB406_T7_2/TDXHydro'
+outputs_path = '/Volumes/EB406_T7_2/TEST_10/inputs'
 regions_to_select = '*7020065090*'
 
 gis_iterable = zip(
     sorted(glob.glob(os.path.join(inputs_path, f'TDX_streamnet_{regions_to_select}.parquet')), reverse=False),
     sorted(glob.glob(os.path.join(inputs_path, f'TDX_streamreach_basins_{regions_to_select}.parquet')), reverse=False),
 )
+
+id_field = 'LINKNO'
+basin_id_field = 'streamID'
+ds_field = 'DSLINKNO'
+order_field = 'strmOrder'
+length_field = 'Length'
+
 CORRECT_TAUDEM_ERRORS = True
 MAKE_RAPID_INPUTS = True
 MAKE_WEIGHT_TABLES = True
@@ -36,11 +43,7 @@ PRUNE_BRANCHES_FROM_MAIN_STEMS = False
 MIN_DRAINAGE_AREA_M2 = 200_000_000
 MIN_HEADWATER_STREAM_ORDER = 2
 
-id_field = 'LINKNO'
-basin_id_field = 'streamID'
-ds_field = 'DSLINKNO'
-order_field = 'strmOrder'
-length_field = 'Length'
+K_VALUE = 0.5
 
 warnings.filterwarnings("ignore")
 
@@ -80,6 +83,8 @@ if __name__ == '__main__':
                                              id_field=id_field,
                                              ds_id_field=ds_field,
                                              length_field=length_field,
+                                             cache_geometry=CACHE_GEOMETRY,
+                                             default_k=K_VALUE,
                                              drop_small_watersheds=DROP_SMALL_WATERSHEDS,
                                              min_drainage_area_m2=MIN_DRAINAGE_AREA_M2,
                                              dissolve_headwaters=DISSOLVE_HEADWATERS,
