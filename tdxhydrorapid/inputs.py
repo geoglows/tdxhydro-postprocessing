@@ -47,7 +47,7 @@ def rapid_master_files(streams_gpq: str,
 
     Saves the following files to the save_dir:
         - rapid_inputs_master.parquet
-        - {region_number}_dissolved_network.gpkg
+        - {region_num}_dissolved_network.gpkg
         - mod_zero_length_streams.csv (if any 0 length streams are found)
         - mod_basin_zero_centroid.csv (if any basins have an ID of 0 and geometry is not available)
         - mod_drop_small_streams.csv (if drop_small_watersheds is True)

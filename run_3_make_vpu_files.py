@@ -2,25 +2,24 @@ import glob
 import logging
 import os
 import shutil
+import sys
 
 import geopandas as gpd
 import pandas as pd
 
 import tdxhydrorapid as rp
 
-
-tdx_inputs_dir = '/Volumes/EB406_T7_2/TDXHydroRapid_V17'
-final_output_dir = '/Volumes/EB406_T7_2/geoglows2v3/'
+tdx_inputs_dir = '/Volumes/EB406_T7_2/geoglows2/tdxhydro-inputs'
+final_output_dir = '/Volumes/EB406_T7_2/geoglows2/inputs'
 vpu_inputs_dir = os.path.join(final_output_dir, 'inputs')
 gpkg_dir = os.path.join(final_output_dir, 'gis')
-vpu_table = './vpu_table_for_revisions.csv'
+vpu_table = './tdxhydrorapid/network_data/vpu_table.csv'
 
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s %(levelname)s %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S',
-    filename='log.log',
-    filemode='w'
+    stream=sys.stdout,
 )
 
 os.makedirs(vpu_inputs_dir, exist_ok=True)
@@ -53,8 +52,8 @@ for vpu in sorted(mdf['VPUCode'].unique()):
         rp.check_outputs_are_valid(vpu_dir)
         continue
 
+    os.makedirs(vpu_dir, exist_ok=True)
     try:
-        os.makedirs(vpu_dir, exist_ok=True)
         rp.inputs.vpu_files_from_masters(vpu_df,
                                          vpu_dir,
                                          tdxinputs_directory=tdx_inputs_dir,

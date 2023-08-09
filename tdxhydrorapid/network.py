@@ -89,19 +89,24 @@ def find_branches_to_prune(sdf: gpd.GeoDataFrame or pd.DataFrame,
 
             # otherwise, there are 2 higher order streams, and we should pick the nearest sibling
             else:
-                siblings = sdf[sdf[id_field].isin(siblings)]
-                siblings['dist'] = (
-                    gpd
-                    .GeoSeries(siblings.geometry)
-                    .distance(row.geometry.centroid)
-                )
-                siblings = (
-                    siblings
-                    .sort_values('dist')
-                    .iloc[0]
-                    .loc[id_field]
-                )
-                siblings = [siblings, ]
+                try:
+                    siblings = sdf[sdf[id_field].isin(siblings)]
+                    siblings['dist'] = (
+                        gpd
+                        .GeoSeries(siblings.geometry)
+                        .distance(row.geometry.centroid)
+                    )
+                    siblings = (
+                        siblings
+                        .sort_values('dist')
+                        .iloc[0]
+                        .loc[id_field]
+                    )
+                    siblings = [siblings, ]
+                except Exception as e:
+                    print(e)
+                    print(siblings)
+                    print(row)
 
         # In the case where there is a 3 river confluence, there may be more than 1 order 1 stream that must be merged. 
         # Instead of creating a dictionary to store these values (which can only have one unique key), we use a DataFrame directly
@@ -209,8 +214,6 @@ def correct_0_length_streams(sgdf: gpd.GeoDataFrame,
     c2 = c2.sort_values(by=['DSLINKNO'], ascending=True)
     c2 = c2['LINKNO'].values
     for river_id in c2:
-        if river_id in (386311, 547924):
-            print()
         ids_to_apply = sgdf.loc[sgdf[id_field] == river_id, ['USLINKNO1', 'USLINKNO2', 'DSLINKNO']]
         # if the downstream basin is also a zero length basin, find the basin 1 step further downstream
         if ids_to_apply['DSLINKNO'].values[0] in c2:

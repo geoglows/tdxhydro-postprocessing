@@ -2,6 +2,7 @@ import glob
 import json
 import logging
 import os
+import sys
 import traceback
 import warnings
 
@@ -13,13 +14,12 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s %(levelname)s %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S',
-    filename='log.log',
-    filemode='w'
+    stream=sys.stdout,
 )
 
 inputs_path = '/Volumes/EB406_T7_2/TDXHydroGeoParquet'
-outputs_path = '/Volumes/EB406_T7_2/TEST_10/inputs'
-regions_to_select = '*7020065090*'
+outputs_path = '/Volumes/EB406_T7_2/geoglows2/tdxhydro-inputs'
+regions_to_select = '*'
 
 gis_iterable = zip(
     sorted(glob.glob(os.path.join(inputs_path, f'TDX_streamnet_{regions_to_select}.parquet')), reverse=False),
@@ -32,44 +32,40 @@ ds_field = 'DSLINKNO'
 order_field = 'strmOrder'
 length_field = 'Length'
 
-CORRECT_TAUDEM_ERRORS = True
 MAKE_RAPID_INPUTS = True
 MAKE_WEIGHT_TABLES = True
-CACHE_GEOMETRY = False
-
-DROP_SMALL_WATERSHEDS = True
-DISSOLVE_HEADWATERS = False
-PRUNE_BRANCHES_FROM_MAIN_STEMS = False
-MIN_DRAINAGE_AREA_M2 = 200_000_000
-MIN_HEADWATER_STREAM_ORDER = 2
-
+CACHE_GEOMETRY = True
 K_VALUE = 0.5
 
 warnings.filterwarnings("ignore")
 
 if __name__ == '__main__':
     sample_grids = glob.glob('./era5_thiessen_grid_parquets/era5*.parquet')
-    with open('tdxhydrorapid/network_data/regions_to_skip.json', 'r') as f:
-        regions_to_skip = json.load(f)
-
-    logging.info(f'Skipping regions: {regions_to_skip}')
+    net_df = pd.read_excel('./tdxhydrorapid/network_data/processing_options.xlsx')
 
     for streams_gpq, basins_gpq in gis_iterable:
         # Identify the region being processed
-        region_number = os.path.basename(streams_gpq)
-        region_number = region_number.split('_')[2]
-        region_number = int(region_number)
+        region_num = os.path.basename(streams_gpq)
+        region_num = region_num.split('_')[2]
+        region_num = int(region_num)
 
-        save_dir = os.path.join(outputs_path, f'{region_number}')
+        save_dir = os.path.join(outputs_path, f'{region_num}')
         os.makedirs(save_dir, exist_ok=True)
 
-        if region_number in regions_to_skip:
-            logging.warning(f'Skipping region {region_number} - In regions_to_skip')
+        if not net_df.loc[net_df['region_number'] == region_num, 'process'].values[0]:
+            logging.warning(f'Skipping region {region_num}')
             continue
+
+        CORRECT_TAUDEM_ERRORS = net_df.loc[net_df['region_number'] == region_num, 'fix_taudem_errors'].values[0]
+        DROP_SMALL_WATERSHEDS = net_df.loc[net_df['region_number'] == region_num, 'drop_small_watersheds'].values[0]
+        DISSOLVE_HEADWATERS = net_df.loc[net_df['region_number'] == region_num, 'dissolve_headwaters'].values[0]
+        PRUNE_MAIN_STEMS = net_df.loc[net_df['region_number'] == region_num, 'prune_main_stems'].values[0]
+        MIN_DRAINAGE_AREA_M2 = net_df.loc[net_df['region_number'] == region_num, 'min_area_km2'].values[0] * 1e6
+        MIN_HEADWATER_STREAM_ORDER = net_df.loc[net_df['region_number'] == region_num, 'min_stream_order'].values[0]
 
         # log a bunch of stuff
         logging.info('')
-        logging.info(region_number)
+        logging.info(region_num)
         logging.info(save_dir)
         logging.info(streams_gpq)
         logging.info(basins_gpq)
@@ -89,7 +85,7 @@ if __name__ == '__main__':
                                              min_drainage_area_m2=MIN_DRAINAGE_AREA_M2,
                                              dissolve_headwaters=DISSOLVE_HEADWATERS,
                                              min_headwater_stream_order=MIN_HEADWATER_STREAM_ORDER,
-                                             prune_branches_from_main_stems=PRUNE_BRANCHES_FROM_MAIN_STEMS, )
+                                             prune_branches_from_main_stems=PRUNE_MAIN_STEMS, )
 
             # make the rapid input files
             if MAKE_RAPID_INPUTS and not all([os.path.exists(os.path.join(save_dir, f)) for f in rp.RAPID_FILES]):
