@@ -34,8 +34,8 @@ def rapid_master_files(streams_gpq: str,
                        id_field: str = 'LINKNO',
                        ds_id_field: str = 'DSLINKNO',
                        length_field: str = 'Length',
-                       default_k: float = 0.8,
-                       default_x: float = .3,
+                       default_velocity_factor: float = None,
+                       default_x: float = .25,
                        drop_small_watersheds: bool = True,
                        dissolve_headwaters: bool = True,
                        prune_branches_from_main_stems: bool = True,
@@ -61,7 +61,7 @@ def rapid_master_files(streams_gpq: str,
         id_field: str, field name for the link id
         ds_id_field: str, field name for the downstream link id
         length_field: str, field name for the length of the stream segment
-        default_k: float, default velocity factor (k) for Muskingum routing
+        default_velocity_factor: float, default velocity factor (k) for Muskingum routing
         default_x: float, default attenuation factor (x) for Muskingum routing
 
         drop_small_watersheds: bool, drop small watersheds
@@ -78,10 +78,10 @@ def rapid_master_files(streams_gpq: str,
 
     # length is in m, divide by estimated m/s to get k in seconds
     logger.info('\tCalculating Muskingum k and x')
-    sgdf["musk_k"] = sgdf['LengthGeodesicMeters'] / default_k
+    sgdf['velocity_factor'] = np.exp(0.16842 * np.log(sgdf['DSContArea']) - 4.68).round(3) \
+        if default_velocity_factor is None else default_velocity_factor
+    sgdf['musk_k'] = sgdf['LengthGeodesicMeters'] / sgdf['velocity_factor']
     sgdf["musk_x"] = default_x
-    sgdf['musk_k'] = sgdf['musk_k'].round(3)
-    sgdf['musk_x'] = sgdf['musk_x'].round(3)
 
     logger.info('\tRemoving 0 length segments')
     if 0 in sgdf[length_field].values:
@@ -190,7 +190,6 @@ def dissolve_branches(sgdf: pd.DataFrame,
                       k_agg_func: types.FunctionType or str = 'last', ) -> pd.DataFrame:
     """
     Use pandas groupby to "dissolve" streams in the table by combining rows and handle metadata correctly
-    # todo describe shape of the head_to_dissolve dataframe
 
     Args:
         sgdf: streams geodataframe with all the metadata columns from the source files
@@ -230,10 +229,11 @@ def dissolve_branches(sgdf: pd.DataFrame,
         'geometry': geometry_diss,
     }
 
-    if all([x in sgdf.columns for x in ['musk_k', 'musk_x', 'CountUS', ]]):
+    if all([x in sgdf.columns for x in ['musk_k', 'musk_x', 'velocity_factor', 'CountUS', ]]):
         agg_rules.update({
             'musk_k': k_agg_func,
             'musk_x': 'last',
+            'velocity_factor': 'last',
             'CountUS': lambda x: 0 if len(x) else x,
         })
     agg_rules.update({
@@ -323,6 +323,7 @@ def concat_tdxregions(tdxinputs_dir: str, vpu_dir: str, vpu_table: str) -> None:
 
     if not mdf[mdf['VPUCode'].isna()].empty:
         raise RuntimeError('Some terminal nodes are not in the VPU table and must be fixed before continuing.')
+    mdf['VPUCode'] = mdf['VPUCode'].astype(int)
 
     mdf.to_parquet(os.path.join(vpu_dir, 'master_table.parquet'))
     return

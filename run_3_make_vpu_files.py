@@ -10,7 +10,7 @@ import pandas as pd
 import tdxhydrorapid as rp
 
 tdx_inputs_dir = '/Volumes/EB406_T7_2/geoglows2/tdxhydro-inputs'
-final_output_dir = '/Volumes/EB406_T7_2/geoglows2/inputs'
+final_output_dir = '/Volumes/EB406_T7_2/geoglows2/'
 vpu_inputs_dir = os.path.join(final_output_dir, 'inputs')
 gpkg_dir = os.path.join(final_output_dir, 'gis')
 vpu_table = './tdxhydrorapid/network_data/vpu_table.csv'
@@ -35,7 +35,7 @@ if not os.path.exists(os.path.join(vpu_inputs_dir, 'global_streams_simplified.ge
     logging.info('Concat global simplified streams')
     mgdf = pd.concat([gpd.read_parquet(f) for f in glob.glob(os.path.join(tdx_inputs_dir, '*', '*.geoparquet'))])
     logging.info('Simplifying geometry')
-    mgdf['geometry'] = mgdf['geometry'].apply(lambda x: x.simplify(0.005, preserve_topology=False))
+    mgdf['geometry'] = mgdf['geometry'].simplify(0.01, preserve_topology=False)
     logging.info('Adding attributes')
     mgdf = mgdf.merge(mdf[['VPUCode', 'TDXHydroLinkNo']], on='TDXHydroLinkNo')
     logging.info('Writing to file')
@@ -49,15 +49,17 @@ for vpu in sorted(mdf['VPUCode'].unique()):
 
     vpu_dir = os.path.join(vpu_inputs_dir, str(vpu))
     if os.path.exists(vpu_dir):
-        rp.check_outputs_are_valid(vpu_dir)
-        continue
+        if rp.check_outputs_are_valid(vpu_dir):
+            continue
+        else:
+            shutil.rmtree(vpu_dir)
 
     os.makedirs(vpu_dir, exist_ok=True)
     try:
         rp.inputs.vpu_files_from_masters(vpu_df,
                                          vpu_dir,
                                          tdxinputs_directory=tdx_inputs_dir,
-                                         make_gpkg=False,
+                                         make_gpkg=True,
                                          gpkg_dir=gpkg_dir, )
     except Exception as e:
         logging.info(vpu)
@@ -66,4 +68,6 @@ for vpu in sorted(mdf['VPUCode'].unique()):
         shutil.rmtree(vpu_dir)
         continue
 
-    rp.check_outputs_are_valid(vpu_dir)
+    if not rp.check_outputs_are_valid(vpu_dir):
+        shutil.rmtree(vpu_dir)
+        continue

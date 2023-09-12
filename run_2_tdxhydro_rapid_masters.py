@@ -35,7 +35,7 @@ length_field = 'Length'
 MAKE_RAPID_INPUTS = True
 MAKE_WEIGHT_TABLES = True
 CACHE_GEOMETRY = True
-K_VALUE = 0.5
+VELOCITY_FACTOR = None  # 0.4 otherwise
 
 warnings.filterwarnings("ignore")
 
@@ -56,6 +56,7 @@ if __name__ == '__main__':
             logging.warning(f'Skipping region {region_num}')
             continue
 
+        # get configs for each region
         CORRECT_TAUDEM_ERRORS = net_df.loc[net_df['region_number'] == region_num, 'fix_taudem_errors'].values[0]
         DROP_SMALL_WATERSHEDS = net_df.loc[net_df['region_number'] == region_num, 'drop_small_watersheds'].values[0]
         DISSOLVE_HEADWATERS = net_df.loc[net_df['region_number'] == region_num, 'dissolve_headwaters'].values[0]
@@ -74,18 +75,13 @@ if __name__ == '__main__':
             # make the master rapid input files
             if not os.path.exists(os.path.join(save_dir, 'rapid_inputs_master.parquet')) or \
                     (CACHE_GEOMETRY and not len(list(glob.glob(os.path.join(save_dir, '*.geoparquet'))))):
-                rp.inputs.rapid_master_files(streams_gpq,
-                                             save_dir=save_dir,
-                                             id_field=id_field,
-                                             ds_id_field=ds_field,
-                                             length_field=length_field,
-                                             cache_geometry=CACHE_GEOMETRY,
-                                             default_k=K_VALUE,
+                rp.inputs.rapid_master_files(streams_gpq, save_dir=save_dir, id_field=id_field, ds_id_field=ds_field,
+                                             length_field=length_field, default_velocity_factor=VELOCITY_FACTOR,
                                              drop_small_watersheds=DROP_SMALL_WATERSHEDS,
-                                             min_drainage_area_m2=MIN_DRAINAGE_AREA_M2,
                                              dissolve_headwaters=DISSOLVE_HEADWATERS,
-                                             min_headwater_stream_order=MIN_HEADWATER_STREAM_ORDER,
-                                             prune_branches_from_main_stems=PRUNE_MAIN_STEMS, )
+                                             prune_branches_from_main_stems=PRUNE_MAIN_STEMS,
+                                             cache_geometry=CACHE_GEOMETRY, min_drainage_area_m2=MIN_DRAINAGE_AREA_M2,
+                                             min_headwater_stream_order=MIN_HEADWATER_STREAM_ORDER)
 
             # make the rapid input files
             if MAKE_RAPID_INPUTS and not all([os.path.exists(os.path.join(save_dir, f)) for f in rp.RAPID_FILES]):
