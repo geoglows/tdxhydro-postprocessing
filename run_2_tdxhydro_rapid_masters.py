@@ -1,5 +1,4 @@
 import glob
-import json
 import logging
 import os
 import sys
@@ -17,7 +16,7 @@ logging.basicConfig(
     stream=sys.stdout,
 )
 
-inputs_path = '/Volumes/EB406_T7_2/TDXHydroGeoParquet'
+inputs_path = '/Users/rchales/Data/TDXHydroGeoParquet'
 outputs_path = '/Volumes/EB406_T7_2/geoglows2/tdxhydro-inputs'
 regions_to_select = '*'
 
@@ -40,7 +39,7 @@ VELOCITY_FACTOR = None  # 0.4 otherwise
 warnings.filterwarnings("ignore")
 
 if __name__ == '__main__':
-    sample_grids = glob.glob('./era5_thiessen_grid_parquets/era5*.parquet')
+    sample_grids = glob.glob('./era5_thiessen_grid_parquets/*.parquet')
     net_df = pd.read_excel('./tdxhydrorapid/network_data/processing_options.xlsx')
 
     for streams_gpq, basins_gpq in gis_iterable:
