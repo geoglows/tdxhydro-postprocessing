@@ -294,7 +294,7 @@ def make_final_streams(final_inputs_directory: str,
     mgdf = pd.concat([gpd.read_parquet(gpq) for gpq in modified_gpqs])
 
     print('merging with master table')
-    mgdf = mgdf.merge(pd.read_parquet(os.path.join(final_inputs_directory, 'master_table.parquet')),
+    mgdf = mgdf.merge(pd.read_parquet(os.path.join(final_inputs_directory, 'geoglows-v2-master-table.parquet')),
                       on='TDXHydroLinkNo', how='inner')
 
     for vpu_code in sorted(mgdf['VPUCode'].unique()):

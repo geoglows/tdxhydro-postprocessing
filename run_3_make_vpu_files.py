@@ -26,9 +26,9 @@ os.makedirs(vpu_inputs_dir, exist_ok=True)
 os.makedirs(gpkg_dir, exist_ok=True)
 
 logging.info('Creating Model Master Table')
-if not os.path.exists(os.path.join(vpu_inputs_dir, 'master_table.parquet')):
+if not os.path.exists(os.path.join(vpu_inputs_dir, 'geoglows-v2-master-table.parquet')):
     rp.inputs.concat_tdxregions(tdx_inputs_dir, vpu_inputs_dir, vpu_table)
-mdf = pd.read_parquet(os.path.join(vpu_inputs_dir, 'master_table.parquet'))
+mdf = pd.read_parquet(os.path.join(vpu_inputs_dir, 'geoglows-v2-master-table.parquet'))
 logging.info(f'Total streams: {len(mdf)}')
 
 if not os.path.exists(os.path.join(vpu_inputs_dir, 'global_streams_simplified.geoparquet')):
