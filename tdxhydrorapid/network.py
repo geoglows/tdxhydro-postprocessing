@@ -1,3 +1,4 @@
+import glob
 import logging
 import os
 
@@ -10,12 +11,12 @@ import shapely.geometry as sg
 __all__ = [
     'sort_topologically',
     'create_directed_graphs',
-    'find_branches_to_dissolve',
+    'find_headwater_branches_to_dissolve',
+    'find_branches_to_prune',
     'identify_0_length',
     'correct_0_length_streams',
     'correct_0_length_basins',
-    'make_vpu_streams',
-    'make_vpu_basins',
+    'make_final_streams',
 ]
 
 logger = logging.getLogger(__name__)
@@ -25,7 +26,9 @@ def sort_topologically(digraph_from_headwaters: nx.DiGraph) -> np.array:
     return np.array(list(nx.topological_sort(digraph_from_headwaters))).astype(int)
 
 
-def create_directed_graphs(df: pd.DataFrame, id_field='LINKNO', ds_id_field='DSLINKNO'):
+def create_directed_graphs(df: pd.DataFrame,
+                           id_field='LINKNO',
+                           ds_id_field='DSLINKNO', ):
     G = nx.DiGraph()
 
     for node in df[id_field].values:
@@ -36,9 +39,9 @@ def create_directed_graphs(df: pd.DataFrame, id_field='LINKNO', ds_id_field='DSL
     return G
 
 
-def find_branches_to_dissolve(sdf: pd.DataFrame or gpd.GeoDataFrame,
-                              G: nx.DiGraph,
-                              min_order_to_keep: int, ) -> pd.DataFrame:
+def find_headwater_branches_to_dissolve(sdf: pd.DataFrame or gpd.GeoDataFrame,
+                                        G: nx.DiGraph,
+                                        min_order_to_keep: int, ) -> pd.DataFrame:
     # todo parameterize the column names
     us_cols = sorted([c for c in sdf.columns if c.startswith('USLINKNO')])
     order1 = sdf[sdf['strmOrder'] == (min_order_to_keep - 1)]['LINKNO'].values.flatten()
@@ -59,7 +62,7 @@ def find_branches_to_dissolve(sdf: pd.DataFrame or gpd.GeoDataFrame,
     return upstream_df
 
 
-def find_branches_to_prune(sdf: gpd.GeoDataFrame,
+def find_branches_to_prune(sdf: gpd.GeoDataFrame or pd.DataFrame,
                            G: nx.DiGraph,
                            id_field: str = 'LINKNO',
                            ds_id_field: str = 'DSLINKNO', ) -> pd.DataFrame:
@@ -72,21 +75,38 @@ def find_branches_to_prune(sdf: gpd.GeoDataFrame,
     for index, row in order1s.iterrows():
         siblings = list(G.predecessors(row[ds_id_field]))
         siblings = [s for s in siblings if s != row[id_field]]
+
+        # if there is only 1 sibling, we want to merge with that one
         if len(siblings) > 1:
-            # find the nearest sibling
-            siblings = sdf[sdf[id_field].isin(siblings)]
-            siblings['dist'] = (
-                gpd
-                .GeoSeries(siblings.geometry)
-                .distance(row.geometry.centroid)
-            )
-            siblings = (
-                siblings
-                .sort_values('dist')
-                .iloc[0]
-                .loc[id_field]
-            )
-            siblings = [siblings, ]
+            # if there are 2 siblings, we want need to figure out which one to merge with
+            sibling_stream_orders = sdf[sdf[id_field].isin(siblings)]['strmOrder'].values
+
+            # if the row to be pruned has the same order as 1 of the siblings, pick the highest stream order
+            if row['strmOrder'] in sibling_stream_orders:
+                siblings = [
+                    s for s in siblings if sdf.loc[sdf[id_field] == s, 'strmOrder'].values[0] > row['strmOrder']
+                ]
+
+            # otherwise, there are 2 higher order streams, and we should pick the nearest sibling
+            else:
+                try:
+                    siblings = sdf[sdf[id_field].isin(siblings)]
+                    siblings['dist'] = (
+                        gpd
+                        .GeoSeries(siblings.geometry)
+                        .distance(row.geometry.centroid)
+                    )
+                    siblings = (
+                        siblings
+                        .sort_values('dist')
+                        .iloc[0]
+                        .loc[id_field]
+                    )
+                    siblings = [siblings, ]
+                except Exception as e:
+                    print(e)
+                    print(siblings)
+                    print(row)
 
         # In the case where there is a 3 river confluence, there may be more than 1 order 1 stream that must be merged. 
         # Instead of creating a dictionary to store these values (which can only have one unique key), we use a DataFrame directly
@@ -96,7 +116,10 @@ def find_branches_to_prune(sdf: gpd.GeoDataFrame,
     return sibling_pairs
 
 
-def identify_0_length(gdf: gpd.GeoDataFrame, stream_id_col: str, ds_id_col: str, length_col: str) -> pd.DataFrame:
+def identify_0_length(gdf: gpd.GeoDataFrame,
+                      stream_id_col: str,
+                      ds_id_col: str,
+                      length_col: str, ) -> pd.DataFrame:
     """
     Fix streams that have 0 length.
     General Error Cases:
@@ -160,8 +183,9 @@ def identify_0_length(gdf: gpd.GeoDataFrame, stream_id_col: str, ds_id_col: str,
     })
 
 
-def correct_0_length_streams(sgdf: gpd.GeoDataFrame, zero_length_df: pd.DataFrame,
-                             id_field: str) -> gpd.GeoDataFrame:
+def correct_0_length_streams(sgdf: gpd.GeoDataFrame,
+                             zero_length_df: pd.DataFrame,
+                             id_field: str, ) -> gpd.GeoDataFrame:
     """
     Apply fixes to streams that have 0 length.
 
@@ -191,17 +215,23 @@ def correct_0_length_streams(sgdf: gpd.GeoDataFrame, zero_length_df: pd.DataFram
     c2 = c2['LINKNO'].values
     for river_id in c2:
         ids_to_apply = sgdf.loc[sgdf[id_field] == river_id, ['USLINKNO1', 'USLINKNO2', 'DSLINKNO']]
+        # if the downstream basin is also a zero length basin, find the basin 1 step further downstream
+        if ids_to_apply['DSLINKNO'].values[0] in c2:
+            ids_to_apply['DSLINKNO'] = \
+                sgdf.loc[sgdf[id_field] == ids_to_apply['DSLINKNO'].values[0], 'DSLINKNO'].values[0]
         sgdf.loc[
             sgdf[id_field].isin(ids_to_apply[['USLINKNO1', 'USLINKNO2']].values.flatten()), 'DSLINKNO'] = \
             ids_to_apply['DSLINKNO'].values[0]
-        
+
     # Remove the rows corresponding to the rivers to be deleted
     sgdf = sgdf[~sgdf['LINKNO'].isin(c2)]
 
     return sgdf
 
 
-def correct_0_length_basins(basins_gpq: str, save_dir: str, stream_id_col: str) -> gpd.GeoDataFrame:
+def correct_0_length_basins(basins_gpq: str,
+                            save_dir: str,
+                            stream_id_col: str, ) -> gpd.GeoDataFrame:
     """
     Apply fixes to streams that have 0 length.
 
@@ -256,66 +286,27 @@ def correct_0_length_basins(basins_gpq: str, save_dir: str, stream_id_col: str) 
     return basin_gdf
 
 
-def make_vpu_streams(final_inputs_directory: str, inputs_directory: str, gpq: str, id_field: str = 'LINKNO') -> None:
-    # todo
-    vpu = 123
-    save_path = os.path.join(save_dir, f'geoglows2_streams_vpu_{vpu}.gpkg')
-    logging.info(f'Making GeoPackage:{save_path}')
-    gdf = gpd.read_parquet(streams_gpq)
+def make_final_streams(final_inputs_directory: str,
+                       final_gis_directory: str,
+                       tdxrapid_dir: str, ) -> None:
+    print('reading modified geoparquets')
+    modified_gpqs = sorted(glob.glob(os.path.join(tdxrapid_dir, '*', '*.geoparquet')))
+    mgdf = pd.concat([gpd.read_parquet(gpq) for gpq in modified_gpqs])
 
-    streams_to_drop = pd.read_csv(os.path.join(save_dir, 'mod_drop_small_trees.csv'))
-    gdf = gdf[~gdf[id_field].isin(streams_to_drop.values.flatten())]
+    print('merging with master table')
+    mgdf = mgdf.merge(pd.read_parquet(os.path.join(final_inputs_directory, 'geoglows-v2-master-table.parquet')),
+                      on='TDXHydroLinkNo', how='inner')
 
-    streams_to_dissolve = pd.read_csv(os.path.join(save_dir, 'mod_dissolve_headwater.csv'))
-    gdf = dissolve_headwater_table(gdf,
-                                   streams_to_dissolve,
-                                   geometry_diss=lambda x: x.unary_union)
-
-    gpd.GeoDataFrame(gdf).to_file(save_path, driver='GPKG')  # groupby returns DF not GDF
-    return
-
-
-def make_vpu_basins(final_inputs_directory: str,
-                    gpq_dir: str,
-                    id_field: str = 'LINKNO',
-                    basin_id_field: str = 'streamID', ):
-    master_table = pd.read_parquet(os.path.join(final_inputs_directory, 'master_table.parquet'))
-    for tdxnumber in sorted(master_table['TDXHydroNumber'].unique()):
-        print(tdxnumber)
-        gpq = os.path.join(gpq_dir, f'TDX_streamreach_basins_{tdxnumber}_01.parquet')
-        output_file = os.path.join(final_inputs_directory, 'gis', f'vpu_basins_{tdxnumber}.geoparquet')
-        if os.path.exists(output_file):
+    for vpu_code in sorted(mgdf['VPUCode'].unique()):
+        print(vpu_code)
+        file_path = os.path.join(final_gis_directory, f'vpu_{vpu_code}_streams.gpkg')
+        if os.path.exists(file_path):
             continue
+        mgdf[mgdf['VPUCode'] == vpu_code].to_file(file_path)
 
-        heads = pd.read_csv(f'/Volumes/EB406_T7_2/TDXHydroRapid_V11/{tdxnumber}/mod_dissolve_headwater.csv')
-        idvpudf = (
-            master_table
-            .loc[master_table['TDXHydroNumber'] == tdxnumber, [id_field, 'VPUCode']]
-            .reset_index(drop=True)
-        )
-        for vpucode in sorted(idvpudf['VPUCode'].unique()):
-            matching_rows = heads[heads[id_field].isin(idvpudf[idvpudf['VPUCode'] == vpucode][id_field])]
-            all_ids = (
-                set(matching_rows[id_field].values)
-                .union(matching_rows.iloc[:, 1:].values.flatten())
-            )
-            idvpudf = pd.concat([
-                pd.DataFrame({'LINKNO': list(all_ids), 'VPUCode': vpucode}),
-                idvpudf
-            ])
-        idvpudf = idvpudf.drop_duplicates(subset=['LINKNO', 'VPUCode'])
-        (
-            gpd
-            .read_parquet(gpq)
-            .merge(
-                idvpudf,
-                left_on=basin_id_field,
-                right_on=id_field,
-                how='inner'
-            )
-            .drop(columns=[basin_id_field, id_field, ])
-            .dissolve(by='VPUCode')
-            .reset_index()
-            .to_parquet(output_file)
-        )
+    # write full stream network to file
+    print('simplifying geometries')
+    mgdf['geometry'] = mgdf['geometry'].simplify(0.001)
+    print('writing full stream network to gpkg')
+    mgdf.to_file(os.path.join(final_inputs_directory, 'global_streams_simplified.gpkg'), driver='GPKG')
     return
