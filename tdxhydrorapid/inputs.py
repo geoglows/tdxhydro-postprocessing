@@ -41,7 +41,8 @@ def rapid_master_files(streams_gpq: str,
                        prune_branches_from_main_stems: bool = True,
                        cache_geometry: bool = True,
                        min_drainage_area_m2: float = 200_000_000,
-                       min_headwater_stream_order: int = 3, ) -> None:
+                       min_headwater_stream_order: int = 3,
+                       min_velocity_factor: float = 0.4, ) -> None:
     """
     Create RAPID master files from a stream network
 
@@ -80,6 +81,7 @@ def rapid_master_files(streams_gpq: str,
     logger.info('\tCalculating Muskingum k and x')
     sgdf['velocity_factor'] = np.exp(0.16842 * np.log(sgdf['DSContArea']) - 4.68).round(3) \
         if default_velocity_factor is None else default_velocity_factor
+    sgdf['velocity_factor'] = sgdf['velocity_factor'].clip(lower=min_velocity_factor)
     sgdf['musk_k'] = sgdf['LengthGeodesicMeters'] / sgdf['velocity_factor']
     sgdf["musk_x"] = default_x
 
