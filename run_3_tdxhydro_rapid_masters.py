@@ -16,7 +16,7 @@ logging.basicConfig(
     stream=sys.stdout,
 )
 
-inputs_path = '/Users/rchales/Data/TDXHydroGeoParquet'
+inputs_path = '/Volumes/EB406_T7_1/TDXHydroGeoParquet'
 outputs_path = '/Volumes/EB406_T7_2/geoglows2/tdxhydro-inputs'
 regions_to_select = '*'
 

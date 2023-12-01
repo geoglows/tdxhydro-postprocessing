@@ -343,6 +343,7 @@ def vpu_files_from_masters(vpu_df: pd.DataFrame,
     rapid_input_csvs(vpu_df, vpu_dir)
 
     # subset the weight tables
+    logging.info('Subsetting weight tables')
     weight_tables = glob.glob(os.path.join(tdxinputs_directory, tdx_region, f'weight*.csv'))
     weight_tables = [x for x in weight_tables if '_full.csv' not in x]
     for weight_table in weight_tables:
@@ -352,6 +353,7 @@ def vpu_files_from_masters(vpu_df: pd.DataFrame,
 
     if not make_gpkg:
         return
+    logging.info('Making gpkg')
     altered_network = os.path.join(tdxinputs_directory, tdx_region, f'{tdx_region}_altered_network.geoparquet')
     vpu_network = os.path.join(gpkg_dir, f'streams_{vpu}.gpkg')
     if os.path.exists(altered_network):
