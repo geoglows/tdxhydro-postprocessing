@@ -327,7 +327,7 @@ def concat_tdxregions(tdxinputs_dir: str, vpu_dir: str, vpu_table: str) -> None:
         raise RuntimeError('Some terminal nodes are not in the VPU table and must be fixed before continuing.')
     mdf['VPUCode'] = mdf['VPUCode'].astype(int)
 
-    mdf.to_parquet(os.path.join(vpu_dir, 'master_table.parquet'))
+    mdf.to_parquet(os.path.join(vpu_dir, 'geoglows-v2-master-table.parquet'))
     return
 
 
@@ -353,7 +353,7 @@ def vpu_files_from_masters(vpu_df: pd.DataFrame,
     if not make_gpkg:
         return
     altered_network = os.path.join(tdxinputs_directory, tdx_region, f'{tdx_region}_altered_network.geoparquet')
-    vpu_network = os.path.join(gpkg_dir, f'vpu_{vpu}_streams.gpkg')
+    vpu_network = os.path.join(gpkg_dir, f'streams_{vpu}.gpkg')
     if os.path.exists(altered_network):
         (
             gpd
