@@ -31,17 +31,6 @@ if not os.path.exists(os.path.join(vpu_inputs_dir, 'geoglows-v2-master-table.par
 mdf = pd.read_parquet(os.path.join(vpu_inputs_dir, 'geoglows-v2-master-table.parquet'))
 logging.info(f'Total streams: {len(mdf)}')
 
-if not os.path.exists(os.path.join(vpu_inputs_dir, 'streams_simplified.geoparquet')):
-    logging.info('Concat global simplified streams')
-    mgdf = pd.concat([gpd.read_parquet(f) for f in glob.glob(os.path.join(tdx_inputs_dir, '*', '*.geoparquet'))])
-    logging.info('Simplifying geometry')
-    mgdf['geometry'] = mgdf['geometry'].simplify(0.01, preserve_topology=False)
-    logging.info('Adding attributes')
-    mgdf = mgdf.merge(mdf[['VPUCode', 'TDXHydroLinkNo']], on='TDXHydroLinkNo')
-    logging.info('Writing to file')
-    mgdf.to_parquet(os.path.join(vpu_inputs_dir, 'streams_simplified.geoparquet'))
-    mgdf = None
-
 for vpu in sorted(mdf['VPUCode'].unique()):
     logging.info(vpu)
     vpu_df = mdf.loc[mdf['VPUCode'] == vpu]

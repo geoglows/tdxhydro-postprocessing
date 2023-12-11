@@ -303,10 +303,4 @@ def make_final_streams(final_inputs_directory: str,
         if os.path.exists(file_path):
             continue
         mgdf[mgdf['VPUCode'] == vpu_code].to_file(file_path)
-
-    # write full stream network to file
-    print('simplifying geometries')
-    mgdf['geometry'] = mgdf['geometry'].simplify(0.001)
-    print('writing full stream network to gpkg')
-    mgdf.to_file(os.path.join(final_inputs_directory, 'global_streams_simplified.gpkg'), driver='GPKG')
     return
