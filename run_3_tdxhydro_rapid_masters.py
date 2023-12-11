@@ -34,7 +34,8 @@ length_field = 'Length'
 MAKE_RAPID_INPUTS = True
 MAKE_WEIGHT_TABLES = True
 CACHE_GEOMETRY = True
-VELOCITY_FACTOR = None  # 0.4 otherwise
+VELOCITY_FACTOR = None
+MIN_VELOCITY_FACTOR = 0.15
 
 warnings.filterwarnings("ignore")
 
@@ -80,7 +81,8 @@ if __name__ == '__main__':
                                              dissolve_headwaters=DISSOLVE_HEADWATERS,
                                              prune_branches_from_main_stems=PRUNE_MAIN_STEMS,
                                              cache_geometry=CACHE_GEOMETRY, min_drainage_area_m2=MIN_DRAINAGE_AREA_M2,
-                                             min_headwater_stream_order=MIN_HEADWATER_STREAM_ORDER)
+                                             min_headwater_stream_order=MIN_HEADWATER_STREAM_ORDER,
+                                             min_velocity_factor=MIN_VELOCITY_FACTOR,)
 
             # make the rapid input files
             if MAKE_RAPID_INPUTS and not all([os.path.exists(os.path.join(save_dir, f)) for f in rp.RAPID_FILES]):

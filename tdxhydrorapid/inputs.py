@@ -42,13 +42,13 @@ def rapid_master_files(streams_gpq: str,
                        cache_geometry: bool = True,
                        min_drainage_area_m2: float = 200_000_000,
                        min_headwater_stream_order: int = 3,
-                       min_velocity_factor: float = 0.4, ) -> None:
+                       min_velocity_factor: float = 0.25, ) -> None:
     """
     Create RAPID master files from a stream network
 
     Saves the following files to the save_dir:
         - rapid_inputs_master.parquet
-        - {region_num}_dissolved_network.gpkg
+        - {region_num}_dissolved_network.geoparquet (if cache_geometry is True)
         - mod_zero_length_streams.csv (if any 0 length streams are found)
         - mod_basin_zero_centroid.csv (if any basins have an ID of 0 and geometry is not available)
         - mod_drop_small_streams.csv (if drop_small_watersheds is True)
