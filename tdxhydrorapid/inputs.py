@@ -59,6 +59,9 @@ def rapid_master_files(streams_gpq: str,
 
 
     Args:
+        min_k_value: int, target minimum k value to keep a stream segment
+        min_velocity_factor: float, minimum velocity factor used to calculate k
+        merge_short_streams: bool, merge short streams that are not connected to a confluence
         streams_gpq: str, path to the streams geoparquet
         save_dir: str, path to the directory to save the master files
         id_field: str, field name for the link id
@@ -182,30 +185,23 @@ def rapid_master_files(streams_gpq: str,
         for river in sgdf.loc[sgdf['musk_k'] < min_k_value, id_field].values:
             # this river is a confluence of 2 upstreams if it has more than 1 upstream
             upstreams = list(G.predecessors(river))
-
-            # this river is upstream of a confluence if the number of upstreams to the downstream is more than 1
             downstream = sgdf.loc[sgdf[id_field] == river, ds_id_field].values[0]
             downstream_upstreams = [river, ] if downstream == -1 else list(G.predecessors(downstream))
-
             # if there is a confluence upstream and downstream then it cannot be fixed
             if len(upstreams) != 1 and len(downstream_upstreams) != 1:
                 continue
-
             stream_merge_options = [
                 upstreams[0] if len(upstreams) == 1 else -1,
                 downstream if len(downstream_upstreams) == 1 else -1
             ]
-
             if stream_merge_options[0] == stream_merge_options[1]:
                 continue
-
             stream_to_merge_with = (
                 sgdf.loc[sgdf[id_field].isin(stream_merge_options)]
                 .sort_values(by='musk_k', ascending=True).iloc[0][id_field]
             )
             if stream_to_merge_with not in upstreams:
                 stream_to_merge_with, river = river, stream_to_merge_with
-
             short_streams_to_merge[river] = {'MergeWith': stream_to_merge_with}
 
         # write the short stream merges to a csv
@@ -215,8 +211,6 @@ def rapid_master_files(streams_gpq: str,
                 .T.reset_index().rename(columns={'index': id_field})
             )
             short_streams_df.to_csv(os.path.join(save_dir, 'mod_merge_short_streams.csv'), index=False)
-
-            # merge the short streams
             sgdf = dissolve_short_streams(sgdf, short_streams_df)
 
     logger.info('\tLabeling watersheds by terminal node')
