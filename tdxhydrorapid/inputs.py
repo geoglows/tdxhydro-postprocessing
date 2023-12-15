@@ -397,12 +397,12 @@ def concat_tdxregions(tdxinputs_dir: str, vpu_dir: str, vpu_table: str) -> None:
     mdf = pd.concat([pd.read_parquet(f) for f in glob.glob(os.path.join(tdxinputs_dir, '*', 'rapid_inputs*.parquet'))])
 
     # relabel the terminal nodes as globally unique IDs
-    mdf['TerminalNode'] = (
-            mdf['TDXHydroLinkNo'].astype(str).str[:2].astype(int) * 10_000_000 + mdf['TerminalNode']
+    mdf['TerminalLink'] = (
+            mdf['TDXHydroLinkNo'].astype(str).str[:2].astype(int) * 10_000_000 + mdf['TerminalLink']
     ).astype(int)
 
     vpu_df = pd.read_csv(vpu_table)
-    mdf = mdf.merge(vpu_df, on='TerminalNode', how='left')
+    mdf = mdf.merge(vpu_df, on='TerminalLink', how='left')
 
     if not mdf[mdf['VPUCode'].isna()].empty:
         raise RuntimeError('Some terminal nodes are not in the VPU table and must be fixed before continuing.')

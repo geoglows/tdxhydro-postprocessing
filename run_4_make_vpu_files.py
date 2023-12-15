@@ -7,8 +7,8 @@ import pandas as pd
 
 import tdxhydrorapid as rp
 
-tdx_inputs_dir = '/Volumes/EB406_T7_2/geoglows2/tdxhydro-inputs'
-final_output_dir = '/Volumes/EB406_T7_2/geoglows2/'
+tdx_inputs_dir = '/Volumes/T9Hales4TB/geoglows2/tdxhydro-inputs'
+final_output_dir = '/Volumes/T9Hales4TB/geoglows2/'
 vpu_inputs_dir = os.path.join(final_output_dir, 'inputs')
 gpkg_dir = os.path.join(final_output_dir, 'streams')
 vpu_table = './tdxhydrorapid/network_data/vpu_table.csv'
