@@ -193,37 +193,22 @@ def apply_weight_table_simplifications(save_dir: str,
                                        weight_table_out_path: str,
                                        basin_id_field: str = 'streamID') -> None:
     logging.info(f'Processing {weight_table_in_path}')
-
     wt = pd.read_csv(weight_table_in_path)
 
     headwater_dissolve_path = os.path.join(save_dir, 'mod_dissolve_headwater.csv')
     if os.path.exists(headwater_dissolve_path):
-        o2_to_dissolve = (
-            pd
-            .read_csv(headwater_dissolve_path)
-            .fillna(-1)
-            .astype(int)
-        )
+        o2_to_dissolve = pd.read_csv(headwater_dissolve_path).fillna(-1).astype(int)
         for streams_to_merge in o2_to_dissolve.values:
             wt.loc[wt[basin_id_field].isin(streams_to_merge), basin_id_field] = streams_to_merge[0]
 
     streams_to_prune_path = os.path.join(save_dir, 'mod_prune_streams.csv')
     if os.path.exists(streams_to_prune_path):
-        ids_to_prune = (
-            pd
-            .read_csv(streams_to_prune_path)
-            .astype(int)
-            .set_index('LINKTODROP')
-        )
+        ids_to_prune = pd.read_csv(streams_to_prune_path).astype(int).set_index('LINKTODROP')
         wt[basin_id_field] = wt[basin_id_field].replace(ids_to_prune['LINKNO'])
 
     drop_streams_path = os.path.join(save_dir, 'mod_drop_small_trees.csv')
     if os.path.exists(drop_streams_path):
-        ids_to_drop = (
-            pd
-            .read_csv(drop_streams_path)
-            .astype(int)
-        )
+        ids_to_drop = pd.read_csv(drop_streams_path).astype(int)
         wt = wt[~wt[basin_id_field].isin(ids_to_drop.values.flatten())]
 
     # group by matching values in columns except for area_sqm and sum the areas in grouped rows
@@ -234,12 +219,12 @@ def apply_weight_table_simplifications(save_dir: str,
     if os.path.exists(merge_streams_path):
         merge_streams = pd.read_csv(merge_streams_path).astype(int)
         for merge_stream in merge_streams.values:
-            # check that both ID's exist before editing
+            # check that both ID's exist before editing - some may have been fixed in previous iterations
             if wt[wt[basin_id_field] == merge_stream[0]].empty or wt[wt[basin_id_field] == merge_stream[1]].empty:
                 continue
             wt[basin_id_field] = wt[basin_id_field].replace(merge_stream[1], merge_stream[0])
-            wt = wt.groupby(wt.columns.drop('area_sqm').tolist()).sum().reset_index()
 
+    wt = wt.groupby(wt.columns.drop('area_sqm').tolist()).sum().reset_index()
     wt = wt.sort_values([basin_id_field, 'area_sqm'], ascending=[True, False])
     wt.to_csv(weight_table_out_path, index=False)
     return
