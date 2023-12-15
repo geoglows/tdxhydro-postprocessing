@@ -61,7 +61,8 @@ def make_thiessen_grid_from_netcdf_sample(lsm_sample: str,
 
     # save the thiessen grid to disc
     logging.info('\tSaving Thiessen grid to disc')
-    tg_gdf.to_parquet(os.path.join(out_dir, os.path.basename(lsm_sample).replace('.nc', '_thiessen_grid.parquet')))
+    new_file_name = os.path.basename(lsm_sample).replace('.nc', '_thiessen_grid.parquet')
+    tg_gdf.to_parquet(os.path.join(out_dir, new_file_name))
     return
 
 
@@ -69,8 +70,8 @@ def make_weight_table_from_thiessen_grid(tg_parquet: str,
                                          out_dir: str,
                                          basins_gdf: gpd.GeoDataFrame,
                                          basin_id_field: str = 'TDXHydroLinkNo') -> None:
-    out_name = os.path.join(out_dir,
-                            'weight_' + os.path.basename(tg_parquet).replace('_thiessen_grid.parquet', '_full.csv'))
+    weight_file_name = os.path.basename(tg_parquet).replace('_thiessen_grid.parquet', '_full.csv')
+    out_name = os.path.join(out_dir, f'weight_{weight_file_name}')
     if os.path.exists(os.path.join(out_dir, out_name)):
         logger.info(f'Weight table already exists: {os.path.basename(out_name)}')
         return
@@ -91,12 +92,9 @@ def make_weight_table_from_thiessen_grid(tg_parquet: str,
 
     intersections.loc[intersections[basin_id_field].isna(), basin_id_field] = 0
 
-    logger.info('\tcalculating number of points')
-    intersections['npoints'] = intersections.groupby(basin_id_field)[basin_id_field].transform('count')
-
     logger.info('\twriting weight table csv')
     (
-        intersections[[basin_id_field, 'area_sqm', 'lon_index', 'lat_index', 'npoints', 'lon', 'lat']]
+        intersections[[basin_id_field, 'area_sqm', 'lon_index', 'lat_index', 'lon', 'lat']]
         .sort_values([basin_id_field, 'area_sqm'])
         .to_csv(out_name, index=False)
     )
@@ -230,8 +228,18 @@ def apply_weight_table_simplifications(save_dir: str,
 
     # group by matching values in columns except for area_sqm and sum the areas in grouped rows
     wt = wt.groupby(wt.columns.drop('area_sqm').tolist()).sum().reset_index()
-    wt = wt.sort_values([basin_id_field, 'area_sqm'], ascending=[True, False])
-    wt['npoints'] = wt.groupby(basin_id_field)[basin_id_field].transform('count')
 
+    # merge small streams into larger streams
+    merge_streams_path = os.path.join(save_dir, 'mod_merge_short_streams.csv')
+    if os.path.exists(merge_streams_path):
+        merge_streams = pd.read_csv(merge_streams_path).astype(int)
+        for merge_stream in merge_streams.values:
+            # check that both ID's exist before editing
+            if wt[wt[basin_id_field] == merge_stream[0]].empty or wt[wt[basin_id_field] == merge_stream[1]].empty:
+                continue
+            wt[basin_id_field] = wt[basin_id_field].replace(merge_stream[1], merge_stream[0])
+            wt = wt.groupby(wt.columns.drop('area_sqm').tolist()).sum().reset_index()
+
+    wt = wt.sort_values([basin_id_field, 'area_sqm'], ascending=[True, False])
     wt.to_csv(weight_table_out_path, index=False)
     return

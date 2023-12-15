@@ -16,13 +16,13 @@ logging.basicConfig(
     stream=sys.stdout,
 )
 
-inputs_path = '/Volumes/EB406_T7_1/TDXHydroGeoParquet'
-outputs_path = '/Volumes/EB406_T7_2/geoglows2/tdxhydro-inputs'
-regions_to_select = '*'
+inputs_path = '/Volumes/T9Hales4TB/TDXHydroGeoParquet'
+outputs_path = '/Volumes/T9Hales4TB/geoglows2/tdxhydro-inputs'
+region_select = '*'
 
 gis_iterable = zip(
-    sorted(glob.glob(os.path.join(inputs_path, f'TDX_streamnet_{regions_to_select}.parquet')), reverse=False),
-    sorted(glob.glob(os.path.join(inputs_path, f'TDX_streamreach_basins_{regions_to_select}.parquet')), reverse=False),
+    sorted(glob.glob(os.path.join(inputs_path, f'TDX_streamnet_{region_select}.parquet')), reverse=False),
+    sorted(glob.glob(os.path.join(inputs_path, f'TDX_streamreach_basins_{region_select}.parquet')), reverse=False),
 )
 
 id_field = 'LINKNO'
@@ -35,7 +35,7 @@ MAKE_RAPID_INPUTS = True
 MAKE_WEIGHT_TABLES = True
 CACHE_GEOMETRY = True
 VELOCITY_FACTOR = None
-MIN_VELOCITY_FACTOR = 0.15
+MIN_VELOCITY_FACTOR = 0.25
 
 warnings.filterwarnings("ignore")
 
@@ -61,6 +61,7 @@ if __name__ == '__main__':
         DROP_SMALL_WATERSHEDS = net_df.loc[net_df['region_number'] == region_num, 'drop_small_watersheds'].values[0]
         DISSOLVE_HEADWATERS = net_df.loc[net_df['region_number'] == region_num, 'dissolve_headwaters'].values[0]
         PRUNE_MAIN_STEMS = net_df.loc[net_df['region_number'] == region_num, 'prune_main_stems'].values[0]
+        MERGE_SHORT_STREAMS = net_df.loc[net_df['region_number'] == region_num, 'merge_short_streams'].values[0]
         MIN_DRAINAGE_AREA_M2 = net_df.loc[net_df['region_number'] == region_num, 'min_area_km2'].values[0] * 1e6
         MIN_HEADWATER_STREAM_ORDER = net_df.loc[net_df['region_number'] == region_num, 'min_stream_order'].values[0]
 
@@ -75,14 +76,18 @@ if __name__ == '__main__':
             # make the master rapid input files
             if not os.path.exists(os.path.join(save_dir, 'rapid_inputs_master.parquet')) or \
                     (CACHE_GEOMETRY and not len(list(glob.glob(os.path.join(save_dir, '*.geoparquet'))))):
-                rp.inputs.rapid_master_files(streams_gpq, save_dir=save_dir, id_field=id_field, ds_id_field=ds_field,
-                                             length_field=length_field, default_velocity_factor=VELOCITY_FACTOR,
+                rp.inputs.rapid_master_files(streams_gpq,
+                                             save_dir=save_dir, id_field=id_field, ds_id_field=ds_field,
+                                             length_field=length_field,
+                                             default_velocity_factor=VELOCITY_FACTOR,
                                              drop_small_watersheds=DROP_SMALL_WATERSHEDS,
                                              dissolve_headwaters=DISSOLVE_HEADWATERS,
                                              prune_branches_from_main_stems=PRUNE_MAIN_STEMS,
-                                             cache_geometry=CACHE_GEOMETRY, min_drainage_area_m2=MIN_DRAINAGE_AREA_M2,
+                                             merge_short_streams=MERGE_SHORT_STREAMS,
+                                             cache_geometry=CACHE_GEOMETRY,
+                                             min_drainage_area_m2=MIN_DRAINAGE_AREA_M2,
                                              min_headwater_stream_order=MIN_HEADWATER_STREAM_ORDER,
-                                             min_velocity_factor=MIN_VELOCITY_FACTOR,)
+                                             min_velocity_factor=MIN_VELOCITY_FACTOR, )
 
             # make the rapid input files
             if MAKE_RAPID_INPUTS and not all([os.path.exists(os.path.join(save_dir, f)) for f in rp.RAPID_FILES]):
@@ -97,10 +102,10 @@ if __name__ == '__main__':
 
             # make the master weight tables
             basins_gdf = None
-            expected_tables = [os.path.basename(f) for f in sample_grids]
-            expected_tables = [f'weight_{f.replace("_thiessen_grid.parquet", "_full.csv")}' for f in expected_tables]
-            expected_tables = [os.path.join(save_dir, f) for f in expected_tables]
-            if not all([os.path.exists(os.path.join(save_dir, f)) for f in expected_tables]):
+            expect_tables = [f'weight_{os.path.basename(f)}' for f in sample_grids]
+            expect_tables = [f.replace('_thiessen_grid.parquet', '_full.csv') for f in expect_tables]
+            expect_tables = [os.path.join(save_dir, f) for f in expect_tables]
+            if not all([os.path.exists(os.path.join(save_dir, f)) for f in expect_tables]):
                 logging.info('Reading basins')
                 basins_gdf = rp.network.correct_0_length_basins(basins_gpq,
                                                                 save_dir=save_dir,
@@ -134,7 +139,7 @@ if __name__ == '__main__':
                     pd.read_csv(out_path)
                     .merge(basins_gdf[[basin_id_field, 'TDXHydroLinkNo']], on=basin_id_field, how='left')
                     .drop(columns=[basin_id_field, ])
-                    [['TDXHydroLinkNo', 'area_sqm', 'lon_index', 'lat_index', 'npoints', 'lon', 'lat']]
+                    [['TDXHydroLinkNo', 'area_sqm', 'lon_index', 'lat_index', 'lon', 'lat']]
                     .to_csv(out_path, index=False)
                 )
 

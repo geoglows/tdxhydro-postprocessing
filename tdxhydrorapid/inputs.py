@@ -39,6 +39,7 @@ def rapid_master_files(streams_gpq: str,
                        drop_small_watersheds: bool = True,
                        dissolve_headwaters: bool = True,
                        prune_branches_from_main_stems: bool = True,
+                       merge_short_streams: bool = True,
                        cache_geometry: bool = True,
                        min_drainage_area_m2: float = 200_000_000,
                        min_headwater_stream_order: int = 3,
@@ -75,7 +76,8 @@ def rapid_master_files(streams_gpq: str,
     Returns:
         None
     """
-    sgdf = gpd.read_parquet(streams_gpq)
+    sgdf = gpd.read_parquet(streams_gpq).set_crs('epsg:4326')
+    logging.info(f'\tNumber of streams: {sgdf.shape[0]}')
 
     # length is in m, divide by estimated m/s to get k in seconds
     logger.info('\tCalculating Muskingum k and x')
@@ -170,10 +172,63 @@ def rapid_master_files(streams_gpq: str,
         streams_to_prune.to_csv(os.path.join(save_dir, 'mod_prune_streams.csv'), index=False)
         sgdf = prune_branches(sgdf, streams_to_prune)
 
+    if merge_short_streams:
+        logging.info('\tFinding short streams to merge')
+        # recreate the directed graph because the network connectivity is now different
+        G = create_directed_graphs(sgdf, id_field, ds_id_field=ds_id_field)
+        # find short rivers that have an upstream or downstream link without crossing a confluence point
+        short_streams_to_merge = {}
+        for river in sgdf.loc[sgdf['musk_k'] < 900, id_field].values:
+            # this river is a confluence of 2 upstreams if it has more than 1 upstream
+            upstreams = list(G.predecessors(river))
+
+            # this river is upstream of a confluence if the number of upstreams to the downstream is more than 1
+            downstream = sgdf.loc[sgdf[id_field] == river, ds_id_field].values[0]
+            downstream_upstreams = [river, ] if downstream == -1 else list(G.predecessors(downstream))
+
+            # if there is a confluence upstream and downstream then it cannot be fixed
+            if len(upstreams) != 1 and len(downstream_upstreams) != 1:
+                continue
+
+            stream_merge_options = [
+                upstreams[0] if len(upstreams) == 1 else -1,
+                downstream if len(downstream_upstreams) == 1 else -1
+            ]
+
+            if stream_merge_options[0] == stream_merge_options[1]:
+                continue
+
+            stream_to_merge_with = (
+                sgdf
+                .loc[sgdf[id_field].isin(stream_merge_options)]
+                .sort_values(by='musk_k', ascending=True)
+                .iloc[0]
+                [id_field]
+            )
+            if stream_to_merge_with not in upstreams:
+                stream_to_merge_with, river = river, stream_to_merge_with
+
+            short_streams_to_merge[river] = {'MergeWith': stream_to_merge_with}
+
+        # write the short stream merges to a csv
+        if len(short_streams_to_merge):
+            short_streams_df = (
+                pd
+                .DataFrame
+                .from_dict(short_streams_to_merge)
+                .T
+                .reset_index()
+                .rename(columns={'index': id_field})
+            )
+            short_streams_df.to_csv(os.path.join(save_dir, 'mod_merge_short_streams.csv'), index=False)
+
+            # merge the short streams
+            sgdf = dissolve_short_streams(sgdf, short_streams_df)
+
     logger.info('\tLabeling watersheds by terminal node')
     for term_node in sgdf[sgdf[ds_id_field] == -1][id_field].values:
-        sgdf.loc[sgdf[id_field].isin(list(nx.ancestors(G, term_node)) + [term_node, ]), 'TerminalNode'] = term_node
-    sgdf['TerminalNode'] = sgdf['TerminalNode'].astype(int)
+        sgdf.loc[sgdf[id_field].isin(list(nx.ancestors(G, term_node)) + [term_node, ]), 'TerminalLink'] = term_node
+    sgdf['TerminalLink'] = sgdf['TerminalLink'].astype(int)
 
     if cache_geometry:
         logger.info('\tWriting altered geometry to geopackage')
@@ -238,14 +293,52 @@ def dissolve_branches(sgdf: pd.DataFrame,
             'velocity_factor': 'last',
             'CountUS': lambda x: 0 if len(x) else x,
         })
-    agg_rules.update({
-        col: (lambda x: -1 if len(x) > 1 else x) for col in sorted(sgdf.columns) if col.startswith('USLINKNO')
-    })
     return sgdf.groupby('LINKNO').agg(agg_rules).reset_index().sort_values('TopologicalOrder')
 
 
 def prune_branches(sdf: pd.DataFrame, streams_to_prune: pd.DataFrame) -> pd.DataFrame:
     return sdf[~sdf['LINKNO'].isin(streams_to_prune.iloc[:, 1].values.flatten())]
+
+
+def dissolve_short_streams(sgdf: gpd.GeoDataFrame, short_streams: pd.DataFrame) -> gpd.GeoDataFrame:
+    """
+    Dissolve short streams that are not connected to a confluence
+
+    Args:
+        sgdf: stream network geodataframe
+
+    Returns:
+        geodataframe
+    """
+    logger.info('\tDissolving short streams')
+    for idx, (river_id_to_keep, river_id_to_drop) in short_streams.iterrows():
+        row_to_keep = sgdf[sgdf['LINKNO'] == river_id_to_keep].copy()
+        row_to_drop = sgdf[sgdf['LINKNO'] == river_id_to_drop].copy()
+
+        # if both ids are not in the dataframe then skip. Some rivers will get merged together first
+        if row_to_keep.empty or row_to_drop.empty:
+            continue
+
+        combined_geometry = (
+            gpd
+            .GeoSeries(sgdf[sgdf['LINKNO'].isin([river_id_to_keep, river_id_to_drop])].geometry)
+            .unary_union
+        )
+
+        row_to_keep['geometry'] = combined_geometry
+        row_to_keep['strmDrop'] = row_to_keep['strmDrop'] + row_to_drop['strmDrop']
+        row_to_keep['Length'] = row_to_keep['Length'] + row_to_drop['Length']
+        row_to_keep['Slope'] = row_to_keep['strmDrop'] / row_to_keep['Length']
+        row_to_keep['StraightL'] = row_to_keep['Length'] + row_to_drop['StraightL']
+        row_to_keep['USContArea'] = min([row_to_keep['USContArea'].values[0], row_to_drop['USContArea'].values[0]])
+        row_to_keep['DSContArea'] = max([row_to_keep['DSContArea'].values[0], row_to_drop['DSContArea'].values[0]])
+        row_to_keep['musk_k'] = row_to_keep['musk_k'] + row_to_drop['musk_k']
+        row_to_keep['LengthGeodesicMeters'] = row_to_keep['LengthGeodesicMeters'] + row_to_drop['LengthGeodesicMeters']
+
+        sgdf = sgdf[~sgdf['LINKNO'].isin([river_id_to_keep, river_id_to_drop])]
+        sgdf = pd.concat([sgdf, row_to_keep])
+        sgdf.loc[sgdf['DSLINKNO'] == river_id_to_drop, 'DSLINKNO'] = river_id_to_keep
+    return gpd.GeoDataFrame(sgdf.reset_index(drop=True))
 
 
 def rapid_input_csvs(sdf: pd.DataFrame,

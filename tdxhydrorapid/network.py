@@ -47,8 +47,6 @@ def find_headwater_branches_to_dissolve(sdf: pd.DataFrame or gpd.GeoDataFrame,
     order1 = sdf[sdf['strmOrder'] == (min_order_to_keep - 1)]['LINKNO'].values.flatten()
     order2 = sdf[sdf['strmOrder'] == min_order_to_keep]
 
-    # alternatively the only upstreams must be 1st orders, all else are -1
-    # order2 = order2[order2[us_cols].isin(order1).sum(axis=1) + (order2[us_cols] == -1).sum(axis=1) == len(us_cols)]
     # select rows where 2+ of the 2+ upstreams are 1st order (ie this is the first 2nd order in the chain)
     order2 = order2[order2[us_cols].isin(order1).sum(axis=1) >= 2]
     order2 = order2[['LINKNO', ]]
@@ -77,8 +75,8 @@ def find_branches_to_prune(sdf: gpd.GeoDataFrame or pd.DataFrame,
         siblings = [s for s in siblings if s != row[id_field]]
 
         # if there is only 1 sibling, we want to merge with that one
+        # if there are 2+ siblings, we want need to figure out which one to merge with
         if len(siblings) > 1:
-            # if there are 2 siblings, we want need to figure out which one to merge with
             sibling_stream_orders = sdf[sdf[id_field].isin(siblings)]['strmOrder'].values
 
             # if the row to be pruned has the same order as 1 of the siblings, pick the highest stream order
@@ -108,7 +106,7 @@ def find_branches_to_prune(sdf: gpd.GeoDataFrame or pd.DataFrame,
                     print(siblings)
                     print(row)
 
-        # In the case where there is a 3 river confluence, there may be more than 1 order 1 stream that must be merged. 
+        # In the case where there is a 3 river confluence, there may be more than 1 order 1 stream that must be merged.
         # Instead of creating a dictionary to store these values (which can only have one unique key), we use a DataFrame directly
         new_row = {'LINKNO': siblings[0], 'LINKTODROP': row[id_field]}
         sibling_pairs.loc[sibling_pairs.shape[0]] = new_row
