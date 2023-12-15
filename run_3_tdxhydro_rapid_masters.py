@@ -36,6 +36,7 @@ MAKE_WEIGHT_TABLES = True
 CACHE_GEOMETRY = True
 VELOCITY_FACTOR = None
 MIN_VELOCITY_FACTOR = 0.25
+MIN_K_VALUE = 900
 
 warnings.filterwarnings("ignore")
 
@@ -44,7 +45,6 @@ if __name__ == '__main__':
     net_df = pd.read_excel('./tdxhydrorapid/network_data/processing_options.xlsx')
 
     for streams_gpq, basins_gpq in gis_iterable:
-        # Identify the region being processed
         region_num = os.path.basename(streams_gpq)
         region_num = region_num.split('_')[2]
         region_num = int(region_num)
@@ -87,7 +87,8 @@ if __name__ == '__main__':
                                              cache_geometry=CACHE_GEOMETRY,
                                              min_drainage_area_m2=MIN_DRAINAGE_AREA_M2,
                                              min_headwater_stream_order=MIN_HEADWATER_STREAM_ORDER,
-                                             min_velocity_factor=MIN_VELOCITY_FACTOR, )
+                                             min_velocity_factor=MIN_VELOCITY_FACTOR,
+                                             min_k_value=MIN_K_VALUE, )
 
             # make the rapid input files
             if MAKE_RAPID_INPUTS and not all([os.path.exists(os.path.join(save_dir, f)) for f in rp.RAPID_FILES]):

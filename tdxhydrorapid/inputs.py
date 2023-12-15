@@ -43,7 +43,8 @@ def rapid_master_files(streams_gpq: str,
                        cache_geometry: bool = True,
                        min_drainage_area_m2: float = 200_000_000,
                        min_headwater_stream_order: int = 3,
-                       min_velocity_factor: float = 0.25, ) -> None:
+                       min_velocity_factor: float = 0.25,
+                       min_k_value: int = 900, ) -> None:
     """
     Create RAPID master files from a stream network
 
@@ -178,7 +179,7 @@ def rapid_master_files(streams_gpq: str,
         G = create_directed_graphs(sgdf, id_field, ds_id_field=ds_id_field)
         # find short rivers that have an upstream or downstream link without crossing a confluence point
         short_streams_to_merge = {}
-        for river in sgdf.loc[sgdf['musk_k'] < 900, id_field].values:
+        for river in sgdf.loc[sgdf['musk_k'] < min_k_value, id_field].values:
             # this river is a confluence of 2 upstreams if it has more than 1 upstream
             upstreams = list(G.predecessors(river))
 
@@ -199,11 +200,8 @@ def rapid_master_files(streams_gpq: str,
                 continue
 
             stream_to_merge_with = (
-                sgdf
-                .loc[sgdf[id_field].isin(stream_merge_options)]
-                .sort_values(by='musk_k', ascending=True)
-                .iloc[0]
-                [id_field]
+                sgdf.loc[sgdf[id_field].isin(stream_merge_options)]
+                .sort_values(by='musk_k', ascending=True).iloc[0][id_field]
             )
             if stream_to_merge_with not in upstreams:
                 stream_to_merge_with, river = river, stream_to_merge_with
@@ -213,12 +211,8 @@ def rapid_master_files(streams_gpq: str,
         # write the short stream merges to a csv
         if len(short_streams_to_merge):
             short_streams_df = (
-                pd
-                .DataFrame
-                .from_dict(short_streams_to_merge)
-                .T
-                .reset_index()
-                .rename(columns={'index': id_field})
+                pd.DataFrame.from_dict(short_streams_to_merge)
+                .T.reset_index().rename(columns={'index': id_field})
             )
             short_streams_df.to_csv(os.path.join(save_dir, 'mod_merge_short_streams.csv'), index=False)
 
