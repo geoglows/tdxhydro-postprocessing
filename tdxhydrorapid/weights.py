@@ -19,8 +19,13 @@ __all__ = [
 ]
 
 
-def make_thiessen_grid_from_netcdf_sample(lsm_sample: str,
-                                          out_dir: str, ) -> None:
+def make_thiessen_grid_from_netcdf_sample(lsm_sample: str, out_dir: str, ) -> None:
+    new_file_name = os.path.basename(lsm_sample).replace('.nc', '_thiessen_grid.parquet')
+    new_file_name = os.path.join(out_dir, new_file_name)
+    if os.path.exists(new_file_name):
+        logger.info(f'Thiessen grid already exists: {os.path.basename(new_file_name)}')
+        return
+
     # Extract xs and ys dimensions from the ds
     lsm_ds = xr.open_dataset(lsm_sample)
     x_var = [v for v in lsm_ds.variables if v in ('lon', 'longitude',)][0]
@@ -61,8 +66,7 @@ def make_thiessen_grid_from_netcdf_sample(lsm_sample: str,
 
     # save the thiessen grid to disc
     logging.info('\tSaving Thiessen grid to disc')
-    new_file_name = os.path.basename(lsm_sample).replace('.nc', '_thiessen_grid.parquet')
-    tg_gdf.to_parquet(os.path.join(out_dir, new_file_name))
+    tg_gdf.to_parquet(new_file_name)
     return
 
 
