@@ -11,7 +11,7 @@ tdx_inputs_dir = '/Volumes/T9Hales4TB/geoglows2/tdxhydro-inputs'
 final_output_dir = '/Volumes/T9Hales4TB/geoglows2/'
 vpu_inputs_dir = os.path.join(final_output_dir, 'inputs')
 gpkg_dir = os.path.join(final_output_dir, 'streams')
-vpu_table = './tdxhydrorapid/network_data/vpu_table.csv'
+vpu_assignment_table = './tdxhydrorapid/network_data/vpu_table.csv'
 
 logging.basicConfig(
     level=logging.INFO,
@@ -24,9 +24,10 @@ os.makedirs(vpu_inputs_dir, exist_ok=True)
 os.makedirs(gpkg_dir, exist_ok=True)
 
 logging.info('Creating Model Master Table')
-if not os.path.exists(os.path.join(vpu_inputs_dir, 'geoglows-v2-master-table.parquet')):
-    rp.inputs.concat_tdxregions(tdx_inputs_dir, vpu_inputs_dir, vpu_table)
-mdf = pd.read_parquet(os.path.join(vpu_inputs_dir, 'geoglows-v2-master-table.parquet'))
+master_table_path = os.path.join(os.path.dirname(vpu_inputs_dir), 'geoglows-v2-master-table.parquet')
+if not os.path.exists(master_table_path):
+    rp.inputs.concat_tdxregions(tdx_inputs_dir, vpu_assignment_table, master_table_path)
+mdf = pd.read_parquet(master_table_path)
 logging.info(f'Total streams: {len(mdf)}')
 
 for vpu in sorted(mdf['VPUCode'].unique()):

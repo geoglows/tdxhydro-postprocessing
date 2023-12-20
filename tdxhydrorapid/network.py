@@ -146,19 +146,24 @@ def identify_0_length(gdf: gpd.GeoDataFrame,
     case3_ids = []
     case4_ids = []
 
-    for rivid in gdf[gdf[length_col] == 0][stream_id_col].values:
+    for rivid in gdf[gdf[length_col] <= 0.01][stream_id_col].values:
         feat = gdf[gdf[stream_id_col] == rivid]
 
+        upstreams = gdf[gdf[ds_id_col] == rivid][stream_id_col].values
+
         # Case 1
-        if feat[ds_id_col].values == -1 and feat['USLINKNO1'].values == -1 and feat['USLINKNO2'].values == -1:
+        # if feat[ds_id_col].values == -1 and feat['USLINKNO1'].values == -1 and feat['USLINKNO2'].values == -1:
+        if feat[ds_id_col].values == -1 and all([x == -1 for x in upstreams]):
             case1_ids.append(rivid)
 
         # Case 2
-        elif feat[ds_id_col].values != -1 and feat['USLINKNO1'].values != -1 and feat['USLINKNO2'].values != -1:
+        # elif feat[ds_id_col].values != -1 and feat['USLINKNO1'].values != -1 and feat['USLINKNO2'].values != -1:
+        elif feat[ds_id_col].values != -1 and all([x != -1 for x in upstreams]):
             case2_ids.append(rivid)
 
         # Case 3
-        elif feat[ds_id_col].values == -1 and feat['USLINKNO1'].values != -1 and feat['USLINKNO2'].values != -1:
+        # elif feat[ds_id_col].values == -1 and feat['USLINKNO1'].values != -1 and feat['USLINKNO2'].values != -1:
+        elif feat[ds_id_col].values == -1 and all([x != -1 for x in upstreams]):
             case3_ids.append(rivid)
 
         # Case 4
@@ -201,8 +206,10 @@ def correct_0_length_streams(sgdf: gpd.GeoDataFrame,
 
     # Case 3 - Coastal w/ upstreams but no downstream - Assign small non-zero length
     # Apply before case 2 to handle some edges cases where zero length basins drain into other zero length basins
-    c3_us_ids = sgdf[sgdf[id_field].isin(zero_length_df['case3'].dropna().values)][
-        ['USLINKNO1', 'USLINKNO2']].values.flatten()
+    # c3_us_ids = sgdf[sgdf[id_field].isin(zero_length_df['case3'].dropna().values)][
+    #     ['USLINKNO1', 'USLINKNO2']].values.flatten()
+    c3_us_ids = sgdf[sgdf['DSLINKNO'].isin(zero_length_df['case3'].dropna().values)][id_field].unique().flatten()
+
     sgdf.loc[sgdf[id_field].isin(c3_us_ids), 'DSLINKNO'] = -1
     sgdf = sgdf[~sgdf['LINKNO'].isin(zero_length_df['case3'].dropna().values)]
 
@@ -212,14 +219,13 @@ def correct_0_length_streams(sgdf: gpd.GeoDataFrame,
     c2 = c2.sort_values(by=['DSLINKNO'], ascending=True)
     c2 = c2['LINKNO'].values
     for river_id in c2:
-        ids_to_apply = sgdf.loc[sgdf[id_field] == river_id, ['USLINKNO1', 'USLINKNO2', 'DSLINKNO']]
+        # ids_to_apply = sgdf.loc[sgdf[id_field] == river_id, ['USLINKNO1', 'USLINKNO2', 'DSLINKNO']]
+        dslinkno = sgdf.loc[sgdf[id_field] == river_id, 'DSLINKNO'].values[0]
+        upstreams = sgdf.loc[sgdf['DSLINKNO'] == river_id, 'LINKNO'].unique().flatten()
         # if the downstream basin is also a zero length basin, find the basin 1 step further downstream
-        if ids_to_apply['DSLINKNO'].values[0] in c2:
-            ids_to_apply['DSLINKNO'] = \
-                sgdf.loc[sgdf[id_field] == ids_to_apply['DSLINKNO'].values[0], 'DSLINKNO'].values[0]
-        sgdf.loc[
-            sgdf[id_field].isin(ids_to_apply[['USLINKNO1', 'USLINKNO2']].values.flatten()), 'DSLINKNO'] = \
-            ids_to_apply['DSLINKNO'].values[0]
+        if dslinkno in c2:
+            dslinkno = sgdf.loc[sgdf[id_field] == dslinkno, 'DSLINKNO'].values[0]
+        sgdf.loc[sgdf[id_field].isin(upstreams), 'DSLINKNO'] = dslinkno
 
     # Remove the rows corresponding to the rivers to be deleted
     sgdf = sgdf[~sgdf['LINKNO'].isin(c2)]
@@ -293,7 +299,7 @@ def make_final_streams(final_inputs_directory: str,
 
     print('merging with master table')
     mgdf = mgdf.merge(pd.read_parquet(os.path.join(final_inputs_directory, 'geoglows-v2-master-table.parquet')),
-                      on='TDXHydroLinkNo', how='inner')
+                      on='LINKNO', how='inner')
 
     for vpu_code in sorted(mgdf['VPUCode'].unique()):
         print(vpu_code)

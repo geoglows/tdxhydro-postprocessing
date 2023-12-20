@@ -73,7 +73,7 @@ def make_thiessen_grid_from_netcdf_sample(lsm_sample: str, out_dir: str, ) -> No
 def make_weight_table_from_thiessen_grid(tg_parquet: str,
                                          out_dir: str,
                                          basins_gdf: gpd.GeoDataFrame,
-                                         basin_id_field: str = 'TDXHydroLinkNo') -> None:
+                                         basin_id_field: str = 'LINKNO') -> None:
     weight_file_name = os.path.basename(tg_parquet).replace('_thiessen_grid.parquet', '_full.csv')
     out_name = os.path.join(out_dir, f'weight_{weight_file_name}')
     if os.path.exists(os.path.join(out_dir, out_name)):
@@ -107,7 +107,7 @@ def make_weight_table_from_thiessen_grid(tg_parquet: str,
 def make_weight_table_from_netcdf(lsm_sample: str,
                                   out_dir: str,
                                   basins_gdf: gpd.GeoDataFrame,
-                                  basin_id_field: str = 'TDXHydroLinkNo') -> None:
+                                  basin_id_field: str = 'LINKNO') -> None:
     out_name = os.path.join(out_dir, 'weight_' + os.path.basename(os.path.splitext(lsm_sample)[0]) + '_full.csv')
     if os.path.exists(os.path.join(out_dir, out_name)):
         logger.info(f'Weight table already exists: {os.path.basename(out_name)}')

@@ -91,8 +91,8 @@ def rapid_master_files(streams_gpq: str,
     sgdf['musk_k'] = sgdf['LengthGeodesicMeters'] / sgdf['velocity_factor']
     sgdf["musk_x"] = default_x
 
-    logger.info('\tRemoving 0 length segments')
-    if 0 in sgdf[length_field].values:
+    if not sgdf[sgdf[length_field] <= 0.01].empty:
+        logger.info('\tRemoving 0 length segments')
         zero_length_fixes_df = identify_0_length(sgdf, id_field, ds_id_field, length_field)
         zero_length_fixes_df.to_csv(os.path.join(save_dir, 'mod_zero_length_streams.csv'), index=False)
         sgdf = correct_0_length_streams(sgdf, zero_length_fixes_df, id_field)
@@ -221,7 +221,7 @@ def rapid_master_files(streams_gpq: str,
     if cache_geometry:
         logger.info('\tWriting altered geometry to geopackage')
         region_number = sgdf['TDXHydroRegion'].values[0]
-        gpd.GeoDataFrame(sgdf)[['TDXHydroLinkNo', 'geometry']].to_parquet(
+        gpd.GeoDataFrame(sgdf)[['LINKNO', 'geometry']].to_parquet(
             os.path.join(save_dir, f"{region_number}_altered_network.geoparquet"))
 
     logger.info('\tWriting RAPID master parquet')
@@ -251,25 +251,12 @@ def dissolve_branches(sgdf: pd.DataFrame,
     agg_rules = {
         # 'LINKNO': 'last',
         'DSLINKNO': 'last',
-        'DSNODEID': 'last',
         'strmOrder': 'last',
-        'Length': lambda x: x.sum() if len(x) > 1 else x.iloc[0],
         'Magnitude': 'last',
         'DSContArea': 'last',
-        'strmDrop': lambda x: x.iloc[-1] + x.iloc[:-1].max() if len(x) > 1 else x.iloc[0],
-        'Slope': lambda x: -1,
-        'StraightL': lambda x: -1,
         'USContArea': lambda x: x.iloc[:-1].sum() if len(x) > 1 else x.iloc[0],
-        'WSNO': 'last',
-        'DOUTEND': 'last',
-        'DOUTSTART': lambda x: x.iloc[:-1].max() if len(x) > 1 else x.iloc[0],
-        'DOUTMID': lambda x: x.mean() if len(x) > 1 else x.iloc[0],
         'LengthGeodesicMeters': 'last',
-        'lat': 'last',
-        'lon': 'last',
-        'z': 'last',
         'TDXHydroRegion': 'last',
-        'TDXHydroLinkNo': 'last',
         'TopologicalOrder': 'last',
         'geometry': geometry_diss,
     }
@@ -314,10 +301,6 @@ def dissolve_short_streams(sgdf: gpd.GeoDataFrame, short_streams: pd.DataFrame) 
         )
 
         row_to_keep['geometry'] = combined_geometry
-        row_to_keep['strmDrop'] = row_to_keep['strmDrop'] + row_to_drop['strmDrop']
-        row_to_keep['Length'] = row_to_keep['Length'] + row_to_drop['Length']
-        row_to_keep['Slope'] = row_to_keep['strmDrop'] / row_to_keep['Length']
-        row_to_keep['StraightL'] = row_to_keep['Length'] + row_to_drop['StraightL']
         row_to_keep['USContArea'] = min([row_to_keep['USContArea'].values[0], row_to_drop['USContArea'].values[0]])
         row_to_keep['DSContArea'] = max([row_to_keep['DSContArea'].values[0], row_to_drop['DSContArea'].values[0]])
         row_to_keep['musk_k'] = row_to_keep['musk_k'] + row_to_drop['musk_k']
@@ -371,7 +354,7 @@ def rapid_input_csvs(sdf: pd.DataFrame,
             row_dict[f'UpstreamID{i + 1}'] = list_upstream_ids[i]
         rapid_connect.append(row_dict)
 
-        # Fill in NaN values for any missing upstream IDs
+    # Fill in NaN values for any missing upstream IDs
     for i in range(max_count_upstream):
         col_name = f'UpstreamID{i + 1}'
         for row in rapid_connect:
@@ -380,35 +363,42 @@ def rapid_input_csvs(sdf: pd.DataFrame,
 
     logger.info('\tWriting Rapid Connect CSV')
     df = pd.DataFrame(rapid_connect)
-    upstream_columns = [x for x in df.columns if x.startswith('UpstreamID')]
-    header_number = _get_tdxhydro_header_number(sdf['TDXHydroRegion'].values.flatten()[0])
-    df[df[['HydroID', 'NextDownID', *upstream_columns]] > 0] += int(header_number * 10_000_000)
     df.to_csv(os.path.join(save_dir, 'rapid_connect.csv'), index=False, header=None)
 
     logger.info('\tWriting RAPID Input CSVS')
-    sdf['TDXHydroLinkNo'].to_csv(os.path.join(save_dir, "riv_bas_id.csv"), index=False, header=False)
+    sdf.loc[:, ['lat', 'lon', 'z']] = 0
+    sdf['LINKNO'].to_csv(os.path.join(save_dir, "riv_bas_id.csv"), index=False, header=False)
     sdf["musk_k"].to_csv(os.path.join(save_dir, "k.csv"), index=False, header=False)
     sdf["musk_x"].to_csv(os.path.join(save_dir, "x.csv"), index=False, header=False)
-    sdf[['TDXHydroLinkNo', 'lat', 'lon', 'z']].to_csv(os.path.join(save_dir, "comid_lat_lon_z.csv"), index=False)
+    sdf[['LINKNO', 'lat', 'lon', 'z']].to_csv(os.path.join(save_dir, "comid_lat_lon_z.csv"), index=False)
     return
 
 
-def concat_tdxregions(tdxinputs_dir: str, vpu_dir: str, vpu_table: str) -> None:
+def concat_tdxregions(tdxinputs_dir: str, vpu_assignment_table: str, master_table_path: str) -> None:
     mdf = pd.concat([pd.read_parquet(f) for f in glob.glob(os.path.join(tdxinputs_dir, '*', 'rapid_inputs*.parquet'))])
 
-    # relabel the terminal nodes as globally unique IDs
-    mdf['TerminalLink'] = (
-            mdf['TDXHydroLinkNo'].astype(str).str[:2].astype(int) * 10_000_000 + mdf['TerminalLink']
-    ).astype(int)
-
-    vpu_df = pd.read_csv(vpu_table)
+    vpu_df = pd.read_csv(vpu_assignment_table)
     mdf = mdf.merge(vpu_df, on='TerminalLink', how='left')
 
     if not mdf[mdf['VPUCode'].isna()].empty:
+        mdf[mdf['VPUCode'].isna()].to_csv(os.path.join(os.path.dirname(master_table_path), 'missing_vpu_label.csv'))
         raise RuntimeError('Some terminal nodes are not in the VPU table and must be fixed before continuing.')
     mdf['VPUCode'] = mdf['VPUCode'].astype(int)
 
-    mdf.to_parquet(os.path.join(vpu_dir, 'geoglows-v2-master-table.parquet'))
+    mdf[[
+        'LINKNO',
+        'DSLINKNO',
+        'strmOrder',
+        'USContArea',
+        'DSContArea',
+        'TDXHydroRegion',
+        'VPUCode',
+        'TopologicalOrder',
+        'LengthGeodesicMeters',
+        'TerminalLink',
+        'musk_k',
+        'musk_x',
+    ]].to_parquet(master_table_path)
     return
 
 
@@ -429,7 +419,7 @@ def vpu_files_from_masters(vpu_df: pd.DataFrame,
     weight_tables = [x for x in weight_tables if '_full.csv' not in x]
     for weight_table in weight_tables:
         a = pd.read_csv(weight_table)
-        a = a[a.iloc[:, 0].astype(int).isin(vpu_df['TDXHydroLinkNo'].values)]
+        a = a[a.iloc[:, 0].astype(int).isin(vpu_df['LINKNO'].values)]
         a.to_csv(os.path.join(vpu_dir, os.path.basename(weight_table)), index=False)
 
     if not make_gpkg:
@@ -441,7 +431,9 @@ def vpu_files_from_masters(vpu_df: pd.DataFrame,
         (
             gpd
             .read_parquet(altered_network)
-            .merge(vpu_df, on='TDXHydroLinkNo', how='inner')
+            .merge(vpu_df, on='LINKNO', how='inner')
+            .set_crs('epsg:4326')
+            .to_crs('epsg:3857')
             .to_file(vpu_network, driver='GPKG')
         )
     return
