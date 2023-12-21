@@ -218,6 +218,8 @@ def rapid_master_files(streams_gpq: str,
         sgdf.loc[sgdf[id_field].isin(list(nx.ancestors(G, term_node)) + [term_node, ]), 'TerminalLink'] = term_node
     sgdf['TerminalLink'] = sgdf['TerminalLink'].astype(int)
 
+    logger.info(f'Final Stream Count: {sgdf.shape[0]}')
+
     if cache_geometry:
         logger.info('\tWriting altered geometry to geopackage')
         region_number = sgdf['TDXHydroRegion'].values[0]
