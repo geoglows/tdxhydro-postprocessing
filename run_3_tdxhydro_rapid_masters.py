@@ -31,7 +31,8 @@ MAKE_WEIGHT_TABLES = True
 CACHE_GEOMETRY = True
 VELOCITY_FACTOR = None
 MIN_VELOCITY_FACTOR = 0.25
-MIN_K_VALUE = 900
+MIN_K_VALUE = 900  # 15 minutes in seconds
+LAKE_K_VALUE = 3600  # 1 hour in seconds
 
 warnings.filterwarnings("ignore")
 

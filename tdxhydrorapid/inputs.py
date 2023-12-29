@@ -44,7 +44,8 @@ def rapid_master_files(streams_gpq: str,
                        min_drainage_area_m2: float = 200_000_000,
                        min_headwater_stream_order: int = 3,
                        min_velocity_factor: float = 0.25,
-                       min_k_value: int = 900, ) -> None:
+                       min_k_value: int = 900,
+                       lake_min_k: int = 3600, ) -> None:
     """
     Create RAPID master files from a stream network
 
@@ -90,6 +91,16 @@ def rapid_master_files(streams_gpq: str,
     sgdf['velocity_factor'] = sgdf['velocity_factor'].clip(lower=min_velocity_factor)
     sgdf['musk_k'] = sgdf['LengthGeodesicMeters'] / sgdf['velocity_factor']
     sgdf["musk_x"] = default_x
+
+    # set the k value for lakes
+    logger.info('\tSetting k and x values for lake rivers')
+    lake_ids = pd.read_csv(os.path.join(os.path.dirname(__file__), 'network_data', 'lake_table.csv')).values.flatten()
+    sgdf.loc[sgdf['LINKNO'].isin(lake_ids), 'musk_k'] = np.minimum(
+        sgdf.loc[sgdf['LINKNO'].isin(lake_ids), 'musk_k'].values,
+        lake_min_k
+    )
+    # set the x value to 0.01 for lakes (max attenuation while avoiding possible errors with 0.0)
+    sgdf.loc[sgdf['LINKNO'].isin(lake_ids), 'musk_x'] = 0.01
 
     if not sgdf[sgdf[length_field] <= 0.01].empty:
         logger.info('\tRemoving 0 length segments')
