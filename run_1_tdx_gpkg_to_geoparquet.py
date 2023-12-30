@@ -1,12 +1,21 @@
 import glob
 import json
+import logging
 import os
+import sys
 
 import geopandas as gpd
 from pyproj import Geod
 
 gpkg_dir = '/Volumes/T9Hales4TB/TDXHydro'
 gpq_dir = '/Volumes/T9Hales4TB/TDXHydroGeoParquet'
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s %(levelname)s %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S',
+    stream=sys.stdout,
+)
 
 
 def _calculate_geodesic_length(line) -> float:
@@ -24,7 +33,7 @@ def _calculate_geodesic_length(line) -> float:
 
 
 if __name__ == '__main__':
-    print('Converting TDX-Hydro GPKG to Geoparquet')
+    logging.info('Converting TDX-Hydro GPKG to Geoparquet')
     # add globally unique ID numbers
     with open(os.path.join(os.path.dirname(__file__), 'tdxhydrorapid', 'network_data', 'tdx_header_numbers.json')) as f:
         tdx_header_numbers = json.load(f)
@@ -35,7 +44,7 @@ if __name__ == '__main__':
     for gpkg in sorted(glob.glob(os.path.join(gpkg_dir, 'TDX*.gpkg'))):
         region_number = os.path.basename(gpkg).split('_')[-2]
         tdx_header_number = int(tdx_header_numbers[str(region_number)])
-        print(gpkg)
+        logging.info(gpkg)
 
         out_file_name = os.path.join(gpq_dir, os.path.basename(gpkg).replace('.gpkg', '.parquet'))
         if os.path.exists(out_file_name):
