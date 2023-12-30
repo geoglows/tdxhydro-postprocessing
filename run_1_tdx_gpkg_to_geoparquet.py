@@ -24,6 +24,7 @@ def _calculate_geodesic_length(line) -> float:
 
 
 if __name__ == '__main__':
+    print('Converting TDX-Hydro GPKG to Geoparquet')
     # add globally unique ID numbers
     with open(os.path.join(os.path.dirname(__file__), 'tdxhydrorapid', 'network_data', 'tdx_header_numbers.json')) as f:
         tdx_header_numbers = json.load(f)

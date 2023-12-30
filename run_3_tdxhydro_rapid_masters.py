@@ -18,10 +18,11 @@ logging.basicConfig(
 
 inputs_path = '/Volumes/T9Hales4TB/TDXHydroGeoParquet'
 outputs_path = '/Volumes/T9Hales4TB/geoglows2/tdxhydro-inputs'
+sample_grids = glob.glob('/Volumes/T9Hales4TB/RunoffSampleGrids/*.parquet')
+net_df = pd.read_excel('./tdxhydrorapid/network_data/processing_options.xlsx')
 region_select = '*'
 
 id_field = 'LINKNO'
-basin_id_field = 'LINKNO'
 ds_field = 'DSLINKNO'
 order_field = 'strmOrder'
 length_field = 'LengthGeodesicMeters'
@@ -40,8 +41,6 @@ gis_iterable = zip(
     sorted(glob.glob(os.path.join(inputs_path, f'TDX_streamnet_{region_select}.parquet')), reverse=False),
     sorted(glob.glob(os.path.join(inputs_path, f'TDX_streamreach_basins_{region_select}.parquet')), reverse=False),
 )
-sample_grids = glob.glob('./era5_thiessen_grid_parquets/*.parquet')
-net_df = pd.read_excel('./tdxhydrorapid/network_data/processing_options.xlsx')
 
 for streams_gpq, basins_gpq in gis_iterable:
     region_num = os.path.basename(streams_gpq)
@@ -108,7 +107,7 @@ for streams_gpq, basins_gpq in gis_iterable:
             logging.info('Reading basins')
             basins_gdf = rp.network.correct_0_length_basins(basins_gpq,
                                                             save_dir=save_dir,
-                                                            stream_id_col=basin_id_field)
+                                                            stream_id_col=id_field)
 
             # reproject the basins to epsg 4326 if needed
             if basins_gdf.crs != 'epsg:4326':
@@ -118,7 +117,7 @@ for streams_gpq, basins_gpq in gis_iterable:
                 rp.weights.make_weight_table_from_thiessen_grid(sample_grid,
                                                                 save_dir,
                                                                 basins_gdf=basins_gdf,
-                                                                basin_id_field=basin_id_field)
+                                                                id_field=id_field)
 
         for weight_table in glob.glob(os.path.join(save_dir, 'weight*full.csv')):
             out_path = weight_table.replace('_full.csv', '.csv')
@@ -127,7 +126,7 @@ for streams_gpq, basins_gpq in gis_iterable:
                 logging.info(f'Weight table already exists: {os.path.basename(out_path)}')
                 continue
 
-            rp.weights.apply_weight_table_simplifications(save_dir, weight_table, out_path, basin_id_field)
+            rp.weights.apply_weight_table_simplifications(save_dir, weight_table, out_path, id_field)
 
         # check that number streams in rapid inputs matches the number of streams in the weight tables
         rp.tdxhydro_corrections_consistent(save_dir)

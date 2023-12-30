@@ -73,7 +73,7 @@ def make_thiessen_grid_from_netcdf_sample(lsm_sample: str, out_dir: str, ) -> No
 def make_weight_table_from_thiessen_grid(tg_parquet: str,
                                          out_dir: str,
                                          basins_gdf: gpd.GeoDataFrame,
-                                         basin_id_field: str = 'LINKNO') -> None:
+                                         id_field: str = 'LINKNO') -> None:
     weight_file_name = os.path.basename(tg_parquet).replace('_thiessen_grid.parquet', '_full.csv')
     out_name = os.path.join(out_dir, f'weight_{weight_file_name}')
     if os.path.exists(os.path.join(out_dir, out_name)):
@@ -94,12 +94,12 @@ def make_weight_table_from_thiessen_grid(tg_parquet: str,
     intersections = gpd.overlay(tg_gdf, basins_gdf, how='intersection')
     intersections['area_sqm'] = intersections.geometry.to_crs({'proj': 'cea'}).area
 
-    intersections.loc[intersections[basin_id_field].isna(), basin_id_field] = 0
+    intersections.loc[intersections[id_field].isna(), id_field] = 0
 
     logger.info('\twriting weight table csv')
     (
-        intersections[[basin_id_field, 'area_sqm', 'lon_index', 'lat_index', 'lon', 'lat']]
-        .sort_values([basin_id_field, 'area_sqm'])
+        intersections[[id_field, 'area_sqm', 'lon_index', 'lat_index', 'lon', 'lat']]
+        .sort_values([id_field, 'area_sqm'])
         .to_csv(out_name, index=False)
     )
 
@@ -107,7 +107,7 @@ def make_weight_table_from_thiessen_grid(tg_parquet: str,
 def make_weight_table_from_netcdf(lsm_sample: str,
                                   out_dir: str,
                                   basins_gdf: gpd.GeoDataFrame,
-                                  basin_id_field: str = 'LINKNO') -> None:
+                                  id_field: str = 'LINKNO') -> None:
     out_name = os.path.join(out_dir, 'weight_' + os.path.basename(os.path.splitext(lsm_sample)[0]) + '_full.csv')
     if os.path.exists(os.path.join(out_dir, out_name)):
         logger.info(f'Weight table already exists: {os.path.basename(out_name)}')
@@ -178,15 +178,15 @@ def make_weight_table_from_netcdf(lsm_sample: str,
     intersections = gpd.overlay(tg_gdf, basins_gdf, how='intersection')
     intersections['area_sqm'] = intersections.geometry.to_crs({'proj': 'cea'}).area
 
-    intersections.loc[intersections[basin_id_field].isna(), basin_id_field] = 0
+    intersections.loc[intersections[id_field].isna(), id_field] = 0
 
     logger.info('\tcalculating number of points')
-    intersections['npoints'] = intersections.groupby(basin_id_field)[basin_id_field].transform('count')
+    intersections['npoints'] = intersections.groupby(id_field)[id_field].transform('count')
 
     logger.info('\twriting weight table csv')
     (
-        intersections[[basin_id_field, 'area_sqm', 'lon_index', 'lat_index', 'npoints', 'lon', 'lat']]
-        .sort_values([basin_id_field, 'area_sqm'])
+        intersections[[id_field, 'area_sqm', 'lon_index', 'lat_index', 'npoints', 'lon', 'lat']]
+        .sort_values([id_field, 'area_sqm'])
         .to_csv(out_name, index=False)
     )
     return
@@ -195,7 +195,7 @@ def make_weight_table_from_netcdf(lsm_sample: str,
 def apply_weight_table_simplifications(save_dir: str,
                                        weight_table_in_path: str,
                                        weight_table_out_path: str,
-                                       basin_id_field: str = 'streamID') -> None:
+                                       id_field: str = 'LINKNO') -> None:
     logging.info(f'Processing {weight_table_in_path}')
     wt = pd.read_csv(weight_table_in_path)
 
@@ -203,17 +203,17 @@ def apply_weight_table_simplifications(save_dir: str,
     if os.path.exists(headwater_dissolve_path):
         o2_to_dissolve = pd.read_csv(headwater_dissolve_path).fillna(-1).astype(int)
         for streams_to_merge in o2_to_dissolve.values:
-            wt.loc[wt[basin_id_field].isin(streams_to_merge), basin_id_field] = streams_to_merge[0]
+            wt.loc[wt[id_field].isin(streams_to_merge), id_field] = streams_to_merge[0]
 
     streams_to_prune_path = os.path.join(save_dir, 'mod_prune_streams.csv')
     if os.path.exists(streams_to_prune_path):
         ids_to_prune = pd.read_csv(streams_to_prune_path).astype(int).set_index('LINKTODROP')
-        wt[basin_id_field] = wt[basin_id_field].replace(ids_to_prune['LINKNO'])
+        wt[id_field] = wt[id_field].replace(ids_to_prune['LINKNO'])
 
     drop_streams_path = os.path.join(save_dir, 'mod_drop_small_trees.csv')
     if os.path.exists(drop_streams_path):
         ids_to_drop = pd.read_csv(drop_streams_path).astype(int)
-        wt = wt[~wt[basin_id_field].isin(ids_to_drop.values.flatten())]
+        wt = wt[~wt[id_field].isin(ids_to_drop.values.flatten())]
 
     # group by matching values in columns except for area_sqm and sum the areas in grouped rows
     wt = wt.groupby(wt.columns.drop('area_sqm').tolist()).sum().reset_index()
@@ -224,11 +224,11 @@ def apply_weight_table_simplifications(save_dir: str,
         merge_streams = pd.read_csv(merge_streams_path).astype(int)
         for merge_stream in merge_streams.values:
             # check that both ID's exist before editing - some may have been fixed in previous iterations
-            if wt[wt[basin_id_field] == merge_stream[0]].empty or wt[wt[basin_id_field] == merge_stream[1]].empty:
+            if wt[wt[id_field] == merge_stream[0]].empty or wt[wt[id_field] == merge_stream[1]].empty:
                 continue
-            wt[basin_id_field] = wt[basin_id_field].replace(merge_stream[1], merge_stream[0])
+            wt[id_field] = wt[id_field].replace(merge_stream[1], merge_stream[0])
 
     wt = wt.groupby(wt.columns.drop('area_sqm').tolist()).sum().reset_index()
-    wt = wt.sort_values([basin_id_field, 'area_sqm'], ascending=[True, False])
+    wt = wt.sort_values([id_field, 'area_sqm'], ascending=[True, False])
     wt.to_csv(weight_table_out_path, index=False)
     return
