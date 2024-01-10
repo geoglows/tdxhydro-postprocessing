@@ -206,6 +206,7 @@ def rapid_master_files(streams_gpq: str,
     sgdf['velocity_factor'] = sgdf['velocity_factor'].clip(lower=min_velocity_factor)
     sgdf['musk_k'] = sgdf['LengthGeodesicMeters'] / sgdf['velocity_factor']
     sgdf['musk_k'] = sgdf['musk_k'].round(0).astype(int)
+    sgdf['musk_k'] = sgdf['musk_k'].clip(lower=0, upper=100_000)
     sgdf["musk_x"] = default_x
 
     # set the k value for lakes
