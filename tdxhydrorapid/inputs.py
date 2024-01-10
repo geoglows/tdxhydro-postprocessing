@@ -309,7 +309,10 @@ def dissolve_short_streams(sgdf: gpd.GeoDataFrame, short_streams: pd.DataFrame) 
         row_to_keep['geometry'] = combined_geometry
         row_to_keep['USContArea'] = min([row_to_keep['USContArea'].values[0], row_to_drop['USContArea'].values[0]])
         row_to_keep['DSContArea'] = max([row_to_keep['DSContArea'].values[0], row_to_drop['DSContArea'].values[0]])
-        row_to_keep['LengthGeodesicMeters'] = row_to_keep['LengthGeodesicMeters'].values[0] + row_to_drop['LengthGeodesicMeters'].values[0]
+        row_to_keep['LengthGeodesicMeters'] = (
+                row_to_keep['LengthGeodesicMeters'].values[0] +
+                row_to_drop['LengthGeodesicMeters'].values[0]
+        )
 
         sgdf = sgdf[~sgdf['LINKNO'].isin([river_id_to_keep, river_id_to_drop])]
         sgdf = pd.concat([sgdf, row_to_keep])
