@@ -212,7 +212,7 @@ def rapid_master_files(streams_gpq: str,
     logger.info('\tSetting k and x values for lake rivers')
     lake_ids = pd.read_csv(os.path.join(os.path.dirname(__file__), 'network_data', 'lake_table.csv')).values.flatten()
     logger.info(f'\tLake rivers found: {sgdf[sgdf["LINKNO"].isin(lake_ids)].shape[0]}')
-    sgdf.loc[sgdf['LINKNO'].isin(lake_ids), 'musk_k'] = np.minimum(
+    sgdf.loc[sgdf['LINKNO'].isin(lake_ids), 'musk_k'] = np.maximum(
         sgdf.loc[sgdf['LINKNO'].isin(lake_ids), 'musk_k'].values,
         lake_min_k
     )
