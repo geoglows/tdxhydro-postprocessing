@@ -27,7 +27,7 @@ ds_field = 'DSLINKNO'
 order_field = 'strmOrder'
 length_field = 'LengthGeodesicMeters'
 
-MAKE_RAPID_INPUTS = True
+MAKE_RAPID_INPUTS = False
 MAKE_WEIGHT_TABLES = True
 CACHE_GEOMETRY = True
 VELOCITY_FACTOR = None
@@ -46,13 +46,14 @@ for streams_gpq, basins_gpq in gis_iterable:
     region_num = os.path.basename(streams_gpq)
     region_num = region_num.split('_')[2]
     region_num = int(region_num)
+    logging.info(region_num)
+
+    if not bool(net_df.loc[net_df['region_number'] == region_num, 'process'].values[0]):
+        logging.warning(f'Skipping region {region_num}')
+        continue
 
     save_dir = os.path.join(outputs_path, f'{region_num}')
     os.makedirs(save_dir, exist_ok=True)
-
-    if not net_df.loc[net_df['region_number'] == region_num, 'process'].values[0]:
-        logging.warning(f'Skipping region {region_num}')
-        continue
 
     # get configs for each region
     CORRECT_TAUDEM_ERRORS = net_df.loc[net_df['region_number'] == region_num, 'fix_taudem_errors'].values[0]
@@ -63,11 +64,14 @@ for streams_gpq, basins_gpq in gis_iterable:
     MIN_DRAINAGE_AREA_M2 = net_df.loc[net_df['region_number'] == region_num, 'min_area_km2'].values[0] * 1e6
     MIN_HEADWATER_STREAM_ORDER = net_df.loc[net_df['region_number'] == region_num, 'min_stream_order'].values[0]
 
-    # log a bunch of stuff
-    logging.info(region_num)
-    logging.info(save_dir)
-    logging.info(streams_gpq)
-    logging.info(basins_gpq)
+    # cast configs as correct data types
+    CORRECT_TAUDEM_ERRORS = bool(CORRECT_TAUDEM_ERRORS)
+    DROP_SMALL_WATERSHEDS = bool(DROP_SMALL_WATERSHEDS)
+    DISSOLVE_HEADWATERS = bool(DISSOLVE_HEADWATERS)
+    PRUNE_MAIN_STEMS = bool(PRUNE_MAIN_STEMS)
+    MERGE_SHORT_STREAMS = bool(MERGE_SHORT_STREAMS)
+    MIN_DRAINAGE_AREA_M2 = float(MIN_DRAINAGE_AREA_M2)
+    MIN_HEADWATER_STREAM_ORDER = int(MIN_HEADWATER_STREAM_ORDER)
 
     try:
         # make the master rapid input files
@@ -85,7 +89,8 @@ for streams_gpq, basins_gpq in gis_iterable:
                                          min_drainage_area_m2=MIN_DRAINAGE_AREA_M2,
                                          min_headwater_stream_order=MIN_HEADWATER_STREAM_ORDER,
                                          min_velocity_factor=MIN_VELOCITY_FACTOR,
-                                         min_k_value=MIN_K_VALUE, )
+                                         min_k_value=MIN_K_VALUE,
+                                         lake_min_k=LAKE_K_VALUE, )
 
         # make the rapid input files
         if MAKE_RAPID_INPUTS and not all([os.path.exists(os.path.join(save_dir, f)) for f in rp.RAPID_FILES]):

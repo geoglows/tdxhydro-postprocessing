@@ -84,25 +84,6 @@ def rapid_master_files(streams_gpq: str,
     sgdf = gpd.read_parquet(streams_gpq).set_crs('epsg:4326')
     logging.info(f'\tNumber of streams: {sgdf.shape[0]}')
 
-    # length is in m, divide by estimated m/s to get k in seconds
-    logger.info('\tCalculating Muskingum k and x')
-    sgdf['velocity_factor'] = np.exp(0.16842 * np.log(sgdf['DSContArea']) - 4.68).round(3) \
-        if default_velocity_factor is None else default_velocity_factor
-    sgdf['velocity_factor'] = sgdf['velocity_factor'].clip(lower=min_velocity_factor)
-    sgdf['musk_k'] = sgdf['LengthGeodesicMeters'] / sgdf['velocity_factor']
-    sgdf["musk_x"] = default_x
-
-    # set the k value for lakes
-    logger.info('\tSetting k and x values for lake rivers')
-    lake_ids = pd.read_csv(os.path.join(os.path.dirname(__file__), 'network_data', 'lake_table.csv')).values.flatten()
-    logger.info(f'\tLake rivers found: {sgdf[sgdf["LINKNO"].isin(lake_ids)].shape[0]}')
-    sgdf.loc[sgdf['LINKNO'].isin(lake_ids), 'musk_k'] = np.minimum(
-        sgdf.loc[sgdf['LINKNO'].isin(lake_ids), 'musk_k'].values,
-        lake_min_k
-    )
-    # set the x value to 0.01 for lakes (max attenuation while avoiding possible errors with 0.0)
-    sgdf.loc[sgdf['LINKNO'].isin(lake_ids), 'musk_x'] = 0.01
-
     if not sgdf[sgdf[length_field] <= 0.01].empty:
         logger.info('\tRemoving 0 length segments')
         zero_length_fixes_df = identify_0_length(sgdf, id_field, ds_id_field, length_field)
@@ -149,18 +130,6 @@ def rapid_master_files(streams_gpq: str,
             .to_csv(os.path.join(save_dir, 'mod_drop_small_trees.csv'), index=False)
         )
         sgdf = sgdf.loc[~sgdf[id_field].isin(small_tree_segments)]
-
-    logger.info('\tCalculating RAPID connect columns')
-    us_ids = sgdf[id_field].apply(lambda x: list(G.predecessors(x)))
-    count_us = us_ids.apply(lambda x: len(x))
-    max_num_upstream = np.max(count_us)
-    us_ids = us_ids.apply(lambda x: x + [-1, ] * (max_num_upstream - len(x)))
-    us_ids = pd.DataFrame(us_ids.tolist(), index=us_ids.index)
-    upstream_columns = [f'USLINKNO{i}' for i in range(1, us_ids.shape[1] + 1)]
-    us_ids.columns = upstream_columns
-    us_ids['CountUS'] = count_us
-    sgdf = sgdf.drop(columns=[x for x in sgdf.columns if x.startswith('USLINKNO')]).join(us_ids)
-    sgdf[upstream_columns] = sgdf[upstream_columns].fillna(-1).astype(int)
 
     if dissolve_headwaters:
         logger.info('\tFinding headwater streams to dissolve')
@@ -230,6 +199,29 @@ def rapid_master_files(streams_gpq: str,
         sgdf.loc[sgdf[id_field].isin(list(nx.ancestors(G, term_node)) + [term_node, ]), 'TerminalLink'] = term_node
     sgdf['TerminalLink'] = sgdf['TerminalLink'].astype(int)
 
+    # length is in m, divide by estimated m/s to get k in seconds
+    logger.info('\tCalculating Muskingum k and x')
+    sgdf['velocity_factor'] = np.exp(0.16842 * np.log(sgdf['DSContArea']) - 4.68).round(3) \
+        if default_velocity_factor is None else default_velocity_factor
+    sgdf['velocity_factor'] = sgdf['velocity_factor'].clip(lower=min_velocity_factor)
+    sgdf['musk_k'] = sgdf['LengthGeodesicMeters'] / sgdf['velocity_factor']
+    sgdf['musk_k'] = sgdf['musk_k'].round(0).astype(int)
+    sgdf["musk_x"] = default_x
+
+    # set the k value for lakes
+    logger.info('\tSetting k and x values for lake rivers')
+    lake_ids = pd.read_csv(os.path.join(os.path.dirname(__file__), 'network_data', 'lake_table.csv')).values.flatten()
+    logger.info(f'\tLake rivers found: {sgdf[sgdf["LINKNO"].isin(lake_ids)].shape[0]}')
+    sgdf.loc[sgdf['LINKNO'].isin(lake_ids), 'musk_k'] = np.minimum(
+        sgdf.loc[sgdf['LINKNO'].isin(lake_ids), 'musk_k'].values,
+        lake_min_k
+    )
+    # set the x value to 0.01 for lakes (max attenuation while avoiding possible errors with 0.0)
+    sgdf.loc[sgdf['LINKNO'].isin(lake_ids), 'musk_x'] = 0.01
+
+    # ensure the order is still the topological order
+    sgdf = sgdf.sort_values('TopologicalOrder', ascending=True).reset_index(drop=True)
+
     logger.info(f'Final Stream Count: {sgdf.shape[0]}')
 
     if cache_geometry:
@@ -275,13 +267,13 @@ def dissolve_branches(sgdf: pd.DataFrame,
         'geometry': geometry_diss,
     }
 
-    if all([x in sgdf.columns for x in ['musk_k', 'musk_x', 'velocity_factor', 'CountUS', ]]):
-        agg_rules.update({
-            'musk_k': k_agg_func,
-            'musk_x': 'last',
-            'velocity_factor': 'last',
-            'CountUS': lambda x: 0 if len(x) else x,
-        })
+    # if all([x in sgdf.columns for x in ['musk_k', 'musk_x', 'velocity_factor', 'CountUS', ]]):
+    #     agg_rules.update({
+    #         'musk_k': k_agg_func,
+    #         'musk_x': 'last',
+    #         'velocity_factor': 'last',
+    #         'CountUS': lambda x: 0 if len(x) else x,
+    #     })
     return sgdf.groupby('LINKNO').agg(agg_rules).reset_index().sort_values('TopologicalOrder')
 
 
@@ -317,8 +309,7 @@ def dissolve_short_streams(sgdf: gpd.GeoDataFrame, short_streams: pd.DataFrame) 
         row_to_keep['geometry'] = combined_geometry
         row_to_keep['USContArea'] = min([row_to_keep['USContArea'].values[0], row_to_drop['USContArea'].values[0]])
         row_to_keep['DSContArea'] = max([row_to_keep['DSContArea'].values[0], row_to_drop['DSContArea'].values[0]])
-        row_to_keep['musk_k'] = row_to_keep['musk_k'] + row_to_drop['musk_k']
-        row_to_keep['LengthGeodesicMeters'] = row_to_keep['LengthGeodesicMeters'] + row_to_drop['LengthGeodesicMeters']
+        row_to_keep['LengthGeodesicMeters'] = row_to_keep['LengthGeodesicMeters'].values[0] + row_to_drop['LengthGeodesicMeters'].values[0]
 
         sgdf = sgdf[~sgdf['LINKNO'].isin([river_id_to_keep, river_id_to_drop])]
         sgdf = pd.concat([sgdf, row_to_keep])
