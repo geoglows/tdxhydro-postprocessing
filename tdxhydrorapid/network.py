@@ -41,20 +41,43 @@ def create_directed_graphs(df: pd.DataFrame,
 
 def find_headwater_branches_to_dissolve(sdf: pd.DataFrame or gpd.GeoDataFrame,
                                         G: nx.DiGraph,
-                                        min_order_to_keep: int, ) -> pd.DataFrame:
-    # todo parameterize the column names
-    us_cols = sorted([c for c in sdf.columns if c.startswith('USLINKNO')])
-    order1 = sdf[sdf['strmOrder'] == (min_order_to_keep - 1)]['LINKNO'].values.flatten()
-    order2 = sdf[sdf['strmOrder'] == min_order_to_keep]
+                                        min_order_to_keep: int,
+                                        stream_order_field: str = 'strmOrder',
+                                        id_field: str = 'LINKNO', ) -> pd.DataFrame:
+    # select rows where the number of predecessors in the graph is 2+ and 2+ of them and 2+ are min_order_to_keep - 1
+    def _is_headwater_branch(row):
+        predecessors = list(G.predecessors(row[id_field]))
 
-    # select rows where 2+ of the 2+ upstreams are 1st order (ie this is the first 2nd order in the chain)
-    order2 = order2[order2[us_cols].isin(order1).sum(axis=1) >= 2]
-    order2 = order2[['LINKNO', ]]
+        # if there are only 0 or 1 predecessors then it is not a headwater branch
+        if len(predecessors) < 2:
+            return False
+
+        # get the stream order of all predecessors
+        pred_orders = [sdf.loc[sdf[id_field] == x, stream_order_field].values[0] for x in predecessors]
+
+        # check if there are 2+ predecessors with order min_order_to_keep - 1
+        if len(predecessors) == 2 and not len([x for x in pred_orders if x == (min_order_to_keep - 1)]) == 2:
+            return False
+
+        if (len(predecessors) > 2) and \
+                (not max(pred_orders) == min_order_to_keep - 1) and \
+                (len([x for x in pred_orders if x == (min_order_to_keep - 1)]) >= 2):
+            return False
+        return True
+
+    # todo parameterize the column names
+    # order1 = sdf[sdf['strmOrder'] == (min_order_to_keep - 1)]['LINKNO'].values.flatten()
+    candidate_streams = sdf[sdf[stream_order_field] == min_order_to_keep]
+
+    candidate_streams = candidate_streams[candidate_streams.apply(_is_headwater_branch, axis=1)]
+
+    # order2 = order2[order2[us_cols].isin(order1).sum(axis=1) >= 2]
+    candidate_streams = candidate_streams[['LINKNO', ]]
 
     # get a dictionary of all streams upstream of the new headwater streams
-    upstream_df = {x: list(nx.ancestors(G, x)) for x in order2['LINKNO'].values.flatten()}
+    upstream_df = {x: list(nx.ancestors(G, x)) for x in candidate_streams[id_field].values.flatten()}
     upstream_df = pd.DataFrame.from_dict(upstream_df, orient='index').fillna(-1).astype(int)
-    upstream_df.index.name = 'LINKNO'
+    upstream_df.index.name = id_field
     upstream_df.columns = [f'USLINKNO{i}' for i in range(1, len(upstream_df.columns) + 1)]
     upstream_df = upstream_df.reset_index()
     return upstream_df
@@ -79,8 +102,8 @@ def find_branches_to_prune(sdf: gpd.GeoDataFrame or pd.DataFrame,
         if len(siblings) > 1:
             sibling_stream_orders = sdf[sdf[id_field].isin(siblings)]['strmOrder'].values
 
-            # if the row to be pruned has the same order as 1 of the siblings, pick the highest stream order
-            if row['strmOrder'] in sibling_stream_orders:
+            # Case: 1 of the siblings has same order, one has higher order -> pick the highest stream order
+            if row['strmOrder'] in sibling_stream_orders and row['strmOrder'] < max(sibling_stream_orders):
                 siblings = [
                     s for s in siblings if sdf.loc[sdf[id_field] == s, 'strmOrder'].values[0] > row['strmOrder']
                 ]
