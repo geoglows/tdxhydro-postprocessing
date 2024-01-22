@@ -39,16 +39,19 @@ def rapid_master_files(streams_gpq: str,
                        drop_small_watersheds: bool = True,
                        dissolve_headwaters: bool = True,
                        prune_branches_from_main_stems: bool = True,
+                       merge_short_streams: bool = True,
                        cache_geometry: bool = True,
                        min_drainage_area_m2: float = 200_000_000,
                        min_headwater_stream_order: int = 3,
-                       min_velocity_factor: float = 0.4, ) -> None:
+                       min_velocity_factor: float = 0.25,
+                       min_k_value: int = 900,
+                       lake_min_k: int = 3600, ) -> None:
     """
     Create RAPID master files from a stream network
 
     Saves the following files to the save_dir:
         - rapid_inputs_master.parquet
-        - {region_num}_dissolved_network.gpkg
+        - {region_num}_dissolved_network.geoparquet (if cache_geometry is True)
         - mod_zero_length_streams.csv (if any 0 length streams are found)
         - mod_basin_zero_centroid.csv (if any basins have an ID of 0 and geometry is not available)
         - mod_drop_small_streams.csv (if drop_small_watersheds is True)
@@ -57,6 +60,9 @@ def rapid_master_files(streams_gpq: str,
 
 
     Args:
+        min_k_value: int, target minimum k value to keep a stream segment
+        min_velocity_factor: float, minimum velocity factor used to calculate k
+        merge_short_streams: bool, merge short streams that are not connected to a confluence
         streams_gpq: str, path to the streams geoparquet
         save_dir: str, path to the directory to save the master files
         id_field: str, field name for the link id
@@ -75,18 +81,11 @@ def rapid_master_files(streams_gpq: str,
     Returns:
         None
     """
-    sgdf = gpd.read_parquet(streams_gpq)
+    sgdf = gpd.read_parquet(streams_gpq).set_crs('epsg:4326')
+    logging.info(f'\tNumber of streams: {sgdf.shape[0]}')
 
-    # length is in m, divide by estimated m/s to get k in seconds
-    logger.info('\tCalculating Muskingum k and x')
-    sgdf['velocity_factor'] = np.exp(0.16842 * np.log(sgdf['DSContArea']) - 4.68).round(3) \
-        if default_velocity_factor is None else default_velocity_factor
-    sgdf['velocity_factor'] = sgdf['velocity_factor'].clip(lower=min_velocity_factor)
-    sgdf['musk_k'] = sgdf['LengthGeodesicMeters'] / sgdf['velocity_factor']
-    sgdf["musk_x"] = default_x
-
-    logger.info('\tRemoving 0 length segments')
-    if 0 in sgdf[length_field].values:
+    if not sgdf[sgdf[length_field] <= 0.01].empty:
+        logger.info('\tRemoving 0 length segments')
         zero_length_fixes_df = identify_0_length(sgdf, id_field, ds_id_field, length_field)
         zero_length_fixes_df.to_csv(os.path.join(save_dir, 'mod_zero_length_streams.csv'), index=False)
         sgdf = correct_0_length_streams(sgdf, zero_length_fixes_df, id_field)
@@ -132,18 +131,6 @@ def rapid_master_files(streams_gpq: str,
         )
         sgdf = sgdf.loc[~sgdf[id_field].isin(small_tree_segments)]
 
-    logger.info('\tCalculating RAPID connect columns')
-    us_ids = sgdf[id_field].apply(lambda x: list(G.predecessors(x)))
-    count_us = us_ids.apply(lambda x: len(x))
-    max_num_upstream = np.max(count_us)
-    us_ids = us_ids.apply(lambda x: x + [-1, ] * (max_num_upstream - len(x)))
-    us_ids = pd.DataFrame(us_ids.tolist(), index=us_ids.index)
-    upstream_columns = [f'USLINKNO{i}' for i in range(1, us_ids.shape[1] + 1)]
-    us_ids.columns = upstream_columns
-    us_ids['CountUS'] = count_us
-    sgdf = sgdf.drop(columns=[x for x in sgdf.columns if x.startswith('USLINKNO')]).join(us_ids)
-    sgdf[upstream_columns] = sgdf[upstream_columns].fillna(-1).astype(int)
-
     if dissolve_headwaters:
         logger.info('\tFinding headwater streams to dissolve')
         geometry_diss = lambda x: gpd.GeoSeries(x).unary_union if cache_geometry else 'last'
@@ -170,15 +157,78 @@ def rapid_master_files(streams_gpq: str,
         streams_to_prune.to_csv(os.path.join(save_dir, 'mod_prune_streams.csv'), index=False)
         sgdf = prune_branches(sgdf, streams_to_prune)
 
+    # length is in m, divide by estimated m/s to get k in seconds
+    logger.info('\tCalculating Muskingum k and x')
+    sgdf['velocity_factor'] = np.exp(0.16842 * np.log(sgdf['DSContArea']) - 4.68).round(3) \
+        if default_velocity_factor is None else default_velocity_factor
+    sgdf['velocity_factor'] = sgdf['velocity_factor'].clip(lower=min_velocity_factor)
+    sgdf['musk_k'] = sgdf['LengthGeodesicMeters'] / sgdf['velocity_factor']
+    sgdf['musk_k'] = sgdf['musk_k'].round(0).astype(int)
+    sgdf['musk_k'] = sgdf['musk_k'].clip(lower=0, upper=100_000)
+    sgdf["musk_x"] = default_x
+
+    # set the k value for lakes
+    logger.info('\tSetting k and x values for lake rivers')
+    lake_ids = pd.read_csv(os.path.join(os.path.dirname(__file__), 'network_data', 'lake_table.csv')).values.flatten()
+    logger.info(f'\tLake rivers found: {sgdf[sgdf["LINKNO"].isin(lake_ids)].shape[0]}')
+    sgdf.loc[sgdf['LINKNO'].isin(lake_ids), 'musk_k'] = np.maximum(
+        sgdf.loc[sgdf['LINKNO'].isin(lake_ids), 'musk_k'].values,
+        lake_min_k
+    )
+    # set the x value to 0.01 for lakes (max attenuation while avoiding possible errors with 0.0)
+    sgdf.loc[sgdf['LINKNO'].isin(lake_ids), 'musk_x'] = 0.01
+
+    if merge_short_streams:
+        logging.info('\tFinding small k value streams to merge')
+        # recreate the directed graph because the network connectivity is now different
+        G = create_directed_graphs(sgdf, id_field, ds_id_field=ds_id_field)
+        # find short rivers that have an upstream or downstream link without crossing a confluence point
+        short_streams_to_merge = {}
+        for river in sgdf.loc[sgdf['musk_k'] < min_k_value, id_field].values:
+            # this river is a confluence of 2 upstreams if it has more than 1 upstream
+            upstreams = list(G.predecessors(river))
+            downstream = sgdf.loc[sgdf[id_field] == river, ds_id_field].values[0]
+            downstream_upstreams = [river, ] if downstream == -1 else list(G.predecessors(downstream))
+            # if there is a confluence upstream and downstream then it cannot be fixed
+            if len(upstreams) != 1 and len(downstream_upstreams) != 1:
+                continue
+            stream_merge_options = [
+                upstreams[0] if len(upstreams) == 1 else -1,
+                downstream if len(downstream_upstreams) == 1 else -1
+            ]
+            if stream_merge_options[0] == stream_merge_options[1]:
+                continue
+            stream_to_merge_with = (
+                sgdf.loc[sgdf[id_field].isin(stream_merge_options)]
+                .sort_values(by='musk_k', ascending=True).iloc[0][id_field]
+            )
+            if stream_to_merge_with not in upstreams:
+                stream_to_merge_with, river = river, stream_to_merge_with
+            short_streams_to_merge[river] = {'MergeWith': stream_to_merge_with}
+
+        # write the short stream merges to a csv
+        if len(short_streams_to_merge):
+            short_streams_df = (
+                pd.DataFrame.from_dict(short_streams_to_merge)
+                .T.reset_index().rename(columns={'index': id_field})
+            )
+            short_streams_df.to_csv(os.path.join(save_dir, 'mod_merge_short_streams.csv'), index=False)
+            sgdf = dissolve_short_streams(sgdf, short_streams_df)
+
     logger.info('\tLabeling watersheds by terminal node')
     for term_node in sgdf[sgdf[ds_id_field] == -1][id_field].values:
-        sgdf.loc[sgdf[id_field].isin(list(nx.ancestors(G, term_node)) + [term_node, ]), 'TerminalNode'] = term_node
-    sgdf['TerminalNode'] = sgdf['TerminalNode'].astype(int)
+        sgdf.loc[sgdf[id_field].isin(list(nx.ancestors(G, term_node)) + [term_node, ]), 'TerminalLink'] = term_node
+    sgdf['TerminalLink'] = sgdf['TerminalLink'].astype(int)
+
+    # ensure the order is still the topological order
+    sgdf = sgdf.sort_values('TopologicalOrder', ascending=True).reset_index(drop=True)
+
+    logger.info(f'Final Stream Count: {sgdf.shape[0]}')
 
     if cache_geometry:
         logger.info('\tWriting altered geometry to geopackage')
         region_number = sgdf['TDXHydroRegion'].values[0]
-        gpd.GeoDataFrame(sgdf)[['TDXHydroLinkNo', 'geometry']].to_parquet(
+        gpd.GeoDataFrame(sgdf)[['LINKNO', 'geometry']].to_parquet(
             os.path.join(save_dir, f"{region_number}_altered_network.geoparquet"))
 
     logger.info('\tWriting RAPID master parquet')
@@ -208,44 +258,67 @@ def dissolve_branches(sgdf: pd.DataFrame,
     agg_rules = {
         # 'LINKNO': 'last',
         'DSLINKNO': 'last',
-        'DSNODEID': 'last',
         'strmOrder': 'last',
-        'Length': lambda x: x.sum() if len(x) > 1 else x.iloc[0],
         'Magnitude': 'last',
         'DSContArea': 'last',
-        'strmDrop': lambda x: x.iloc[-1] + x.iloc[:-1].max() if len(x) > 1 else x.iloc[0],
-        'Slope': lambda x: -1,
-        'StraightL': lambda x: -1,
         'USContArea': lambda x: x.iloc[:-1].sum() if len(x) > 1 else x.iloc[0],
-        'WSNO': 'last',
-        'DOUTEND': 'last',
-        'DOUTSTART': lambda x: x.iloc[:-1].max() if len(x) > 1 else x.iloc[0],
-        'DOUTMID': lambda x: x.mean() if len(x) > 1 else x.iloc[0],
         'LengthGeodesicMeters': 'last',
-        'lat': 'last',
-        'lon': 'last',
-        'z': 'last',
         'TDXHydroRegion': 'last',
-        'TDXHydroLinkNo': 'last',
         'TopologicalOrder': 'last',
         'geometry': geometry_diss,
     }
 
-    if all([x in sgdf.columns for x in ['musk_k', 'musk_x', 'velocity_factor', 'CountUS', ]]):
-        agg_rules.update({
-            'musk_k': k_agg_func,
-            'musk_x': 'last',
-            'velocity_factor': 'last',
-            'CountUS': lambda x: 0 if len(x) else x,
-        })
-    agg_rules.update({
-        col: (lambda x: -1 if len(x) > 1 else x) for col in sorted(sgdf.columns) if col.startswith('USLINKNO')
-    })
+    # if all([x in sgdf.columns for x in ['musk_k', 'musk_x', 'velocity_factor', 'CountUS', ]]):
+    #     agg_rules.update({
+    #         'musk_k': k_agg_func,
+    #         'musk_x': 'last',
+    #         'velocity_factor': 'last',
+    #         'CountUS': lambda x: 0 if len(x) else x,
+    #     })
     return sgdf.groupby('LINKNO').agg(agg_rules).reset_index().sort_values('TopologicalOrder')
 
 
 def prune_branches(sdf: pd.DataFrame, streams_to_prune: pd.DataFrame) -> pd.DataFrame:
     return sdf[~sdf['LINKNO'].isin(streams_to_prune.iloc[:, 1].values.flatten())]
+
+
+def dissolve_short_streams(sgdf: gpd.GeoDataFrame, short_streams: pd.DataFrame) -> gpd.GeoDataFrame:
+    """
+    Dissolve short streams that are not connected to a confluence
+
+    Args:
+        sgdf: stream network geodataframe
+
+    Returns:
+        geodataframe
+    """
+    logger.info('\tDissolving short streams')
+    for idx, (river_id_to_keep, river_id_to_drop) in short_streams.iterrows():
+        row_to_keep = sgdf[sgdf['LINKNO'] == river_id_to_keep].copy()
+        row_to_drop = sgdf[sgdf['LINKNO'] == river_id_to_drop].copy()
+
+        # if both ids are not in the dataframe then skip. Some rivers will get merged together first
+        if row_to_keep.empty or row_to_drop.empty:
+            continue
+
+        combined_geometry = (
+            gpd
+            .GeoSeries(sgdf[sgdf['LINKNO'].isin([river_id_to_keep, river_id_to_drop])].geometry)
+            .unary_union
+        )
+
+        row_to_keep['geometry'] = combined_geometry
+        row_to_keep['USContArea'] = min([row_to_keep['USContArea'].values[0], row_to_drop['USContArea'].values[0]])
+        row_to_keep['DSContArea'] = max([row_to_keep['DSContArea'].values[0], row_to_drop['DSContArea'].values[0]])
+        row_to_keep['LengthGeodesicMeters'] = (
+                row_to_keep['LengthGeodesicMeters'].values[0] +
+                row_to_drop['LengthGeodesicMeters'].values[0]
+        )
+
+        sgdf = sgdf[~sgdf['LINKNO'].isin([river_id_to_keep, river_id_to_drop])]
+        sgdf = pd.concat([sgdf, row_to_keep])
+        sgdf.loc[sgdf['DSLINKNO'] == river_id_to_drop, 'DSLINKNO'] = river_id_to_keep
+    return gpd.GeoDataFrame(sgdf.reset_index(drop=True))
 
 
 def rapid_input_csvs(sdf: pd.DataFrame,
@@ -290,7 +363,7 @@ def rapid_input_csvs(sdf: pd.DataFrame,
             row_dict[f'UpstreamID{i + 1}'] = list_upstream_ids[i]
         rapid_connect.append(row_dict)
 
-        # Fill in NaN values for any missing upstream IDs
+    # Fill in NaN values for any missing upstream IDs
     for i in range(max_count_upstream):
         col_name = f'UpstreamID{i + 1}'
         for row in rapid_connect:
@@ -299,35 +372,42 @@ def rapid_input_csvs(sdf: pd.DataFrame,
 
     logger.info('\tWriting Rapid Connect CSV')
     df = pd.DataFrame(rapid_connect)
-    upstream_columns = [x for x in df.columns if x.startswith('UpstreamID')]
-    header_number = _get_tdxhydro_header_number(sdf['TDXHydroRegion'].values.flatten()[0])
-    df[df[['HydroID', 'NextDownID', *upstream_columns]] > 0] += int(header_number * 10_000_000)
     df.to_csv(os.path.join(save_dir, 'rapid_connect.csv'), index=False, header=None)
 
     logger.info('\tWriting RAPID Input CSVS')
-    sdf['TDXHydroLinkNo'].to_csv(os.path.join(save_dir, "riv_bas_id.csv"), index=False, header=False)
+    sdf.loc[:, ['lat', 'lon', 'z']] = 0
+    sdf['LINKNO'].to_csv(os.path.join(save_dir, "riv_bas_id.csv"), index=False, header=False)
     sdf["musk_k"].to_csv(os.path.join(save_dir, "k.csv"), index=False, header=False)
     sdf["musk_x"].to_csv(os.path.join(save_dir, "x.csv"), index=False, header=False)
-    sdf[['TDXHydroLinkNo', 'lat', 'lon', 'z']].to_csv(os.path.join(save_dir, "comid_lat_lon_z.csv"), index=False)
+    sdf[['LINKNO', 'lat', 'lon', 'z']].to_csv(os.path.join(save_dir, "comid_lat_lon_z.csv"), index=False)
     return
 
 
-def concat_tdxregions(tdxinputs_dir: str, vpu_dir: str, vpu_table: str) -> None:
+def concat_tdxregions(tdxinputs_dir: str, vpu_assignment_table: str, master_table_path: str) -> None:
     mdf = pd.concat([pd.read_parquet(f) for f in glob.glob(os.path.join(tdxinputs_dir, '*', 'rapid_inputs*.parquet'))])
 
-    # relabel the terminal nodes as globally unique IDs
-    mdf['TerminalNode'] = (
-            mdf['TDXHydroLinkNo'].astype(str).str[:2].astype(int) * 10_000_000 + mdf['TerminalNode']
-    ).astype(int)
-
-    vpu_df = pd.read_csv(vpu_table)
-    mdf = mdf.merge(vpu_df, on='TerminalNode', how='left')
+    vpu_df = pd.read_csv(vpu_assignment_table)
+    mdf = mdf.merge(vpu_df, on='TerminalLink', how='left')
 
     if not mdf[mdf['VPUCode'].isna()].empty:
+        mdf[mdf['VPUCode'].isna()].to_csv(os.path.join(os.path.dirname(master_table_path), 'missing_vpu_label.csv'))
         raise RuntimeError('Some terminal nodes are not in the VPU table and must be fixed before continuing.')
     mdf['VPUCode'] = mdf['VPUCode'].astype(int)
 
-    mdf.to_parquet(os.path.join(vpu_dir, 'master_table.parquet'))
+    mdf[[
+        'LINKNO',
+        'DSLINKNO',
+        'strmOrder',
+        'USContArea',
+        'DSContArea',
+        'TDXHydroRegion',
+        'VPUCode',
+        'TopologicalOrder',
+        'LengthGeodesicMeters',
+        'TerminalLink',
+        'musk_k',
+        'musk_x',
+    ]].to_parquet(master_table_path)
     return
 
 
@@ -343,22 +423,26 @@ def vpu_files_from_masters(vpu_df: pd.DataFrame,
     rapid_input_csvs(vpu_df, vpu_dir)
 
     # subset the weight tables
+    logging.info('Subsetting weight tables')
     weight_tables = glob.glob(os.path.join(tdxinputs_directory, tdx_region, f'weight*.csv'))
     weight_tables = [x for x in weight_tables if '_full.csv' not in x]
     for weight_table in weight_tables:
         a = pd.read_csv(weight_table)
-        a = a[a.iloc[:, 0].astype(int).isin(vpu_df['TDXHydroLinkNo'].values)]
+        a = a[a.iloc[:, 0].astype(int).isin(vpu_df['LINKNO'].values)]
         a.to_csv(os.path.join(vpu_dir, os.path.basename(weight_table)), index=False)
 
     if not make_gpkg:
         return
+    logging.info('Making gpkg')
     altered_network = os.path.join(tdxinputs_directory, tdx_region, f'{tdx_region}_altered_network.geoparquet')
-    vpu_network = os.path.join(gpkg_dir, f'vpu_{vpu}_streams.gpkg')
+    vpu_network = os.path.join(gpkg_dir, f'streams_{vpu}.gpkg')
     if os.path.exists(altered_network):
         (
             gpd
             .read_parquet(altered_network)
-            .merge(vpu_df, on='TDXHydroLinkNo', how='inner')
+            .merge(vpu_df, on='LINKNO', how='inner')
+            .set_crs('epsg:4326')
+            .to_crs('epsg:3857')
             .to_file(vpu_network, driver='GPKG')
         )
     return

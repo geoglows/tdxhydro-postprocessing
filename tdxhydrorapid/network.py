@@ -41,22 +41,43 @@ def create_directed_graphs(df: pd.DataFrame,
 
 def find_headwater_branches_to_dissolve(sdf: pd.DataFrame or gpd.GeoDataFrame,
                                         G: nx.DiGraph,
-                                        min_order_to_keep: int, ) -> pd.DataFrame:
-    # todo parameterize the column names
-    us_cols = sorted([c for c in sdf.columns if c.startswith('USLINKNO')])
-    order1 = sdf[sdf['strmOrder'] == (min_order_to_keep - 1)]['LINKNO'].values.flatten()
-    order2 = sdf[sdf['strmOrder'] == min_order_to_keep]
+                                        min_order_to_keep: int,
+                                        stream_order_field: str = 'strmOrder',
+                                        id_field: str = 'LINKNO', ) -> pd.DataFrame:
+    # select rows where the number of predecessors in the graph is 2+ and 2+ of them and 2+ are min_order_to_keep - 1
+    def _is_headwater_branch(row):
+        predecessors = list(G.predecessors(row[id_field]))
 
-    # alternatively the only upstreams must be 1st orders, all else are -1
-    # order2 = order2[order2[us_cols].isin(order1).sum(axis=1) + (order2[us_cols] == -1).sum(axis=1) == len(us_cols)]
-    # select rows where 2+ of the 2+ upstreams are 1st order (ie this is the first 2nd order in the chain)
-    order2 = order2[order2[us_cols].isin(order1).sum(axis=1) >= 2]
-    order2 = order2[['LINKNO', ]]
+        # if there are only 0 or 1 predecessors then it is not a headwater branch
+        if len(predecessors) < 2:
+            return False
+
+        # get the stream order of all predecessors
+        pred_orders = [sdf.loc[sdf[id_field] == x, stream_order_field].values[0] for x in predecessors]
+
+        # check if there are 2+ predecessors with order min_order_to_keep - 1
+        if len(predecessors) == 2 and not len([x for x in pred_orders if x == (min_order_to_keep - 1)]) == 2:
+            return False
+
+        if (len(predecessors) > 2) and \
+                (not max(pred_orders) == min_order_to_keep - 1) and \
+                (len([x for x in pred_orders if x == (min_order_to_keep - 1)]) >= 2):
+            return False
+        return True
+
+    # todo parameterize the column names
+    # order1 = sdf[sdf['strmOrder'] == (min_order_to_keep - 1)]['LINKNO'].values.flatten()
+    candidate_streams = sdf[sdf[stream_order_field] == min_order_to_keep]
+
+    candidate_streams = candidate_streams[candidate_streams.apply(_is_headwater_branch, axis=1)]
+
+    # order2 = order2[order2[us_cols].isin(order1).sum(axis=1) >= 2]
+    candidate_streams = candidate_streams[['LINKNO', ]]
 
     # get a dictionary of all streams upstream of the new headwater streams
-    upstream_df = {x: list(nx.ancestors(G, x)) for x in order2['LINKNO'].values.flatten()}
+    upstream_df = {x: list(nx.ancestors(G, x)) for x in candidate_streams[id_field].values.flatten()}
     upstream_df = pd.DataFrame.from_dict(upstream_df, orient='index').fillna(-1).astype(int)
-    upstream_df.index.name = 'LINKNO'
+    upstream_df.index.name = id_field
     upstream_df.columns = [f'USLINKNO{i}' for i in range(1, len(upstream_df.columns) + 1)]
     upstream_df = upstream_df.reset_index()
     return upstream_df
@@ -77,12 +98,12 @@ def find_branches_to_prune(sdf: gpd.GeoDataFrame or pd.DataFrame,
         siblings = [s for s in siblings if s != row[id_field]]
 
         # if there is only 1 sibling, we want to merge with that one
+        # if there are 2+ siblings, we want need to figure out which one to merge with
         if len(siblings) > 1:
-            # if there are 2 siblings, we want need to figure out which one to merge with
             sibling_stream_orders = sdf[sdf[id_field].isin(siblings)]['strmOrder'].values
 
-            # if the row to be pruned has the same order as 1 of the siblings, pick the highest stream order
-            if row['strmOrder'] in sibling_stream_orders:
+            # Case: 1 of the siblings has same order, one has higher order -> pick the highest stream order
+            if row['strmOrder'] in sibling_stream_orders and row['strmOrder'] < max(sibling_stream_orders):
                 siblings = [
                     s for s in siblings if sdf.loc[sdf[id_field] == s, 'strmOrder'].values[0] > row['strmOrder']
                 ]
@@ -108,7 +129,7 @@ def find_branches_to_prune(sdf: gpd.GeoDataFrame or pd.DataFrame,
                     print(siblings)
                     print(row)
 
-        # In the case where there is a 3 river confluence, there may be more than 1 order 1 stream that must be merged. 
+        # In the case where there is a 3 river confluence, there may be more than 1 order 1 stream that must be merged.
         # Instead of creating a dictionary to store these values (which can only have one unique key), we use a DataFrame directly
         new_row = {'LINKNO': siblings[0], 'LINKTODROP': row[id_field]}
         sibling_pairs.loc[sibling_pairs.shape[0]] = new_row
@@ -148,19 +169,24 @@ def identify_0_length(gdf: gpd.GeoDataFrame,
     case3_ids = []
     case4_ids = []
 
-    for rivid in gdf[gdf[length_col] == 0][stream_id_col].values:
+    for rivid in gdf[gdf[length_col] <= 0.01][stream_id_col].values:
         feat = gdf[gdf[stream_id_col] == rivid]
 
+        upstreams = gdf[gdf[ds_id_col] == rivid][stream_id_col].values
+
         # Case 1
-        if feat[ds_id_col].values == -1 and feat['USLINKNO1'].values == -1 and feat['USLINKNO2'].values == -1:
+        # if feat[ds_id_col].values == -1 and feat['USLINKNO1'].values == -1 and feat['USLINKNO2'].values == -1:
+        if feat[ds_id_col].values == -1 and all([x == -1 for x in upstreams]):
             case1_ids.append(rivid)
 
         # Case 2
-        elif feat[ds_id_col].values != -1 and feat['USLINKNO1'].values != -1 and feat['USLINKNO2'].values != -1:
+        # elif feat[ds_id_col].values != -1 and feat['USLINKNO1'].values != -1 and feat['USLINKNO2'].values != -1:
+        elif feat[ds_id_col].values != -1 and all([x != -1 for x in upstreams]):
             case2_ids.append(rivid)
 
         # Case 3
-        elif feat[ds_id_col].values == -1 and feat['USLINKNO1'].values != -1 and feat['USLINKNO2'].values != -1:
+        # elif feat[ds_id_col].values == -1 and feat['USLINKNO1'].values != -1 and feat['USLINKNO2'].values != -1:
+        elif feat[ds_id_col].values == -1 and all([x != -1 for x in upstreams]):
             case3_ids.append(rivid)
 
         # Case 4
@@ -203,8 +229,10 @@ def correct_0_length_streams(sgdf: gpd.GeoDataFrame,
 
     # Case 3 - Coastal w/ upstreams but no downstream - Assign small non-zero length
     # Apply before case 2 to handle some edges cases where zero length basins drain into other zero length basins
-    c3_us_ids = sgdf[sgdf[id_field].isin(zero_length_df['case3'].dropna().values)][
-        ['USLINKNO1', 'USLINKNO2']].values.flatten()
+    # c3_us_ids = sgdf[sgdf[id_field].isin(zero_length_df['case3'].dropna().values)][
+    #     ['USLINKNO1', 'USLINKNO2']].values.flatten()
+    c3_us_ids = sgdf[sgdf['DSLINKNO'].isin(zero_length_df['case3'].dropna().values)][id_field].unique().flatten()
+
     sgdf.loc[sgdf[id_field].isin(c3_us_ids), 'DSLINKNO'] = -1
     sgdf = sgdf[~sgdf['LINKNO'].isin(zero_length_df['case3'].dropna().values)]
 
@@ -214,14 +242,13 @@ def correct_0_length_streams(sgdf: gpd.GeoDataFrame,
     c2 = c2.sort_values(by=['DSLINKNO'], ascending=True)
     c2 = c2['LINKNO'].values
     for river_id in c2:
-        ids_to_apply = sgdf.loc[sgdf[id_field] == river_id, ['USLINKNO1', 'USLINKNO2', 'DSLINKNO']]
+        # ids_to_apply = sgdf.loc[sgdf[id_field] == river_id, ['USLINKNO1', 'USLINKNO2', 'DSLINKNO']]
+        dslinkno = sgdf.loc[sgdf[id_field] == river_id, 'DSLINKNO'].values[0]
+        upstreams = sgdf.loc[sgdf['DSLINKNO'] == river_id, 'LINKNO'].unique().flatten()
         # if the downstream basin is also a zero length basin, find the basin 1 step further downstream
-        if ids_to_apply['DSLINKNO'].values[0] in c2:
-            ids_to_apply['DSLINKNO'] = \
-                sgdf.loc[sgdf[id_field] == ids_to_apply['DSLINKNO'].values[0], 'DSLINKNO'].values[0]
-        sgdf.loc[
-            sgdf[id_field].isin(ids_to_apply[['USLINKNO1', 'USLINKNO2']].values.flatten()), 'DSLINKNO'] = \
-            ids_to_apply['DSLINKNO'].values[0]
+        if dslinkno in c2:
+            dslinkno = sgdf.loc[sgdf[id_field] == dslinkno, 'DSLINKNO'].values[0]
+        sgdf.loc[sgdf[id_field].isin(upstreams), 'DSLINKNO'] = dslinkno
 
     # Remove the rows corresponding to the rivers to be deleted
     sgdf = sgdf[~sgdf['LINKNO'].isin(c2)]
@@ -295,7 +322,7 @@ def make_final_streams(final_inputs_directory: str,
 
     print('merging with master table')
     mgdf = mgdf.merge(pd.read_parquet(os.path.join(final_inputs_directory, 'geoglows-v2-master-table.parquet')),
-                      on='TDXHydroLinkNo', how='inner')
+                      on='LINKNO', how='inner')
 
     for vpu_code in sorted(mgdf['VPUCode'].unique()):
         print(vpu_code)
@@ -303,10 +330,4 @@ def make_final_streams(final_inputs_directory: str,
         if os.path.exists(file_path):
             continue
         mgdf[mgdf['VPUCode'] == vpu_code].to_file(file_path)
-
-    # write full stream network to file
-    print('simplifying geometries')
-    mgdf['geometry'] = mgdf['geometry'].simplify(0.001)
-    print('writing full stream network to gpkg')
-    mgdf.to_file(os.path.join(final_inputs_directory, 'global_streams_simplified.gpkg'), driver='GPKG')
     return

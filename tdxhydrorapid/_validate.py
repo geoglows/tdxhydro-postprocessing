@@ -51,6 +51,10 @@ def check_outputs_are_valid(input_dir: str) -> bool:
     logger.info('Checking for consistent numbers of basins in generated files')
     all_nums = [n_comid_lat_lon_z, n_rapidconnect, n_rivbasid, n_k, n_x] + [n for f, n in n_weights if 'full' not in f]
     all_match = all([n == all_nums[0] for n in all_nums])
+    if all_match:
+        logger.info('\tGenerated files appear consistent')
+        logger.info(f'\tTotal Streams: {all_nums[0]}')
+        return all_match
     logger.info(f'\t{os.path.basename(input_dir)}')
     logger.info(f'\tAll nums: {all_nums}')
     logger.info(f'\tAll match: {all_match}')
@@ -63,11 +67,7 @@ def check_outputs_are_valid(input_dir: str) -> bool:
         if 'full' in f:
             continue
         logger.info(f'\t{f}: {n}')
-
-    if all_match:
-        logger.info('\tGenerated files appear consistent')
-    else:
-        logger.error('\tERROR: Generated files are not consistent')
+    logger.error('\tERROR: Generated files are not consistent')
     return all_match
 
 
