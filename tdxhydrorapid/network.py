@@ -17,10 +17,11 @@ __all__ = [
     'find_branches_to_prune',
     'identify_0_length',
     'correct_0_length_streams',
-    'correct_0_length_basins',
+    'correct_basins',
     'make_final_streams',
     'dissolve_catchments',
     'estimate_num_partition',
+    'dissolve_shuffle',
 ]
 
 logger = logging.getLogger(__name__)
@@ -52,8 +53,6 @@ def find_headwater_branches_to_dissolve(sdf: gpd.GeoDataFrame,
     more_candidates = set()
     for stream_id in candidate_streams[id_field].values:
         predecessors = list(G.predecessors(stream_id))
-        if len(predecessors) != 2: # Exclude lakes
-            continue
         pred_orders = list(stream_orders_dict[x] for x in predecessors)
 
         if len(pred_orders) == 2 and len([x for x in pred_orders if x == (min_order_to_keep - 1)]) != 2:
@@ -132,11 +131,10 @@ def find_branches_to_prune(sdf: gpd.GeoDataFrame,
         # In the case where there is a 3 river confluence, there may be more than 1 order 1 stream that must be merged.
         # Instead of creating a dictionary to store these values (which can only have one unique key), we use a list of dictionaries (faster than appending to dataframe directly)
         new_row = {'LINKNO': siblings[0], 'LINKTODROP': rivid}
-        do_not_delete.add(siblings[0])
         do_not_delete.add(rivid)
         sibling_pairs.append(new_row)
 
-    return pd.DataFrame(sibling_pairs)
+    return pd.DataFrame(sibling_pairs, dtype=int)
 
 
 def identify_0_length(gdf: gpd.GeoDataFrame,
@@ -258,9 +256,9 @@ def correct_0_length_streams(sgdf: gpd.GeoDataFrame,
     return sgdf
 
 
-def correct_0_length_basins(basins_gpq: str,
-                            save_dir: str,
-                            stream_id_col: str, ) -> gpd.GeoDataFrame:
+def correct_basins(basins_gpq: str,
+                   save_dir: str,
+                   stream_id_col: str, ) -> gpd.GeoDataFrame:
     """
     Apply fixes to streams that have 0 length.
 
@@ -323,6 +321,18 @@ def correct_0_length_basins(basins_gpq: str,
         logger.info('\tDeleting small ocean watersheds')
         drop_ocean_watersheds_df = pd.read_csv(drop_ocean_watersheds_path)
         basin_gdf = basin_gdf[~basin_gdf.index.isin(drop_ocean_watersheds_df.values.flatten())]
+
+    drop_lonely_streams_path = os.path.join(save_dir, 'mod_drop_lonely_streams.csv')
+    if os.path.exists(drop_lonely_streams_path):
+        logger.info('\tDeleting lonely streams')
+        drop_lonely_streams_df = pd.read_csv(drop_lonely_streams_path)
+        basin_gdf = basin_gdf[~basin_gdf.index.isin(drop_lonely_streams_df['drop'].values.flatten())]
+
+    drop_islands_path = os.path.join(save_dir, 'mod_drop_islands.csv')
+    if os.path.exists(drop_islands_path):
+        logger.info('\tDeleting islands')
+        drop_islands_df = pd.read_csv(drop_islands_path)
+        basin_gdf = basin_gdf[~basin_gdf.index.isin(drop_islands_df.values.flatten())]
 
     basin_gdf = basin_gdf.reset_index()
     return basin_gdf

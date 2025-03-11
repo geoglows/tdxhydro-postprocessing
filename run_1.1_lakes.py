@@ -18,11 +18,10 @@ logging.basicConfig(
     stream=sys.stdout,
 )
 
-lakes_parquet = r"C:\Users\lrr43\Downloads\GLAKES\all_lakes_filtered.parquet" # https://garslab.com/?p=234 August 24, 2022
+lakes_parquet = r"D:\geoglows_v3\all_lakes_filtered.parquet" # https://garslab.com/?p=234 August 24, 2022
 gpq_dir = r"D:\geoglows_v3\parquets"
-# gpq_dir = '/Users/ricky/tdxhydro-postprocessing/test/pqs'
 save_dir = os.path.join('.', 'tdxhydrorapid', 'network_data')
-
+MIN_LAKE_AREA = 10
 DEBUG = False
 
 def create_directed_graphs(df: gpd.GeoDataFrame,
@@ -48,7 +47,7 @@ if __name__ == "__main__":
     logging.info('Getting Lake Polygons')
     
     lakes_gdf = gpd.read_parquet(lakes_parquet)
-    lakes_gdf = lakes_gdf[lakes_gdf['Area_PW'] > 3]
+    lakes_gdf = lakes_gdf[lakes_gdf['Area_PW'] > MIN_LAKE_AREA]
     lakes_gdf['geometry'] = lakes_gdf['geometry'].apply(fill_holes) # Remove holes from lakes, could lead to issues...
 
     values_list = []
@@ -63,7 +62,7 @@ if __name__ == "__main__":
         # Get all streams that intersect with a lake
         bounds = gdf.total_bounds
         lakes_subset = lakes_gdf.cx[ bounds[0]:bounds[2], bounds[1]:bounds[3]]
-        dgdf = dgpd.from_geopandas(gdf, npartitions=os.cpu_count()*2)
+        dgdf = dgpd.from_geopandas(gdf, npartitions=os.cpu_count())
         intersect: gpd.GeoDataFrame = dgpd.sjoin(dgdf, dgpd.from_geopandas(lakes_subset), how='inner', predicate='intersects').compute()
 
         if intersect.empty:
@@ -149,12 +148,9 @@ if __name__ == "__main__":
                         pass
                     
                     elif new_outlets:
-                        # extra_inlets.update({v[0] for v in values_list if v[1] == new_outlets[0][1]} - {outlet})
                         # Remove the inlet from the list
                         values_list = [v for v in values_list if v[0] != outlet]
                         
-                        # for inlet in extra_inlets:
-                        #     lake_id_dict[inlet] = lake_id_dict.get(new_outlets[0][1], lake_id_dict.get(outlet))
                         outlet = new_outlets[0][1]
                         check = True
                         
@@ -167,9 +163,6 @@ if __name__ == "__main__":
                 if outlet in inlets or len(lake_ids - inlets - {outlet}) == 0:
                     # Small lake, skip
                     continue
-
-                # if strm_order_dict[outlet] >= 7:
-                    # Let us preserve the geometry here.
 
                 # Choosing inlets based on in_degree can miss segments that have one upstream segment that is an inlet, but another upstream that was not in the intersection.
                 # Let's find and add these inlets
@@ -188,6 +181,7 @@ if __name__ == "__main__":
                         inlets.add(inlet_to_be)
                         other_pred = (preds - {inlet_to_be}).pop()
                         lake_id_dict[inlet_to_be] = lake_id_dict.get(river, lake_id_dict.get(other_pred))
+
                 if _continue:  
                     continue
 
@@ -221,6 +215,7 @@ if __name__ == "__main__":
                         else:
                             # This stream is mostly outside the lake, so lets maintain it as an inlet
                             new_inlets.add(inlet)
+
                 if _continue:
                     continue
 
@@ -240,10 +235,11 @@ if __name__ == "__main__":
                 global_outlets.add(outlet)
                 global_inside.update(outlet_ans)
 
-                if len(list(G.successors(outlet))) == 0:
-                    endorheic = True
-                else:
-                    endorheic = False
+                # TODO I think this dataset flags endorheic lakes incorrectly sometimes. In V3, just check if downstream exists...
+                try:
+                    endorheic = bool(lakes_gdf.loc[lakes_gdf['Lake_id'] == lake_id_dict.get(outlet), 'Endo_flag'].values[0])
+                except IndexError:
+                    endorheic = bool(intersect.loc[intersect.index.isin(predecessors), 'Endo_flag'].values[0])
 
                 for inlet in new_inlets:
                     values_list.append((inlet, outlet, lake_id_dict.get(inlet, lake_id_dict.get(outlet)), endorheic))
@@ -251,6 +247,11 @@ if __name__ == "__main__":
     df = pd.DataFrame(values_list, columns=['inlet', 'outlet', 'lake_id', 'endorheic'])
     df = df.drop_duplicates() # Sometimes we get duplicate entries, not sure why
 
+    compare = pd.read_csv(os.path.join(save_dir, 'lake_table.csv'))
+    if not compare.equals(df):
+        print('Dataframes are not equal')
+
+    exit()
     out_name = os.path.join(save_dir, 'lake_table.csv')
     df.to_csv(out_name, index=False)
     logging.info(f'Saved lakes to {out_name}')

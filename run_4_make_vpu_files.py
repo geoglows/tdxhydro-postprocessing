@@ -10,15 +10,13 @@ import geopandas as gpd
 
 import tdxhydrorapid as rp
 
-tdx_inputs_dir = r"D:\geoglows_v3\geoglows_v3\tdx_alterations"
+tdx_inputs_dir = r"C:\Users\lrr43\Documents\rfs-v2\hydrography-tdxhydro-sources\alterations"
 og_pqs = glob.glob(r"D:\geoglows_v3\parquets\TDX_streamnet_*_01.parquet")
-final_output_dir = r"D:\geoglows_v3\geoglows_v3\hydrography"
-# vpu_inputs_dir = os.path.join(final_output_dir, 'inputs')
-vpu_inputs_dir = r"D:\geoglows_v3\geoglows_v3\routing_configs"
-# gpkg_dir = os.path.join(final_output_dir, 'streams')
+final_output_dir = r"C:\Users\lrr43\Documents\rfs-v2\hydrography"
+vpu_inputs_dir = r"C:\Users\lrr43\Documents\rfs-v2\routing-configs"
 gpkg_dir = final_output_dir
 vpu_assignment_table = os.path.join('.', 'tdxhydrorapid', 'network_data', 'vpu_table.csv') #'./tdxhydrorapid/network_data/vpu_table.csv'
-vpu_boundaries = r"D:\geoglows_v3\vpu-boundaries.gpkg" or None
+vpu_boundaries = r"D:\geoglows_v3\vpu-boundaries.gpkg"
 
 MAKE_GPKG = True
 
@@ -48,9 +46,9 @@ for vpu in sorted(mdf['VPUCode'].unique()):
     vpu_df = mdf.loc[mdf['VPUCode'] == vpu]
     tdx_region = str(vpu_df['TDXHydroRegion'].values[0])
 
-    hydrography_dir = os.path.join(gpkg_dir, f"{vpu}")
+    hydrography_dir = os.path.join(gpkg_dir, f"vpu={vpu}")
     os.makedirs(hydrography_dir, exist_ok=True)
-    vpu_dir = os.path.join(vpu_inputs_dir, str(vpu))
+    vpu_dir = os.path.join(vpu_inputs_dir, f"vpu={vpu}")
     if os.path.exists(vpu_dir) and (not MAKE_GPKG or os.path.exists(os.path.join(hydrography_dir, f'streams_{vpu}.gpkg'))) and os.path.exists(os.path.join(hydrography_dir, f'nexus_{vpu}.gpkg')):
         try:
             if rp.check_outputs_are_valid(vpu_dir):

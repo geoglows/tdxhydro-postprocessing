@@ -7,22 +7,19 @@ import pandas as pd
 __all__ = [
     'check_outputs_are_valid',
     'tdxhydro_corrections_consistent',
-    'RAPID_FILES',
+    'ROUTING_CONFIGS',
 ]
 
-RAPID_FILES = [
-    'rapid_connect.csv',
-    'riv_bas_id.csv',
-    'comid_lat_lon_z.csv',
-    'k.csv',
-    'x.csv',
+ROUTING_CONFIGS = [
+    'routing_params.parquet',
+    'connectivity.parquet',
 ]
 
 logger = logging.getLogger(__name__)
 
 
 def tdxhydro_corrections_consistent(input_dir: str) -> bool:
-    n_streams = pd.read_parquet(os.path.join(input_dir, 'rapid_inputs_master.parquet')).shape[0]
+    n_streams = pd.read_parquet(os.path.join(input_dir, 'rr_inputs_master.parquet')).shape[0]
     weights = sorted(glob.glob(os.path.join(input_dir, 'weight_*.parquet')))
     weights = [x for x in weights if 'full' not in x]
     n_weights = [pd.read_parquet(x).iloc[:, 0].unique().shape[0] for x in weights]

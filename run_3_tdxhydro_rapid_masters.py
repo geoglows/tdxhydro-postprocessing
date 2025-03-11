@@ -6,7 +6,6 @@ import traceback
 import warnings
 
 import pandas as pd
-import geopandas as gpd
 
 import tdxhydrorapid as rp
 
@@ -17,10 +16,10 @@ logging.basicConfig(
     stream=sys.stdout,
 )
 
-inputs_path = '/Volumes/T9Hales4TB/TDXHydroGeoParquet'
-outputs_path = '/Volumes/T9Hales4TB/geoglows2/tdxhydro-inputs'
-sample_grids = glob.glob('/Volumes/T9Hales4TB/RunoffSampleGrids/*.parquet')
-net_df = pd.read_excel('./tdxhydrorapid/network_data/processing_options.xlsx')
+inputs_path = r"D:\geoglows_v3\parquets"
+outputs_path = r"C:\Users\lrr43\Downloads\alterations"
+sample_grids = glob.glob(r"D:\geoglows_v3\tdx-postprocessing\grids\*.parquet")
+net_df = pd.read_excel(os.path.join('.', 'tdxhydrorapid', 'network_data', 'processing_options.xlsx'))
 region_select = '*'
 
 id_field = 'LINKNO'
@@ -28,7 +27,7 @@ ds_field = 'DSLINKNO'
 order_field = 'strmOrder'
 length_field = 'LengthGeodesicMeters'
 
-MAKE_RAPID_INPUTS = False
+MAKE_ROUTING_CONFIGS = True
 MAKE_WEIGHT_TABLES = True
 MAKE_NEXUS_FILES = True
 CACHE_GEOMETRY = True
@@ -43,8 +42,6 @@ gis_iterable = zip(
     sorted(glob.glob(os.path.join(inputs_path, f'TDX_streamnet_{region_select}.parquet')), reverse=False),
     sorted(glob.glob(os.path.join(inputs_path, f'TDX_streamreach_basins_{region_select}.parquet')), reverse=False),
 )
-
-read_grids = [gpd.read_parquet(g) for g in sample_grids]
 
 for streams_gpq, basins_gpq in gis_iterable:
     region_num = os.path.basename(streams_gpq)
@@ -89,10 +86,10 @@ for streams_gpq, basins_gpq in gis_iterable:
 
     try:
         # make the master rapid input files
-        if not os.path.exists(os.path.join(save_dir, 'rapid_inputs_master.parquet')) or \
+        if not os.path.exists(os.path.join(save_dir, 'rr_inputs_master.parquet')) or \
                 (CACHE_GEOMETRY and not len(list(glob.glob(os.path.join(save_dir, '*.geoparquet'))))) or \
-                not os.path.exists(os.path.join(save_dir, 'rapid_inputs_master.parquet')):
-            rp.inputs.rapid_master_files(streams_gpq,
+                not os.path.exists(os.path.join(save_dir, 'rr_inputs_master.parquet')):
+            rp.inputs.river_route_master_files(streams_gpq,
                                         save_dir=save_dir, id_field=id_field, ds_id_field=ds_field,
                                         length_field=length_field,
                                         default_velocity_factor=VELOCITY_FACTOR,
@@ -106,7 +103,6 @@ for streams_gpq, basins_gpq in gis_iterable:
                                         drop_ocean_watersheds=DROP_OCEAN_WATERSHEDS,
                                         drop_within_sea=DROP_WITHIN_SEA,
                                         drop_low_flow=DROP_LOW_FLOW,
-                                        make_nexus_points=MAKE_NEXUS_FILES,
                                         min_drainage_area_m2=MIN_DRAINAGE_AREA_M2,
                                         min_headwater_stream_order=MIN_HEADWATER_STREAM_ORDER,
                                         min_velocity_factor=MIN_VELOCITY_FACTOR,
@@ -117,8 +113,8 @@ for streams_gpq, basins_gpq in gis_iterable:
         if MAKE_NEXUS_FILES and not os.path.exists(os.path.join(save_dir, 'nexus_points.gpkg')):
             rp.inputs.create_nexus_points(save_dir, MIN_HEADWATER_STREAM_ORDER, id_field)
         # make the rapid input files
-        if MAKE_RAPID_INPUTS and not all([os.path.exists(os.path.join(save_dir, f)) for f in rp.RAPID_FILES]):
-            rp.inputs.rapid_input_csvs(pd.read_parquet(os.path.join(save_dir, 'rapid_inputs_master.parquet')),
+        if MAKE_ROUTING_CONFIGS and not all([os.path.exists(os.path.join(save_dir, f)) for f in rp.ROUTING_CONFIGS]):
+            rp.inputs.routing_configs(pd.read_parquet(os.path.join(save_dir, 'rr_inputs_master.parquet')),
                                     save_dir,
                                     id_field=id_field,
                                     ds_id_field=ds_field, )
@@ -128,13 +124,12 @@ for streams_gpq, basins_gpq in gis_iterable:
             continue
 
         # make the master weight tables
-        basins_gdf = None
-        expect_tables = {os.path.join(save_dir, f.replace('.parquet', '_full.parquet')) for f in rp.weights.get_expected_weight_tables(read_grids)}
+        expect_tables = {os.path.join(save_dir, f.replace('.parquet', '_full.parquet')) for f in rp.weights.get_expected_weight_tables(sample_grids)}
         if not all([os.path.exists(f) for f in expect_tables]):
             logging.info('Reading basins')
-            basins_gdf = rp.network.correct_0_length_basins(basins_gpq,
-                                                            save_dir=save_dir,
-                                                            stream_id_col=id_field)
+            basins_gdf = rp.network.correct_basins(basins_gpq,
+                                                    save_dir=save_dir,
+                                                    stream_id_col=id_field)
 
             # reproject the basins to epsg 4326 if needed
             if basins_gdf.crs != 'epsg:4326':
@@ -145,6 +140,7 @@ for streams_gpq, basins_gpq in gis_iterable:
                                                                 save_dir,
                                                                 basins_gdf=basins_gdf,
                                                                 id_field=id_field)
+            basins_gdf = None
 
         for weight_table in expect_tables:
             out_path = weight_table.replace('_full.parquet', '.parquet')

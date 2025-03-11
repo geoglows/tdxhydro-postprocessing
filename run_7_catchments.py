@@ -9,10 +9,9 @@ import pandas as pd
 import tdxhydrorapid as rp
 
 tdx_geoparquet_dir = r"D:\geoglows_v3\parquets"
-# final_output_dir = '/Volumes/T9Hales4TB/geoglows2/'
-tdx_inputs_dir = r"D:\geoglows_v3\geoglows_v3\tdx_alterations"
-hydrography_dir = r"D:\geoglows_v3\geoglows_v3\hydrography"
-master_table_path = r"D:\geoglows_v3\geoglows_v3\geoglows-v2-master-table.parquet"
+tdx_inputs_dir = r"C:\Users\lrr43\Documents\rfs-v2\hydrography-tdxhydro-sources\alterations"
+hydrography_dir = r"C:\Users\lrr43\Documents\rfs-v2\hydrography"
+master_table_path = r"C:\Users\lrr43\Documents\rfs-v2\geoglows-v2-master-table.parquet"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -27,7 +26,7 @@ def save(gdf: gpd.GeoDataFrame,
          vpu: int, 
          hydrography_dir: str):
     
-    vpu_dir = os.path.join(hydrography_dir, str(vpu))
+    vpu_dir = os.path.join(hydrography_dir, f"vpu={vpu}")
     os.makedirs(vpu_dir, exist_ok=True)
     vpu_numbers = mdf.loc[mdf['VPUCode'] == vpu, 'LINKNO'].unique()
     (
@@ -42,7 +41,7 @@ def save(gdf: gpd.GeoDataFrame,
 
 os.makedirs(hydrography_dir, exist_ok=True)
 mdf = pd.read_parquet(master_table_path)
-for tdx in natsorted(glob.glob(os.path.join(tdx_inputs_dir, '*')))[3:]:
+for tdx in natsorted(glob.glob(os.path.join(tdx_inputs_dir, '*'))):
     tdxnumber = os.path.basename(tdx)
     logging.info(tdxnumber)
     catchments_gpq = os.path.join(tdx_geoparquet_dir, f'TDX_streamreach_basins_{tdxnumber}_01.parquet')
