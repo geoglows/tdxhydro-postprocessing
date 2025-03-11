@@ -7,8 +7,9 @@ import sys
 import geopandas as gpd
 from pyproj import Geod
 
-gpkg_dir = '/Volumes/T9Hales4TB/TDXHydro'
-gpq_dir = '/Volumes/T9Hales4TB/TDXHydroGeoParquet'
+gpkg_dir = 'test/gpkgs'
+gpq_dir = '/Volumes/EB406_T7_3/geoglows_v3/parquets'
+save_dir = 'test/'
 
 logging.basicConfig(
     level=logging.INFO,
@@ -38,8 +39,8 @@ if __name__ == '__main__':
     with open(os.path.join(os.path.dirname(__file__), 'tdxhydrorapid', 'network_data', 'tdx_header_numbers.json')) as f:
         tdx_header_numbers = json.load(f)
 
-    if not os.path.exists(gpq_dir):
-        os.makedirs(gpq_dir)
+    os.makedirs(gpq_dir, exist_ok=True)
+    os.makedirs(save_dir, exist_ok=True)
 
     for gpkg in sorted(glob.glob(os.path.join(gpkg_dir, 'TDX*.gpkg'))):
         region_number = os.path.basename(gpkg).split('_')[-2]
@@ -51,9 +52,9 @@ if __name__ == '__main__':
             continue
 
         gdf = gpd.read_file(gpkg)
-        gdf['LINKNO'] = gdf['LINKNO'].astype(int) + (tdx_header_number * 10_000_000)
-
+        
         if 'streamnet' in os.path.basename(gpkg):
+            gdf['LINKNO'] = gdf['LINKNO'].astype(int) + (tdx_header_number * 10_000_000)
             gdf['DSLINKNO'] = gdf['DSLINKNO'].astype(int)
             gdf.loc[gdf['DSLINKNO'] != -1, 'DSLINKNO'] = gdf['DSLINKNO'] + (tdx_header_number * 10_000_000)
             gdf['strmOrder'] = gdf['strmOrder'].astype(int)
@@ -73,6 +74,7 @@ if __name__ == '__main__':
             ]]
 
         else:
+            gdf['LINKNO'] = gdf['streamID'].astype(int) + (tdx_header_number * 10_000_000)
             gdf = gdf.drop(columns=['streamID'])
 
         gdf.to_parquet(out_file_name)

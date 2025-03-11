@@ -2,3 +2,5 @@
 *.gpkg
 *.log
 .idea
+test
+*__pycache__*

@@ -3,13 +3,20 @@ channels:
 - conda-forge
 - defaults
 dependencies:
-  - python=3.11
-  - geopandas
+  - dask-geopandas
+  - libgdal-arrow-parquet
+  - geopandas>=1.0
+  - natsort
   - netcdf4
+  - networkx
   - numpy
+  - openpyxl
   - pandas
   - shapely>=2
+  - pyarrow
   - pyproj
+  - pyogrio
+  - python>=3.11
   - dask
   - xarray
   - scikit-learn
