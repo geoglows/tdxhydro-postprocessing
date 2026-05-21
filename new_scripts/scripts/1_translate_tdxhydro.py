@@ -7,6 +7,9 @@ import sys
 import geopandas as gpd
 from pyproj import Geod
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import hydrography.schema as schema
+
 gpkg_dir = 'test/gpkgs'
 gpq_dir = '/Volumes/EB406_T7_3/geoglows_v3/parquets'
 save_dir = 'test/'
@@ -36,7 +39,7 @@ def _calculate_geodesic_length(line) -> float:
 if __name__ == '__main__':
     logging.info('Converting TDX-Hydro GPKG to Geoparquet')
     # add globally unique ID numbers
-    with open(os.path.join(os.path.dirname(__file__), 'tdxhydrorapid', 'network_data', 'tdx_header_numbers.json')) as f:
+    with open(os.path.join(os.path.dirname(__file__), '../../tdxhydrorapid', 'network_data', 'tdx_header_numbers.json')) as f:
         tdx_header_numbers = json.load(f)
 
     os.makedirs(gpq_dir, exist_ok=True)
@@ -52,29 +55,19 @@ if __name__ == '__main__':
             continue
 
         gdf = gpd.read_file(gpkg)
-        
-        if 'streamnet' in os.path.basename(gpkg):
-            gdf['LINKNO'] = gdf['LINKNO'].astype(int) + (tdx_header_number * 10_000_000)
-            gdf['DSLINKNO'] = gdf['DSLINKNO'].astype(int)
-            gdf.loc[gdf['DSLINKNO'] != -1, 'DSLINKNO'] = gdf['DSLINKNO'] + (tdx_header_number * 10_000_000)
-            gdf['strmOrder'] = gdf['strmOrder'].astype(int)
-            gdf['LengthGeodesicMeters'] = gdf['geometry'].apply(_calculate_geodesic_length)
-            gdf['TDXHydroRegion'] = region_number
 
-            gdf = gdf[[
-                'LINKNO',
-                'DSLINKNO',
-                'strmOrder',
-                'Magnitude',
-                'USContArea',
-                'DSContArea',
-                'LengthGeodesicMeters',
-                'TDXHydroRegion',
-                'geometry'
-            ]]
+        if 'streamnet' in os.path.basename(gpkg):
+            gdf[schema.tdx_link_field] = gdf[schema.tdx_link_field].astype(int) + (tdx_header_number * 10_000_000)
+            gdf[schema.tdx_ds_link_field] = gdf[schema.tdx_ds_link_field].astype(int)
+            gdf.loc[gdf[schema.tdx_ds_link_field] != -1, schema.tdx_ds_link_field] = gdf[schema.tdx_ds_link_field] + (tdx_header_number * 10_000_000)
+            gdf[schema.tdx_strm_order_field] = gdf[schema.tdx_strm_order_field].astype(int)
+            gdf[schema.tdx_geodesic_length_field] = gdf[schema.geometry].apply(_calculate_geodesic_length)
+            gdf[schema.tdx_region_field] = region_number
+
+            gdf = gdf[schema.tdx_streamnet_output_columns]
 
         else:
-            gdf['LINKNO'] = gdf['streamID'].astype(int) + (tdx_header_number * 10_000_000)
-            gdf = gdf.drop(columns=['streamID'])
+            gdf[schema.tdx_link_field] = gdf[schema.basin_stream_id_field].astype(int) + (tdx_header_number * 10_000_000)
+            gdf = gdf.drop(columns=[schema.basin_stream_id_field])
 
         gdf.to_parquet(out_file_name)
