@@ -3,6 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PYTHON="$SCRIPT_DIR/../.venv/bin/python"
+DATA="$SCRIPT_DIR/../data"
 
 cd "$SCRIPT_DIR" || exit 1
 
@@ -59,7 +60,41 @@ REGIONS=(
     8020008900
 )
 
+# prepare tdx regions
 printf '%s\n' "${REGIONS[@]}" | xargs -P 12 -I{} "$PYTHON" 2_simplify_streams.py {}
 #printf '%s\n' "${REGIONS[@]}" | xargs -P 1 -I{} "$PYTHON" 3_create_catchments.py {}
-printf '%s\n' "${REGIONS[@]}" | xargs -P 3 -I{} "$PYTHON" 4_generate_groups.py {}
-"$PYTHON" 5_concatenate_global.py
+## group subdividing
+#printf '%s\n' "${REGIONS[@]}" | xargs -P 3 -I{} "$PYTHON" 4_generate_groups.py {}
+## global files
+#"$PYTHON" 5_concatenate_global.py
+
+# tiling
+mkdir -p "$DATA/global"
+
+STREAM_TIER_FILTER='{"*":["any",[">=","strahlerOrder",6],["all",[">=","strahlerOrder",4],[">=","$zoom",6]],[">=","$zoom",8]]}'
+export DATA STREAM_TIER_FILTER
+
+tile_region() {
+    set -eo pipefail
+    local region="$1"
+    local mapping="$DATA/regions/$region/streams_mapping_${region}.geo.parquet"
+    local tile="$DATA/regions/$region/streams_${region}.pmtiles"
+    if [ ! -f "$mapping" ]; then
+        echo "region $region: no streams_mapping, run step 2 first, skipping"
+        return
+    fi
+    if [ -f "$tile" ]; then
+        echo "region $region: tile already exists, skipping"
+        return
+    fi
+    ogr2ogr -f GeoJSONSeq -t_srs EPSG:4326 /vsistdout/ "$mapping" \
+        | tippecanoe -o "$tile" -Z0 -z12 --layer streams --include riverId --include strahlerOrder \
+            --drop-densest-as-needed --simplification=10 --no-simplification-of-shared-nodes \
+            -j "$STREAM_TIER_FILTER" --no-progress-indicator --force
+    echo "region $region: tiled -> $tile"
+}
+export -f tile_region
+export TIPPECANOE_MAX_THREADS=12
+printf '%s\n' "${REGIONS[@]}" | xargs -P 6 -I{} bash -c 'tile_region "$@"' _ {}
+tile-join --force --no-tile-size-limit --name 'GEOGLOWS RFS Streams (global)' \
+    -o "$DATA/global/streams_global.pmtiles" "$DATA"/regions/*/streams_*.pmtiles

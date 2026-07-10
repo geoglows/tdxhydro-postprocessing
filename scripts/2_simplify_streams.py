@@ -28,9 +28,11 @@ if __name__ == '__main__':
     # final outputs to check for existence before computing
     final_geoparquet_output = os.path.join(region_root, f'{region}', f'streams_{region}.geo.parquet')
     simple_streams_output = os.path.join(region_root, f'{region}', f'streams_simplified_{region}.geo.parquet')
+    mapping_streams_output = os.path.join(region_root, f'{region}', f'streams_mapping_{region}.geo.parquet')
     final_metadata_output = os.path.join(region_root, f'{region}', f'metadata_{region}.parquet')
     confluences_output = os.path.join(region_root, f'{region}', f'confluences_{region}.geo.parquet')
-    outputs = [final_geoparquet_output, simple_streams_output, final_metadata_output, confluences_output]
+    outputs = [final_geoparquet_output, simple_streams_output, mapping_streams_output,
+               final_metadata_output, confluences_output]
     if all(os.path.exists(output) for output in outputs):
         print(f'All final outputs for region {region} already exist, skipping')
         sys.exit(0)
@@ -162,6 +164,10 @@ if __name__ == '__main__':
     logging.info(f'Metadata written to {final_metadata_output}')
     gdf.set_geometry(gdf.simplify(tolerance=10)).to_parquet(simple_streams_output)
     logging.info(f'Simplified streams written to {simple_streams_output}')
+    # full-resolution streams in web mercator with coordinates rounded to whole metres; the
+    # source for the map tiles built in stream_revisions.sh
+    hy.pmtiling.to_mapping_geometry(gdf).to_parquet(mapping_streams_output)
+    logging.info(f'Mapping streams written to {mapping_streams_output}')
 
     confluences = (
         gdf

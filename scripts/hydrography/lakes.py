@@ -74,8 +74,10 @@ def find_lake_edits(gdf: gpd.GeoDataFrame, min_inlet_area: float = min_lake_inle
     Returns ``{outlet_id: {'inlets': [...], 'delete': [...], 'geometry_path': [...]}}``:
       - inlets:        reaches whose nextRiverId should be set to the outlet
       - delete:        interior reaches to remove from the network
-      - geometry_path: reaches from the largest inlet's downstream through the
-                       outlet whose merged line becomes the outlet's geometry
+      - geometry_path: reaches from the top-N largest inlets' downstream through
+                       the outlet whose merged line becomes the outlet's geometry.
+                       N is the per-lake ``n_inlets`` value (default 1); the merged
+                       line branches into a MultiLineString when N > 1.
 
     Only inlets whose drainage area (DSContArea) is at least ``min_inlet_area`` are
     kept as true inlets. A smaller inlet is too minor to route into the lake on its
@@ -100,11 +102,28 @@ def find_lake_edits(gdf: gpd.GeoDataFrame, min_inlet_area: float = min_lake_inle
     drainage_area_for = gdf.set_index(schema.river_id)[schema.tdx_ds_area_field].to_dict()
     ids_present = set(gdf[schema.river_id].values)
 
+    def _path_to_outlet(inlet, outlet):
+        # interior reaches from an inlet's downstream neighbour to the outlet (inclusive)
+        path = []
+        start_id = next_id_for[inlet]
+        while start_id != outlet:
+            if start_id == -1 or start_id not in ids_present:
+                break
+            path.append(start_id)
+            start_id = next_id_for[start_id]
+        if start_id != outlet:
+            raise RuntimeError(
+                f'Lake outlet {outlet} not reachable from inlet {inlet}, which should be impossible'
+            )
+        path.append(outlet)
+        return path
+
     edits = {}
     all_to_delete = set()
     unique_outlets = lake_table[schema.outlet_field].unique()
     for outlet in unique_outlets:
-        inlets = lake_table[lake_table[schema.outlet_field] == outlet][schema.inlet_field].tolist()
+        group = lake_table[lake_table[schema.outlet_field] == outlet]
+        inlets = group[schema.inlet_field].tolist()
         if outlet not in ids_present:
             raise ValueError(f'Lake outlet {outlet} not found in gdf, which should not be possible')
 
@@ -113,23 +132,26 @@ def find_lake_edits(gdf: gpd.GeoDataFrame, min_inlet_area: float = min_lake_inle
         # whole upstream branch into the lake interior
         kept_inlets = [i for i in inlets if drainage_area_for.get(i, 0) >= min_inlet_area]
 
-        # the outlet geometry is the merged line from the largest kept inlet down to the
-        # outlet; with no kept inlet the whole network collapses into the outlet, which
-        # then just keeps its own geometry
+        # how many of the largest kept inlets get a drawn line through the lake to the
+        # outlet. per-lake, defaults to 1; absent column or blank cell -> 1. read as the
+        # group max so the value can be set on any single row of the lake.
+        n_inlets = 1
+        if schema.n_inlets_field in group.columns:
+            n_inlets = max(1, int(group[schema.n_inlets_field].fillna(1).max()))
+
+        # the outlet geometry is the merged line from the top-N largest kept inlets down
+        # to the outlet; a set dedups the shared downstream trunk so no reach is drawn
+        # twice and linemerge is order-independent (branching -> MultiLineString for N>1).
+        # with no kept inlet the whole network collapses into the outlet, which then just
+        # keeps its own geometry.
         if kept_inlets:
-            largest_inlet = max(kept_inlets, key=lambda i: drainage_area_for.get(i, -1))
-            direct_path = []
-            start_id = next_id_for[largest_inlet]
-            while start_id != outlet:
-                if start_id == -1 or start_id not in ids_present:
-                    break
-                direct_path.append(start_id)
-                start_id = next_id_for[start_id]
-            if start_id != outlet:
-                raise RuntimeError(
-                    f'Lake outlet {outlet} not reachable from inlet {largest_inlet}, which should be impossible'
-                )
-            direct_path.append(outlet)
+            top_inlets = sorted(
+                kept_inlets, key=lambda i: drainage_area_for.get(i, -1), reverse=True
+            )[:n_inlets]
+            geometry_reaches = set()
+            for inlet in top_inlets:
+                geometry_reaches.update(_path_to_outlet(inlet, outlet))
+            direct_path = sorted(geometry_reaches)
         else:
             direct_path = [outlet]
 
