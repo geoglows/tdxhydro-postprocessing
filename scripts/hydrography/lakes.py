@@ -28,6 +28,11 @@ __all__ = [
 # lake_table_path = '../network_data/lake_table.csv'
 lake_table_path = os.path.join(os.path.dirname(__file__), os.pardir, os.pardir, 'network_data', 'lake_table.csv')
 
+# An inlet whose drainage area (DSContArea, the contributing area at its downstream
+# end where it meets the lake) is below this is too small to keep as its own routed
+# reach; its whole upstream branch is absorbed into the lake instead. 100 km^2.
+min_lake_inlet_area = 100_000_000
+
 
 def _build_digraph(df: pd.DataFrame) -> nx.DiGraph:
     g = nx.from_pandas_edgelist(
@@ -61,7 +66,7 @@ def _strict_interior(graph: nx.DiGraph, outlet, barriers: set) -> set:
     return interior
 
 
-def find_lake_edits(gdf: gpd.GeoDataFrame) -> dict:
+def find_lake_edits(gdf: gpd.GeoDataFrame, min_inlet_area: float = min_lake_inlet_area) -> dict:
     """
     Analyze the network against the lake table and describe the edits to make,
     without mutating the gdf.
@@ -71,6 +76,13 @@ def find_lake_edits(gdf: gpd.GeoDataFrame) -> dict:
       - delete:        interior reaches to remove from the network
       - geometry_path: reaches from the largest inlet's downstream through the
                        outlet whose merged line becomes the outlet's geometry
+
+    Only inlets whose drainage area (DSContArea) is at least ``min_inlet_area`` are
+    kept as true inlets. A smaller inlet is too minor to route into the lake on its
+    own, so it is dropped from the barrier set and its whole upstream branch falls
+    into the interior to be absorbed into the lake (its catchment folds into the
+    outlet downstream, in 3_create_catchments). A lake whose inlets are all below
+    the threshold collapses its entire contributing network into the outlet.
 
     Raises if any lake outlet would itself be deleted, which means the lake is
     nested inside another (or the lake table fragments one lake across several
@@ -95,27 +107,38 @@ def find_lake_edits(gdf: gpd.GeoDataFrame) -> dict:
         inlets = lake_table[lake_table[schema.outlet_field] == outlet][schema.inlet_field].tolist()
         if outlet not in ids_present:
             raise ValueError(f'Lake outlet {outlet} not found in gdf, which should not be possible')
-        largest_inlet = max(inlets, key=lambda i: drainage_area_for.get(i, -1))
 
-        direct_path = []
-        start_id = next_id_for[largest_inlet]
-        while start_id != outlet:
-            if start_id == -1 or start_id not in ids_present:
-                break
-            direct_path.append(start_id)
-            start_id = next_id_for[start_id]
-        if start_id != outlet:
-            raise RuntimeError(
-                f'Lake outlet {outlet} not reachable from inlet {largest_inlet}, which should be impossible'
-            )
-        direct_path.append(outlet)
+        # only inlets draining at least min_inlet_area stay as true (routed) inlets; the
+        # rest are not barriers, so _strict_interior walks past them and absorbs their
+        # whole upstream branch into the lake interior
+        kept_inlets = [i for i in inlets if drainage_area_for.get(i, 0) >= min_inlet_area]
 
-        interior = _strict_interior(graph, outlet, set(inlets))
+        # the outlet geometry is the merged line from the largest kept inlet down to the
+        # outlet; with no kept inlet the whole network collapses into the outlet, which
+        # then just keeps its own geometry
+        if kept_inlets:
+            largest_inlet = max(kept_inlets, key=lambda i: drainage_area_for.get(i, -1))
+            direct_path = []
+            start_id = next_id_for[largest_inlet]
+            while start_id != outlet:
+                if start_id == -1 or start_id not in ids_present:
+                    break
+                direct_path.append(start_id)
+                start_id = next_id_for[start_id]
+            if start_id != outlet:
+                raise RuntimeError(
+                    f'Lake outlet {outlet} not reachable from inlet {largest_inlet}, which should be impossible'
+                )
+            direct_path.append(outlet)
+        else:
+            direct_path = [outlet]
+
+        interior = _strict_interior(graph, outlet, set(kept_inlets))
         interior.discard(outlet)
         all_to_delete |= interior
 
         edits[int(outlet)] = {
-            'inlets': [int(i) for i in inlets],
+            'inlets': [int(i) for i in kept_inlets],
             'delete': sorted(int(s) for s in interior),
             'geometry_path': [int(s) for s in direct_path],
         }
@@ -146,27 +169,43 @@ def find_lake_edits(gdf: gpd.GeoDataFrame) -> dict:
 def apply_lake_edits(gdf: gpd.GeoDataFrame, lake_edits: dict) -> gpd.GeoDataFrame:
     """
     Apply the edits from :func:`find_lake_edits`: merge each lake's direct-path
-    geometry into its outlet, repoint that lake's inlets at the outlet, and drop
-    the interior reaches.
+    geometry into its outlet, fold each interior reach's local catchment area
+    (areaM2) into the outlet so total drained area is conserved (matching the
+    catchment dissolve in 3_create_catchments, which redirects every deleted
+    reach's basin to the outlet), repoint that lake's inlets at the outlet, and
+    drop the interior reaches. DSContArea/USContArea are unchanged - the outlet's
+    contributing areas already account for everything upstream.
     """
     if not lake_edits:
         return gdf
 
     next_dtype = gdf[schema.next_river_id].dtype
     geom_for = gdf.set_index(schema.river_id)['geometry'].to_dict()
+    area_for = gdf.set_index(schema.river_id)[schema.area] if schema.area in gdf.columns else None
 
     inlet_to_outlet = {}
     all_to_delete = set()
+    added_area: dict = {}
     for outlet, edit in lake_edits.items():
         outlet = int(outlet)
         path = [int(p) for p in edit['geometry_path']]
-        # todo handle correcting the rest of the attributes instead of only handling geometry
         if len(path) > 1:
             merged = linemerge([geom_for[p] for p in path if p in geom_for])
             gdf.loc[gdf[schema.river_id] == outlet, 'geometry'] = merged
         for inlet in edit['inlets']:
             inlet_to_outlet[int(inlet)] = outlet
-        all_to_delete.update(int(d) for d in edit['delete'])
+        deletes = [int(d) for d in edit['delete']]
+        all_to_delete.update(deletes)
+        if area_for is not None:
+            added_area[outlet] = float(area_for.reindex(deletes).sum())
+
+    # grow each outlet's areaM2 by the sum of the interior areas it absorbs, before
+    # those rows are dropped, so the dissolved area equals the sum of its parts
+    if added_area:
+        keeper_mask = gdf[schema.river_id].isin(added_area)
+        gdf.loc[keeper_mask, schema.area] = (
+                gdf.loc[keeper_mask, schema.area] + gdf.loc[keeper_mask, schema.river_id].map(added_area)
+        )
 
     # update the inlet rows to point to the outlet (next_id is overridden by the inlet to outlet map)
     gdf[schema.next_river_id] = (

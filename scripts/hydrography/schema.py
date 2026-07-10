@@ -83,6 +83,7 @@ final_columns_to_keep = [
     area,
     tdx_length_field,
     tdx_region_field,
+    vpu_id,
     static_musk_k,
     static_musk_x,
     static_velocity_factor,

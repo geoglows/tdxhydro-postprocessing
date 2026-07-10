@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 
 from . import schema
-from .topology import get_all_upstream, make_upstream_id_map
+from .topology import make_upstream_id_map
 
 log = logging.getLogger(__name__)
 
@@ -188,7 +188,8 @@ def remove_zero_length(gdf: gpd.GeoDataFrame, zero_length_json: dict, ) -> gpd.G
     # Case 2 - Allow 3-river confluence - Delete river and basin, modify upstreams to point downstream
     # Apply before case 3 to handle some edges cases where zero length basins drain into other zero length basins
     # Sort by next_river_id to handle some edges cases where zero length basins drain into other zero length basins
-    sorted_c2_order = gdf[gdf[schema.river_id].isin(case2)].sort_values(schema.next_river_id, ascending=True)[schema.river_id].values
+    sorted_c2_order = gdf[gdf[schema.river_id].isin(case2)].sort_values(schema.next_river_id, ascending=True)[
+        schema.river_id].values
     for river_id in sorted_c2_order:
         downstream_id = gdf[gdf[schema.river_id] == river_id][schema.next_river_id].values[0]
         gdf.loc[gdf[schema.next_river_id] == river_id, schema.next_river_id] = downstream_id
@@ -247,29 +248,54 @@ def find_headwater_mergers(gdf: gpd.GeoDataFrame, min_order: int) -> dict:
     if min_order == 1:
         return dict()
 
-    # find all rivers which are min_order and whose upstream rivers are min_order - 1
-    candidates = gdf[gdf[schema.strahler_order] == min_order]
-    upstreams_are_order_minus_1 = gdf[
-        gdf[schema.next_river_id].isin(candidates[schema.river_id].values) & (gdf[schema.strahler_order] == (min_order - 1))
-        ]
-    candidates = candidates[
-        candidates[schema.river_id].isin(upstreams_are_order_minus_1[schema.next_river_id].values)
-    ]
-    if candidates.empty:
+    upstream_id_map = make_upstream_id_map(gdf)
+    order_of = gdf.set_index(schema.river_id)[schema.strahler_order].to_dict()
+
+    # candidates: order min_order reaches with 2+ upstreams that are ALL order min_order - 1.
+    # group every reach by its downstream id, so each group is the upstreams of one reach;
+    # per group, 'size' counts the upstreams and 'sum' counts those of order min_order - 1.
+    # a downstream qualifies when it has 2+ upstreams that are all order min_order - 1.
+    upstreams = gdf[[schema.next_river_id, schema.strahler_order]].assign(
+        is_order_minus_1=lambda df: df[schema.strahler_order] == (min_order - 1)
+    )
+    counts = upstreams.groupby(schema.next_river_id)['is_order_minus_1'].agg(['size', 'sum'])
+    qualifying_ds = counts.index[(counts['size'] >= 2) & (counts['size'] == counts['sum'])]
+
+    candidate_ids = gdf.loc[
+        (gdf[schema.strahler_order] == min_order) & (gdf[schema.river_id].isin(qualifying_ds)),
+        schema.river_id,
+    ].astype(int).tolist()
+    if not candidate_ids:
         return dict()
 
-    upstream_id_map = make_upstream_id_map(gdf)
+    def upstream_below_order(root: int) -> list:
+        """
+        Reaches upstream of ``root`` whose order is < min_order, collected with a
+        bounded walk that stops at (never collects or traverses past) any reach of
+        order >= min_order. ``root`` is itself the first downstream order-min_order
+        reach, so it absorbs exactly its directly-feeding lower-order tributaries
+        (and any lower-order chains) and never another same-or-higher-order
+        segment. Without this bound, a chain of order-min_order segments would all
+        collapse into the most-downstream candidate.
+        """
+        collected = []
+        stack = list(upstream_id_map.get(root, []))
+        while stack:
+            node = stack.pop()
+            if order_of.get(node, min_order) >= min_order:
+                continue
+            collected.append(node)
+            stack.extend(upstream_id_map.get(node, []))
+        return collected
+
     headwaters_dict = {
-        int(candidate): [int(u) for u in get_all_upstream(candidate, upstream_id_map)]
-        for candidate in candidates[schema.river_id].values
+        candidate: [int(u) for u in upstream_below_order(candidate)]
+        for candidate in candidate_ids
     }
     return headwaters_dict
 
 
 def merge_headwaters(gdf: gpd.GeoDataFrame, header_mergers: dict) -> gpd.GeoDataFrame:
-    # a headwater merge collapses a whole upstream tree into one reach, so lengths
-    # (and other length-like attrs) take the longest member rather than summing
-    # the parallel tributaries
     return dissolve_groups(gdf, header_mergers, _build_aggfunc(gdf, length_rule='max'))
 
 
@@ -352,6 +378,47 @@ def find_branches_to_prune(gdf: gpd.GeoDataFrame) -> dict:
         merges.setdefault(int(keeper), []).append(int(rivid))
         do_not_delete.add(rivid)
 
+    return merges
+
+
+def find_orphaned_coastal_outlets(gdf: gpd.GeoDataFrame) -> dict:
+    """
+    Find order-1 reaches left as tiny standalone outlets by zero-length outlet
+    removal, and map each to the neighbor it should be folded into.
+
+    When remove_zero_length drops a zero-length reach that was itself an outlet
+    (case 3), every direct upstream is repointed to -1 and becomes its own outlet.
+    A small order-1 among those upstreams then drains straight to the network edge
+    instead of joining the larger river it shared the (now deleted) confluence
+    with. Those siblings can no longer be related through the topology (they all
+    point to -1), but they still carry the STALE outletRiverId of the deleted
+    zero-length reach, which recovers the sibling set. This must therefore run
+    before topology.recompute_outlets overwrites those stale ids.
+
+    Returns {keeper_river_id: [order1_ids_to_fold, ...]} in the shape that
+    prune_branches consumes: each order-1 sibling is folded (area-conserving, no
+    geometry merge) into the largest-drainage-area member of its group. Groups
+    with a single orphan (the sole upstream of the removed reach, a legitimate new
+    outlet) are skipped, and non-order-1 members are left as independent outlets.
+    """
+    surviving_ids = set(gdf[schema.river_id].values)
+    orphans = gdf[
+        (gdf[schema.next_river_id] == -1) & (~gdf[schema.last_river_id].isin(surviving_ids))
+        ]
+    if orphans.empty:
+        return {}
+
+    merges: dict = {}
+    for _, group in orphans.groupby(schema.last_river_id):
+        if len(group) < 2:
+            continue
+        ids = group[schema.river_id].to_numpy()
+        areas = group[schema.tdx_ds_area_field].to_numpy()
+        orders = group[schema.strahler_order].to_numpy()
+        keeper = int(ids[areas.argmax()])
+        folds = [int(i) for i, o in zip(ids, orders) if o == 1 and int(i) != keeper]
+        if folds:
+            merges[keeper] = folds
     return merges
 
 

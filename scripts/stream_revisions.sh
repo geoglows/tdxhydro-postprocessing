@@ -2,9 +2,9 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PYTHON="/Users/rchales/miniforge3/envs/tdxhydrorapid/bin/python"
+PYTHON="$SCRIPT_DIR/../.venv/bin/python"
 
-cd "$SCRIPT_DIR/scripts"
+cd "$SCRIPT_DIR" || exit 1
 
 REGIONS=(
     1020000010
@@ -59,4 +59,7 @@ REGIONS=(
     8020008900
 )
 
-printf '%s\n' "${REGIONS[@]}" | xargs -P 5 -I{} "$PYTHON" 2_simplify_streams.py {}
+printf '%s\n' "${REGIONS[@]}" | xargs -P 12 -I{} "$PYTHON" 2_simplify_streams.py {}
+#printf '%s\n' "${REGIONS[@]}" | xargs -P 1 -I{} "$PYTHON" 3_create_catchments.py {}
+printf '%s\n' "${REGIONS[@]}" | xargs -P 3 -I{} "$PYTHON" 4_generate_groups.py {}
+"$PYTHON" 5_concatenate_global.py

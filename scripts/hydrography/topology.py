@@ -7,6 +7,7 @@ from . import schema
 
 __all__ = [
     'compute_topology',
+    'recompute_outlets',
     'find_topology_violations',
     'topology_is_valid',
     'assert_topology_is_valid',
@@ -42,12 +43,18 @@ def get_all_upstream(root_id: int, id_map: dict) -> list:
     return all_upstream
 
 
-def compute_topology(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
-    # create directed graph
+def recompute_outlets(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    """
+    (Re)assign the OutletRiverID attribute for every reach from the current
+    riverId/nextRiverId topology, without re-sorting or renumbering
+    topologySortedOrder. Use this after edits that create new outlets (e.g. a
+    zero-length outlet being removed repoints its upstreams to -1) so the stale
+    outlet ids left behind are corrected. Only outletRiverId is written; vpuId and
+    every other column are untouched.
+    """
     G = networkx.DiGraph()
     G.add_edges_from(gdf[[schema.river_id, schema.next_river_id]].values)
 
-    # assign OutletRiverID attribute to all rivers in the watershed
     gdf[schema.last_river_id] = -1
     outlets = gdf[gdf[schema.next_river_id] == -1][schema.river_id].tolist()
     for outlet in outlets:
@@ -57,6 +64,13 @@ def compute_topology(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     # if any -1 are left, then an unanticipated error has occurred so raise an error
     if (gdf[schema.last_river_id] == -1).any():
         raise ValueError('Some rivers still have outletRiverId of -1 after processing. Please investigate.')
+
+    return gdf
+
+
+def compute_topology(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    # assign OutletRiverID attribute to all rivers in the watershed
+    gdf = recompute_outlets(gdf)
 
     # compute topological sort - use strahler order and drainage area to avoid expensive graph algorithms
     gdf.sort_values(
