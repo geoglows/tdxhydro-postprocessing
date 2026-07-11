@@ -3,16 +3,17 @@ import logging
 import os
 import sys
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import geopandas as gpd
 import pandas as pd
 import shapely
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import hydrography as hy
 
-region_root = '/Users/rchales/code/untitled folder/tdxhydro-postprocessing/data/regions'
-tdx_root = '/Users/rchales/code/untitled folder/tdxhydro-postprocessing/data/TDXHydroGeoParquet'
+region_root = Path('/Users/rchales/code/untitled folder/tdxhydro-postprocessing/data/regions')
+tdx_root = Path('/Users/rchales/code/untitled folder/tdxhydro-postprocessing/data/TDXHydroGeoParquet')
 
 # the dissolve (a GEOS union per keeper group) is ~96% of the runtime. shapely's union_all
 # releases the GIL during the GEOS work, so unioning groups in worker threads parallelizes the
@@ -20,14 +21,14 @@ tdx_root = '/Users/rchales/code/untitled folder/tdxhydro-postprocessing/data/TDX
 dissolve_threads = os.cpu_count() or 8
 
 
-def _load_json(path: str) -> dict:
-    if not os.path.exists(path):
+def _load_json(path: Path) -> dict:
+    if not path.exists():
         return {}
     with open(path) as f:
         return json.load(f)
 
 
-def build_basin_edits(mods_dir: str) -> tuple[dict, set]:
+def build_basin_edits(mods_dir: Path) -> tuple[dict, set]:
     """
     Replay, in the same order as 2_simplify_streams.py, the id-level edits that the
     stream simplification recorded in its json side-files, expressed for basins.
@@ -43,20 +44,20 @@ def build_basin_edits(mods_dir: str) -> tuple[dict, set]:
     # 1. lakes: every interior reach (including the inlet->outlet geometry path) collapses
     #    into the lake outlet, so its local catchment area belongs to the outlet's catchment.
     #    inlets and the outlet survive and keep their own basins.
-    for outlet, edit in _load_json(os.path.join(mods_dir, 'lake_edits.json')).items():
+    for outlet, edit in _load_json(mods_dir / 'lake_edits.json').items():
         outlet = int(outlet)
         for d in edit.get('delete', []):
             redirect[int(d)] = outlet
 
     # 2. zero-length streams: their basins are deleted in every case (1, 2, 3)
-    zero_lengths = _load_json(os.path.join(mods_dir, 'zero_length_streams.json'))
+    zero_lengths = _load_json(mods_dir / 'zero_length_streams.json')
     for case in ('case1', 'case2', 'case3'):
         deleted.update(int(i) for i in zero_lengths.get(case, {}).get('ids', []))
 
     # 3. headwater dissolves, 4. branch pruning, 5. short consolidations:
     #    each {keeper: [members]} group folds every non-keeper member's basin into the keeper
     for fname in ('headwater_dissolves.json', 'branches_to_prune.json', 'short_consolidations.json'):
-        for keeper, members in _load_json(os.path.join(mods_dir, fname)).items():
+        for keeper, members in _load_json(mods_dir / fname).items():
             keeper = int(keeper)
             for member in members:
                 redirect[int(member)] = keeper
@@ -96,23 +97,23 @@ def dissolve_threaded(gdf: gpd.GeoDataFrame, by: str, workers: int, groups_per_t
 if __name__ == '__main__':
     # find the ID of the region to process
     if len(sys.argv) != 2:
-        sys.exit('usage: 3_create_catchments.py <region_number>')
+        sys.exit('usage: 4_create_catchments.py <region_number>')
     region_number = int(sys.argv[1])
     # region_number = 1020000010  # Example region number
 
-    outputs_dir = os.path.join(region_root, f'{region_number}')
-    mods_dir = os.path.join(outputs_dir, 'mods')
+    outputs_dir = region_root / f'{region_number}'
+    mods_dir = outputs_dir / 'mods'
 
     # if the output already exists then skip
-    catchments_output = os.path.join(outputs_dir, f'catchments_{region_number}.geo.parquet')
-    if os.path.exists(catchments_output):
+    catchments_output = outputs_dir / f'catchments_{region_number}.geo.parquet'
+    if catchments_output.exists():
         print(f'Catchments output {catchments_output} already exists, skipping region {region_number}')
         sys.exit(0)
 
     # prepare directories and logging
-    os.makedirs(mods_dir, exist_ok=True)
+    mods_dir.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(
-        filename=os.path.join(mods_dir, 'catchments_log.log'),
+        filename=mods_dir / 'catchments_log.log',
         filemode='w',
         level=logging.INFO,
         format='%(asctime)s %(levelname)s %(message)s',
@@ -121,13 +122,13 @@ if __name__ == '__main__':
     # the simplified stream network defines which reaches (and therefore catchments) survive.
     # the whole-watershed and <250 km^2 drops from step 2 are not in the json side-files, but are
     # captured here by keeping only catchments whose final id is still in the streams output.
-    streams_src = os.path.join(outputs_dir, f'streams_{region_number}.geo.parquet')
+    streams_src = outputs_dir / f'streams_{region_number}.geo.parquet'
     surviving_ids = set(pd.read_parquet(streams_src, columns=[hy.schema.river_id])[hy.schema.river_id].astype(int))
     logging.info(f'{len(surviving_ids):,} reaches survive in {streams_src}')
 
     # load the original basins. TDXHydroLinkNo is the basin id with the region spacer applied,
     # so it is the same numbering as the stream riverId.
-    basins_src = os.path.join(tdx_root, f'TDX_streamreach_basins_{region_number}_01.parquet')
+    basins_src = tdx_root / f'TDX_streamreach_basins_{region_number}_01.parquet'
     basins = gpd.read_parquet(basins_src)
     basins = (
         basins[[hy.schema.tdx_link_no_field, hy.schema.geometry]]

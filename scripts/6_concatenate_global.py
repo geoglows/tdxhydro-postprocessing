@@ -1,21 +1,20 @@
-import glob
 import logging
-import os
 import sys
+from pathlib import Path
 
 import geopandas as gpd
 import pandas as pd
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import hydrography as hy
 
-region_root = '/Users/rchales/code/untitled folder/tdxhydro-postprocessing/data/regions'
-global_root = '/Users/rchales/code/untitled folder/tdxhydro-postprocessing/data/global'
+region_root = Path('/Users/rchales/code/untitled folder/tdxhydro-postprocessing/data/regions')
+global_root = Path('/Users/rchales/code/untitled folder/tdxhydro-postprocessing/data/global')
 
 if __name__ == '__main__':
-    os.makedirs(global_root, exist_ok=True)
+    global_root.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(
-        filename=os.path.join(global_root, 'concatenate_log.log'),
+        filename=global_root / 'concatenate_log.log',
         filemode='w',
         level=logging.INFO,
         format='%(asctime)s %(levelname)s %(message)s',
@@ -24,21 +23,21 @@ if __name__ == '__main__':
     # scan every region directory for the simplified-stream and metadata tables step 2 wrote and
     # concatenate whatever is present. this can run before every region is finished and is safe to
     # rerun: it rebuilds the global files from scratch each time rather than appending.
-    region_dirs = sorted(d for d in glob.glob(os.path.join(region_root, '*')) if os.path.isdir(d))
+    region_dirs = sorted((d for d in region_root.glob('*') if d.is_dir()), key=str)
 
     simplified_frames = []
     metadata_frames = []
     region_counts = {}
     for d in region_dirs:
-        region = os.path.basename(d)
-        metadata_path = os.path.join(d, f'metadata_{region}.parquet')
-        simplified_path = os.path.join(d, f'streams_simplified_{region}.geo.parquet')
+        region = d.name
+        metadata_path = d / f'metadata_{region}.parquet'
+        simplified_path = d / f'streams_simplified_{region}.geo.parquet'
 
-        if os.path.exists(metadata_path):
+        if metadata_path.exists():
             mdf = pd.read_parquet(metadata_path)
             metadata_frames.append(mdf)
             region_counts[region] = len(mdf)
-        if os.path.exists(simplified_path):
+        if simplified_path.exists():
             sdf = gpd.read_parquet(simplified_path)
             simplified_frames.append(sdf)
             region_counts.setdefault(region, len(sdf))
@@ -49,7 +48,7 @@ if __name__ == '__main__':
     # concatenate the metadata (attribute) tables into one global table
     if metadata_frames:
         global_metadata = pd.concat(metadata_frames, ignore_index=True)
-        metadata_out = os.path.join(global_root, 'metadata_global.parquet')
+        metadata_out = global_root / 'metadata_global.parquet'
         global_metadata.to_parquet(metadata_out)
         logging.info(f'Wrote {len(global_metadata):,} rows to {metadata_out}')
         print(f'Metadata: {len(global_metadata):,} reaches -> {metadata_out}')
@@ -61,7 +60,7 @@ if __name__ == '__main__':
             geometry=hy.schema.geometry,
             crs=simplified_frames[0].crs,
         )
-        simplified_out = os.path.join(global_root, 'streams_simplified_global.geo.parquet')
+        simplified_out = global_root / 'streams_simplified_global.geo.parquet'
         global_simplified.to_parquet(simplified_out)
         logging.info(f'Wrote {len(global_simplified):,} rows to {simplified_out}')
         print(f'Simplified streams: {len(global_simplified):,} reaches -> {simplified_out}')

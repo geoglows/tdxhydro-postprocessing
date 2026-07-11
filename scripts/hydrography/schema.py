@@ -2,6 +2,7 @@
 # Canonical stream attribute columns (renamed or derived in this pipeline)
 # ---------------------------------------------------------------------------
 river_id = 'riverId'
+river_index = 'riverIndex'
 next_river_id = 'nextRiverId'
 last_river_id = 'outletRiverId'
 vpu_id = 'vpuId'
@@ -76,6 +77,7 @@ final_columns_to_keep = [
     river_id,
     next_river_id,
     last_river_id,
+    # river_index is added after all regions are processed
     strahler_order,
     shreve_order,
     tdx_us_area_field,

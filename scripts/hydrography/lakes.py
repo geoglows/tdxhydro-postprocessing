@@ -11,7 +11,7 @@ The interior of each lake is found with one bounded upstream walk
 (``_strict_interior``) instead of repeated whole-graph ``nx.ancestors``
 traversals.
 """
-import os
+from pathlib import Path
 
 import geopandas as gpd
 import networkx as nx
@@ -26,7 +26,7 @@ __all__ = [
 ]
 
 # lake_table_path = '../network_data/lake_table.csv'
-lake_table_path = os.path.join(os.path.dirname(__file__), os.pardir, os.pardir, 'network_data', 'lake_table.csv')
+lake_table_path = Path(__file__).resolve().parents[2] / 'network_data' / 'lake_table.csv'
 
 # An inlet whose drainage area (DSContArea, the contributing area at its downstream
 # end where it meets the lake) is below this is too small to keep as its own routed

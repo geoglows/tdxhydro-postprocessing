@@ -1,8 +1,7 @@
 import json
 import logging
-import os
 import sys
-from glob import glob
+from pathlib import Path
 
 import geopandas as gpd
 import numpy as np
@@ -11,12 +10,13 @@ import shapely
 from natsort import natsorted
 from shapely.geometry import Point
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import hydrography as hy
 
-region_root = '/Users/rchales/code/untitled folder/tdxhydro-postprocessing/data/regions'
-tdx_root = '/Users/rchales/code/untitled folder/tdxhydro-postprocessing/data/TDXHydroGeoParquet'
-network_data_root = '/Users/rchales/code/untitled folder/tdxhydro-postprocessing/network_data'
+data_root = Path('/Users/rchales/code/untitled folder/tdxhydro-postprocessing/data')
+region_root = data_root / 'regions'
+tdx_root = data_root / ' TDXHydroGeoParquet'
+network_data_root = data_root.parent / 'network_data'
 
 if __name__ == '__main__':
     # find the ID of the region to process
@@ -26,32 +26,32 @@ if __name__ == '__main__':
     # region = 1020000010  # Example region number
 
     # final outputs to check for existence before computing
-    final_geoparquet_output = os.path.join(region_root, f'{region}', f'streams_{region}.geo.parquet')
-    simple_streams_output = os.path.join(region_root, f'{region}', f'streams_simplified_{region}.geo.parquet')
-    mapping_streams_output = os.path.join(region_root, f'{region}', f'streams_mapping_{region}.geo.parquet')
-    final_metadata_output = os.path.join(region_root, f'{region}', f'metadata_{region}.parquet')
-    confluences_output = os.path.join(region_root, f'{region}', f'confluences_{region}.geo.parquet')
+    final_geoparquet_output = region_root / f'{region}' / f'streams_{region}.geo.parquet'
+    simple_streams_output = region_root / f'{region}' / f'streams_simplified_{region}.geo.parquet'
+    mapping_streams_output = region_root / f'{region}' / f'streams_mapping_{region}.geo.parquet'
+    final_metadata_output = region_root / f'{region}' / f'metadata_{region}.parquet'
+    confluences_output = region_root / f'{region}' / f'confluences_{region}.geo.parquet'
     outputs = [final_geoparquet_output, simple_streams_output, mapping_streams_output,
                final_metadata_output, confluences_output]
-    if all(os.path.exists(output) for output in outputs):
+    if all(output.exists() for output in outputs):
         print(f'All final outputs for region {region} already exist, skipping')
         sys.exit(0)
 
     # prepare directories and logging
-    outputs_dir = os.path.join(region_root, f'{region}')
-    os.makedirs(os.path.join(outputs_dir, 'mods'), exist_ok=True)
+    outputs_dir = region_root / f'{region}'
+    (outputs_dir / 'mods').mkdir(parents=True, exist_ok=True)
     logging.basicConfig(
-        filename=os.path.join(outputs_dir, 'log.log'),
+        filename=outputs_dir / 'log.log',
         filemode='w',
         level=logging.INFO,
         format='%(asctime)s %(levelname)s %(message)s',
     )
-    gdf = gpd.read_parquet(os.path.join(tdx_root, f'TDX_streamnet_{region}_01.parquet'))
+    gdf = gpd.read_parquet(tdx_root / f'TDX_streamnet_{region}_01.parquet')
     logging.info(f'Initial shape: {gdf.shape}')
 
     # add unique river ids and attributes
     gdf[hy.schema.area] = gdf[hy.schema.tdx_ds_area_field] - gdf[hy.schema.tdx_us_area_field]
-    with open(os.path.join(network_data_root, 'tdxhydro_splits/tdx_header_numbers.json')) as f:
+    with open(network_data_root / 'tdxhydro_splits' / 'tdx_header_numbers.json') as f:
         header_numbers_lookup = json.load(f)
     spacer = 10_000_000 * header_numbers_lookup[str(region)]
     gdf[hy.schema.river_id] = (gdf[hy.schema.tdx_link_field] + spacer).astype(int)
@@ -64,7 +64,7 @@ if __name__ == '__main__':
     gdf = hy.topology.compute_topology(gdf)
 
     # remove watersheds with outlets in the defined lists of areas to ignore
-    drop_lists = natsorted(glob(os.path.join(network_data_root, 'dropped_watersheds/*.csv')))
+    drop_lists = natsorted((network_data_root / 'dropped_watersheds').glob('*.csv'), key=str)
     for drop_list in drop_lists:
         drop_ids = pd.read_csv(drop_list).values.flatten()
         gdf = gdf[~gdf[hy.schema.last_river_id].isin(drop_ids)]
@@ -80,13 +80,12 @@ if __name__ == '__main__':
     gdf = gdf[~gdf[hy.schema.last_river_id].isin(to_drop)]
 
     # assign vpu groups based on outletRiverId
-    vpu_df = pd.read_csv(os.path.join(network_data_root, 'vpu_table.csv'))
+    vpu_df = pd.read_csv(network_data_root / 'vpu_table.csv')
     vpu_map = vpu_df.set_index(hy.schema.last_river_id)[hy.schema.vpu_id].to_dict()
     gdf[hy.schema.vpu_id] = gdf[hy.schema.last_river_id].map(vpu_map)
     missing_vpu = gdf.loc[gdf[hy.schema.vpu_id].isna(), hy.schema.last_river_id].unique()
     if len(missing_vpu):
-        # write the invalid copy to file so that it can be debugged and fixed, then rerun
-        gdf.to_parquet(os.path.join(outputs_dir, 'mods', 'missing_vpu_debug.parquet'))
+        gdf.to_parquet(outputs_dir / 'mods' / 'missing_vpu_debug.parquet')
         raise RuntimeError(f'{len(missing_vpu)} reaches have no vpuId; e.g. {missing_vpu[:10]}')
 
     # modify lake and reservoirs
@@ -134,17 +133,17 @@ if __name__ == '__main__':
     gdf = gdf.sort_values(hy.schema.topo_sort).reset_index(drop=True)
     gdf[hy.schema.topo_sort] = np.arange(len(gdf), dtype=np.int32)
 
-    with open(os.path.join(outputs_dir, 'mods', 'lake_edits.json'), 'w') as f:
+    with open(outputs_dir / 'mods' / 'lake_edits.json', 'w') as f:
         json.dump(lake_edits, f)
-    with open(os.path.join(outputs_dir, 'mods', 'zero_length_streams.json'), 'w') as f:
+    with open(outputs_dir / 'mods' / 'zero_length_streams.json', 'w') as f:
         json.dump(zero_lengths, f)
-    with open(os.path.join(outputs_dir, 'mods', 'coastal_orphans.json'), 'w') as f:
+    with open(outputs_dir / 'mods' / 'coastal_orphans.json', 'w') as f:
         json.dump(coastal_orphans, f)
-    with open(os.path.join(outputs_dir, 'mods', 'headwater_dissolves.json'), 'w') as f:
+    with open(outputs_dir / 'mods' / 'headwater_dissolves.json', 'w') as f:
         json.dump(header_mergers, f)
-    with open(os.path.join(outputs_dir, 'mods', 'branches_to_prune.json'), 'w') as f:
+    with open(outputs_dir / 'mods' / 'branches_to_prune.json', 'w') as f:
         json.dump(branches_to_prune, f)
-    with open(os.path.join(outputs_dir, 'mods', 'short_consolidations.json'), 'w') as f:
+    with open(outputs_dir / 'mods' / 'short_consolidations.json', 'w') as f:
         json.dump(consolidations, f)
 
     # length is in m, divide by estimated m/s to get k in seconds

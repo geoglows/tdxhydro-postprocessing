@@ -1,4 +1,4 @@
-import os
+from pathlib import Path
 
 import geopandas as gpd
 import pandas as pd
@@ -22,11 +22,12 @@ def correct_basins(basins_gpq: str,
     Returns:
 
     """
+    save_dir = Path(save_dir)
     basin_gdf = gpd.read_parquet(basins_gpq)
     basin_gdf = basin_gdf.set_index(stream_id_col)
 
-    zero_fix_csv_path = os.path.join(save_dir, 'mod_basin_zero_centroid.csv')
-    if os.path.exists(zero_fix_csv_path):
+    zero_fix_csv_path = save_dir / 'mod_basin_zero_centroid.csv'
+    if zero_fix_csv_path.exists():
         box_radius_degrees = 0.015
         basin_zero_centroid = pd.read_csv(zero_fix_csv_path)
         centroid_x = basin_zero_centroid['centroid_x'].values[0]
@@ -42,8 +43,8 @@ def correct_basins(basins_gpq: str,
         }, crs=basin_gdf.crs).set_index(stream_id_col)
         basin_gdf = pd.concat([basin_gdf, link_zero_box])
 
-    zero_length_csv_path = os.path.join(save_dir, 'mod_zero_length_streams.csv')
-    if os.path.exists(zero_length_csv_path):
+    zero_length_csv_path = save_dir / 'mod_zero_length_streams.csv'
+    if zero_length_csv_path.exists():
         log.info('\tRevising basins with 0 length streams')
         zero_length_json = pd.read_csv(zero_length_csv_path)
         # Case 1 - Coastal w/ no upstream or downstream - Delete the stream and its basin
@@ -56,32 +57,32 @@ def correct_basins(basins_gpq: str,
         log.info('\tHandling Case 3 0 Length Streams - delete basins')
         basin_gdf = basin_gdf[~basin_gdf.index.isin(zero_length_json['case3'])]
 
-    small_tree_csv_path = os.path.join(save_dir, 'mod_drop_small_trees.csv')
-    if os.path.exists(small_tree_csv_path):
+    small_tree_csv_path = save_dir / 'mod_drop_small_trees.csv'
+    if small_tree_csv_path.exists():
         log.info('\tDeleting small trees')
         small_tree_df = pd.read_csv(small_tree_csv_path)
         basin_gdf = basin_gdf[~basin_gdf.index.isin(small_tree_df.values.flatten())]
 
-    within_sea_streams_path = os.path.join(save_dir, 'mod_drop_within_sea.csv')
-    if os.path.exists(within_sea_streams_path):
+    within_sea_streams_path = save_dir / 'mod_drop_within_sea.csv'
+    if within_sea_streams_path.exists():
         log.info('\tDeleting basins within the sea')
         within_sea_streams_df = pd.read_csv(within_sea_streams_path)
         basin_gdf = basin_gdf[~basin_gdf.index.isin(within_sea_streams_df.values.flatten())]
 
-    drop_ocean_watersheds_path = os.path.join(save_dir, 'mod_drop_ocean_watersheds.csv')
-    if os.path.exists(drop_ocean_watersheds_path):
+    drop_ocean_watersheds_path = save_dir / 'mod_drop_ocean_watersheds.csv'
+    if drop_ocean_watersheds_path.exists():
         log.info('\tDeleting small ocean watersheds')
         drop_ocean_watersheds_df = pd.read_csv(drop_ocean_watersheds_path)
         basin_gdf = basin_gdf[~basin_gdf.index.isin(drop_ocean_watersheds_df.values.flatten())]
 
-    drop_lonely_streams_path = os.path.join(save_dir, 'mod_drop_lonely_streams.csv')
-    if os.path.exists(drop_lonely_streams_path):
+    drop_lonely_streams_path = save_dir / 'mod_drop_lonely_streams.csv'
+    if drop_lonely_streams_path.exists():
         log.info('\tDeleting lonely streams')
         drop_lonely_streams_df = pd.read_csv(drop_lonely_streams_path)
         basin_gdf = basin_gdf[~basin_gdf.index.isin(drop_lonely_streams_df['drop'].values.flatten())]
 
-    drop_islands_path = os.path.join(save_dir, 'mod_drop_islands.csv')
-    if os.path.exists(drop_islands_path):
+    drop_islands_path = save_dir / 'mod_drop_islands.csv'
+    if drop_islands_path.exists():
         log.info('\tDeleting islands')
         drop_islands_df = pd.read_csv(drop_islands_path)
         basin_gdf = basin_gdf[~basin_gdf.index.isin(drop_islands_df.values.flatten())]
