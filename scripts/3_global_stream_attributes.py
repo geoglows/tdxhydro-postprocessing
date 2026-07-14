@@ -7,20 +7,20 @@ import geopandas as gpd
 import pandas as pd
 from natsort import natsorted
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+root = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(root))
 import hydrography as hy
 
-region_root = Path('/Users/rchales/code/untitled folder/tdxhydro-postprocessing/data/regions')
-tdx_root = Path('/Users/rchales/code/untitled folder/tdxhydro-postprocessing/data/TDXHydroGeoParquet')
-network_data_root = Path('/Users/rchales/code/untitled folder/tdxhydro-postprocessing/network_data')
-global_root = Path('/Users/rchales/code/untitled folder/tdxhydro-postprocessing/data/global')
+region_root = root / 'data' / 'regions'
+tdx_root = root / 'data' / 'TDXHydroGeoParquet'
+network_data_root = root / 'data' / 'network_data'
+global_root = root / 'data' / 'global'
+logs_root = root / 'data' / 'logs'
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 
 
 def slot_river_index(frame_path: Path, index_lookup: pd.DataFrame) -> None:
-    """Merge riverIndex onto a frame by riverId, slot it right after the 3 id columns, write back.
-    Merging by riverId (not row order) makes it correct on any streams variant and preserves the
-    frame's geometry/CRS; dropping any existing riverIndex first keeps a re-run from colliding."""
+    """Stamp riverIndex onto a frame by riverId, slot it right after the 3 id columns, write back"""
     reader = gpd.read_parquet if frame_path.name.endswith('.geo.parquet') else pd.read_parquet
     frame = reader(frame_path)
     if hy.schema.river_index in frame.columns:
@@ -34,7 +34,17 @@ def slot_river_index(frame_path: Path, index_lookup: pd.DataFrame) -> None:
 
 if __name__ == '__main__':
     global_root.mkdir(parents=True, exist_ok=True)
+    # keep console output (basicConfig above) and also tee the run into data/logs/
+    logs_root.mkdir(parents=True, exist_ok=True)
+    file_handler = logging.FileHandler(logs_root / 'global_stream_attributes.log', mode='w')
+    file_handler.setFormatter(logging.Formatter('%(asctime)s %(levelname)s %(message)s'))
+    logging.getLogger().addHandler(file_handler)
     MAX_WORKERS = int(sys.argv[1]) if len(sys.argv) > 1 else 4
+    global_output_sentinel = global_root / 'riverId_riverIndex.parquet'
+
+    if global_output_sentinel.exists():
+        logging.info('All riverIndexes presumed to be stamped because the global ID->IDX mapper exists')
+        exit(0)
 
     metadata_parquets = natsorted(region_root.glob('*/metadata_*.parquet'), key=str)
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
@@ -46,10 +56,11 @@ if __name__ == '__main__':
             .reset_index(names=[hy.schema.river_index])
         )
         river_index_lookup = df[[hy.schema.river_id, hy.schema.river_index]]
-        river_index_lookup.to_parquet(global_root / 'riverId_riverIndex.parquet', index=False)
         parquets_to_update = natsorted(
             list(region_root.glob('*/metadata*.parquet')) +
             list(region_root.glob('*/streams*.geo.parquet')),
             key=str,
         )
         list(pool.map(lambda p: slot_river_index(p, river_index_lookup), parquets_to_update))
+        # cache the lookups last and use it as a sentinel whose existence makes the script skip
+        river_index_lookup.to_parquet(global_output_sentinel, index=False)

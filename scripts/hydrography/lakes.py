@@ -74,10 +74,12 @@ def find_lake_edits(gdf: gpd.GeoDataFrame, min_inlet_area: float = min_lake_inle
     Returns ``{outlet_id: {'inlets': [...], 'delete': [...], 'geometry_path': [...]}}``:
       - inlets:        reaches whose nextRiverId should be set to the outlet
       - delete:        interior reaches to remove from the network
-      - geometry_path: reaches from the top-N largest inlets' downstream through
-                       the outlet whose merged line becomes the outlet's geometry.
-                       N is the per-lake ``n_inlets`` value (default 1); the merged
-                       line branches into a MultiLineString when N > 1.
+      - geometry_path: reaches from each traced inlet's downstream through the
+                       outlet whose merged line becomes the outlet's geometry. The
+                       traced inlets are the kept inlets flagged 1 in the
+                       ``trace_inlet`` column of lake_table.csv; a lake that flags
+                       none defaults to its single largest-drainage inlet. The merged
+                       line branches into a MultiLineString for two or more.
 
     Only inlets whose drainage area (DSContArea) is at least ``min_inlet_area`` are
     kept as true inlets. A smaller inlet is too minor to route into the lake on its
@@ -132,24 +134,27 @@ def find_lake_edits(gdf: gpd.GeoDataFrame, min_inlet_area: float = min_lake_inle
         # whole upstream branch into the lake interior
         kept_inlets = [i for i in inlets if drainage_area_for.get(i, 0) >= min_inlet_area]
 
-        # how many of the largest kept inlets get a drawn line through the lake to the
-        # outlet. per-lake, defaults to 1; absent column or blank cell -> 1. read as the
-        # group max so the value can be set on any single row of the lake.
-        n_inlets = 1
-        if schema.n_inlets_field in group.columns:
-            n_inlets = max(1, int(group[schema.n_inlets_field].fillna(1).max()))
+        # which kept inlets get a line traced through the lake to the outlet, forming the
+        # outlet's dissolved geometry. per-inlet 1/0 in the trace_inlet column (blank
+        # counts as 0). a lake that flags no inlet defaults to its single largest-drainage
+        # kept inlet, so an unset lake reproduces the historic single-trace output.
+        traced_inlets = []
+        if kept_inlets and schema.trace_inlet_field in group.columns:
+            flags = pd.to_numeric(
+                group.set_index(schema.inlet_field)[schema.trace_inlet_field], errors='coerce'
+            ).fillna(0)
+            traced_inlets = [i for i in kept_inlets if flags.get(i, 0) > 0]
+        if not traced_inlets and kept_inlets:
+            traced_inlets = [max(kept_inlets, key=lambda i: drainage_area_for.get(i, -1))]
 
-        # the outlet geometry is the merged line from the top-N largest kept inlets down
-        # to the outlet; a set dedups the shared downstream trunk so no reach is drawn
-        # twice and linemerge is order-independent (branching -> MultiLineString for N>1).
+        # the outlet geometry is the merged line from each traced inlet down to the
+        # outlet; a set dedups the shared downstream trunk so no reach is drawn twice and
+        # linemerge is order-independent (multiple inlets -> branching MultiLineString).
         # with no kept inlet the whole network collapses into the outlet, which then just
         # keeps its own geometry.
-        if kept_inlets:
-            top_inlets = sorted(
-                kept_inlets, key=lambda i: drainage_area_for.get(i, -1), reverse=True
-            )[:n_inlets]
+        if traced_inlets:
             geometry_reaches = set()
-            for inlet in top_inlets:
+            for inlet in traced_inlets:
                 geometry_reaches.update(_path_to_outlet(inlet, outlet))
             direct_path = sorted(geometry_reaches)
         else:

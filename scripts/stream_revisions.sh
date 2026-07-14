@@ -63,43 +63,43 @@ REGIONS=(
 )
 
 # prepare tdx regions
-#printf '%s\n' "${REGIONS[@]}" | xargs -P 12 -I{} "$PYTHON" 2_simplify_streams.py {}
-#"$PYTHON" 3_global_stream_attributes.py 8
-#printf '%s\n' "${REGIONS[@]}" | xargs -P 1 -I{} "$PYTHON" 4_create_catchments.py {}
-## group subdividing
-#printf '%s\n' "${REGIONS[@]}" | xargs -P 3 -I{} "$PYTHON" 5_generate_groups.py {}
-## global files
-#"$PYTHON" 6_concatenate_global.py
+printf '%s\n' "${REGIONS[@]}" | xargs -P 12 -I{} "$PYTHON" 2_simplify_streams.py {}
+"$PYTHON" 3_global_stream_attributes.py 8
+printf '%s\n' "${REGIONS[@]}" | xargs -P 1 -I{} "$PYTHON" 4_create_catchments.py {}
+# group subdividing
+printf '%s\n' "${REGIONS[@]}" | xargs -P 5 -I{} "$PYTHON" 5_generate_groups.py {}
+# global files
+"$PYTHON" 6_concatenate_global.py
 
-# tiling
-# Zoom->minimum-strahlerOrder tiers. Base: z<3 shows order 7+; every 2 zoom levels admit one more
-# (lower) order, so full density (order 2+, the network min) only appears at z11-12.
-#   z0-2:7+  z3-4:6+  z5-6:5+  z7-8:4+  z9-10:3+  z11-12:2+
-# Each clause admits a lower order past a zoom; higher orders are always kept by the looser clauses.
-STREAM_TIER_FILTER='{"*":["any",[">=","strahlerOrder",7],["all",[">=","$zoom",3],[">=","strahlerOrder",6]],["all",[">=","$zoom",5],[">=","strahlerOrder",5]],["all",[">=","$zoom",7],[">=","strahlerOrder",4]],["all",[">=","$zoom",9],[">=","strahlerOrder",3]],["all",[">=","$zoom",11],[">=","strahlerOrder",2]]]}'
+# tiling z0-4:7+  z5:6+  z6:5+  z7:4+  z8:3+  z9+:2+
+STREAM_TIER_FILTER='{"*":["any",[">=","strahlerOrder",7],["all",[">=","$zoom",5],[">=","strahlerOrder",6]],["all",[">=","$zoom",6],[">=","strahlerOrder",5]],["all",[">=","$zoom",7],[">=","strahlerOrder",4]],["all",[">=","$zoom",8],[">=","strahlerOrder",3]],["all",[">=","$zoom",9],[">=","strahlerOrder",2]]]}'
 export DATA STREAM_TIER_FILTER
+mkdir -p $DATA/pmtiles
 
 tile_region() {
     set -eo pipefail
     local region="$1"
     local mapping="$DATA/regions/$region/streams_mapping_${region}.geo.parquet"
-    local tile="$DATA/regions/$region/streams_${region}.pmtiles"
+    local tile="$DATA/pmtiles/streams_${region}.pmtiles"
     if [ ! -f "$mapping" ]; then
         echo "region $region: no streams_mapping, run step 2 first, skipping"
         return
     fi
     if [ -f "$tile" ]; then
-        echo "region $region: tile already exists, skipping"
+        echo "region $region: pmtiles already exists, skipping"
         return
     fi
     ogr2ogr -f GeoJSONSeq -t_srs EPSG:4326 /vsistdout/ "$mapping" \
-        | tippecanoe -o "$tile" -Z0 -z12 --layer streams --include riverId --include strahlerOrder --include riverIndex \
-            --drop-densest-as-needed --simplification=10 --no-simplification-of-shared-nodes \
+        | tippecanoe -o "$tile" -Z0 -z11 --layer streams \
+            --exclude musk_k --exclude musk_x --exclude velocity_factor --exclude USContArea \
+            --drop-densest-as-needed --simplification=30 --no-simplification-of-shared-nodes \
             -j "$STREAM_TIER_FILTER" --no-progress-indicator --force
     echo "region $region: tiled -> $tile"
 }
 export -f tile_region
 export TIPPECANOE_MAX_THREADS=14
 printf '%s\n' "${REGIONS[@]}" | xargs -P 6 -I{} bash -c 'tile_region "$@"' _ {}
-tile-join --force --no-tile-size-limit --name 'River Forecast System v3 Streams' \
-    -o "$DATA/global/streams.pmtiles" "$DATA"/regions/*/streams_*.pmtiles
+if [ ! -f "$DATA/global/streams.pmtiles" ]; then
+  tile-join --force --no-tile-size-limit --name 'River Forecast System v3 Streams' \
+      -o "$DATA/global/streams.pmtiles" "$DATA"/pmtiles/streams_*.pmtiles
+fi

@@ -9,11 +9,13 @@ import geopandas as gpd
 import pandas as pd
 import shapely
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+root = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(root))
 import hydrography as hy
 
-region_root = Path('/Users/rchales/code/untitled folder/tdxhydro-postprocessing/data/regions')
-tdx_root = Path('/Users/rchales/code/untitled folder/tdxhydro-postprocessing/data/TDXHydroGeoParquet')
+region_root = root / 'data' / 'regions'
+tdx_root = root / 'data' / 'TDXHydroGeoParquet'
+logs_root = root / 'data' / 'logs'
 
 # the dissolve (a GEOS union per keeper group) is ~96% of the runtime. shapely's union_all
 # releases the GIL during the GEOS work, so unioning groups in worker threads parallelizes the
@@ -112,8 +114,9 @@ if __name__ == '__main__':
 
     # prepare directories and logging
     mods_dir.mkdir(parents=True, exist_ok=True)
+    logs_root.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(
-        filename=mods_dir / 'catchments_log.log',
+        filename=logs_root / f'create_catchments_{region_number}.log',
         filemode='w',
         level=logging.INFO,
         format='%(asctime)s %(levelname)s %(message)s',
@@ -162,7 +165,7 @@ if __name__ == '__main__':
     logging.info(f'Dissolved into {len(catchments):,} catchments '
                  f'({len(multi_keepers):,} merged, {len(singles):,} unchanged) using {dissolve_threads} threads')
 
-    # keep only catchments for reaches that survived step 2 (whole-watershed / small-area / vpu drops)
+    # keep only catchments for reaches that survived step 2 (whole-watershed / small-area / group drops)
     before = len(catchments)
     catchments = catchments[catchments[hy.schema.river_id].isin(surviving_ids)]
     logging.info(f'Dropped {before - len(catchments):,} catchments not in the simplified stream network')

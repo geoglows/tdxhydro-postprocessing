@@ -10,13 +10,14 @@ import shapely
 from natsort import natsorted
 from shapely.geometry import Point
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+root = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(root))
 import hydrography as hy
 
-data_root = Path('/Users/rchales/code/untitled folder/tdxhydro-postprocessing/data')
-region_root = data_root / 'regions'
-tdx_root = data_root / ' TDXHydroGeoParquet'
-network_data_root = data_root.parent / 'network_data'
+region_root = root / 'data' / 'regions'
+tdx_root = root / 'data' / 'TDXHydroGeoParquet'
+network_data_root = root.parent / 'network_data'
+logs_root = root / 'data' / 'logs'
 
 if __name__ == '__main__':
     # find the ID of the region to process
@@ -27,12 +28,10 @@ if __name__ == '__main__':
 
     # final outputs to check for existence before computing
     final_geoparquet_output = region_root / f'{region}' / f'streams_{region}.geo.parquet'
-    simple_streams_output = region_root / f'{region}' / f'streams_simplified_{region}.geo.parquet'
     mapping_streams_output = region_root / f'{region}' / f'streams_mapping_{region}.geo.parquet'
     final_metadata_output = region_root / f'{region}' / f'metadata_{region}.parquet'
     confluences_output = region_root / f'{region}' / f'confluences_{region}.geo.parquet'
-    outputs = [final_geoparquet_output, simple_streams_output, mapping_streams_output,
-               final_metadata_output, confluences_output]
+    outputs = [final_geoparquet_output, mapping_streams_output, final_metadata_output, confluences_output]
     if all(output.exists() for output in outputs):
         print(f'All final outputs for region {region} already exist, skipping')
         sys.exit(0)
@@ -40,8 +39,9 @@ if __name__ == '__main__':
     # prepare directories and logging
     outputs_dir = region_root / f'{region}'
     (outputs_dir / 'mods').mkdir(parents=True, exist_ok=True)
+    logs_root.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(
-        filename=outputs_dir / 'log.log',
+        filename=logs_root / f'simplify_streams_{region}.log',
         filemode='w',
         level=logging.INFO,
         format='%(asctime)s %(levelname)s %(message)s',
@@ -79,14 +79,14 @@ if __name__ == '__main__':
     )
     gdf = gdf[~gdf[hy.schema.last_river_id].isin(to_drop)]
 
-    # assign vpu groups based on outletRiverId
-    vpu_df = pd.read_csv(network_data_root / 'vpu_table.csv')
-    vpu_map = vpu_df.set_index(hy.schema.last_river_id)[hy.schema.vpu_id].to_dict()
-    gdf[hy.schema.vpu_id] = gdf[hy.schema.last_river_id].map(vpu_map)
-    missing_vpu = gdf.loc[gdf[hy.schema.vpu_id].isna(), hy.schema.last_river_id].unique()
-    if len(missing_vpu):
-        gdf.to_parquet(outputs_dir / 'mods' / 'missing_vpu_debug.parquet')
-        raise RuntimeError(f'{len(missing_vpu)} reaches have no vpuId; e.g. {missing_vpu[:10]}')
+    # assign groups based on outletRiverId
+    groups_df = pd.read_csv(network_data_root / 'vpu_table.csv')
+    group_id_map = groups_df.set_index(hy.schema.last_river_id)[hy.schema.group_id].to_dict()
+    gdf[hy.schema.group_id] = gdf[hy.schema.last_river_id].map(group_id_map)
+    missing_group = gdf.loc[gdf[hy.schema.group_id].isna(), hy.schema.last_river_id].unique()
+    if len(missing_group):
+        gdf.to_parquet(outputs_dir / 'mods' / 'missing_group_debug.parquet')
+        raise RuntimeError(f'{len(missing_group)} reaches have no groupId; e.g. {missing_group[:10]}')
 
     # modify lake and reservoirs
     lake_edits = hy.lakes.find_lake_edits(gdf, min_inlet_area=100_000_000)
@@ -113,7 +113,10 @@ if __name__ == '__main__':
 
     # dissolve headwater streams with min order of 2
     header_mergers = hy.streams.find_headwater_mergers(gdf, min_order=2)
-    gdf = hy.streams.merge_headwaters(gdf, header_mergers=header_mergers)
+    # OLD: union the order-2 line with its order-1 upstream tributaries into one geometry
+    # gdf = hy.streams.merge_headwaters(gdf, header_mergers=header_mergers)
+    # NEW: keep only the order-2 geometry; order-1 tributaries are not mapped
+    gdf = hy.streams.merge_headwaters_order2_geom(gdf, header_mergers=header_mergers)
     logging.info(f'After dissolving headwaters, shape is {gdf.shape}')
     hy.topology.assert_topology_is_valid(gdf)
 
@@ -161,8 +164,6 @@ if __name__ == '__main__':
     logging.info(f'Final streams written to {final_geoparquet_output}')
     gdf.drop(columns=hy.schema.geometry).to_parquet(final_metadata_output)
     logging.info(f'Metadata written to {final_metadata_output}')
-    gdf.set_geometry(gdf.simplify(tolerance=10)).to_parquet(simple_streams_output)
-    logging.info(f'Simplified streams written to {simple_streams_output}')
     # full-resolution streams in web mercator with coordinates rounded to whole metres; the
     # source for the map tiles built in stream_revisions.sh
     hy.pmtiling.to_mapping_geometry(gdf).to_parquet(mapping_streams_output)

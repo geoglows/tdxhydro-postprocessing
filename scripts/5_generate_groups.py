@@ -3,12 +3,16 @@ import sys
 from pathlib import Path
 
 import geopandas as gpd
+import pandas as pd
+import pyarrow.parquet as pq
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+root = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(root))
 import hydrography as hy
 
-region_root = Path('/Users/rchales/code/untitled folder/tdxhydro-postprocessing/data/regions')
-vpu_root = Path('/Users/rchales/code/untitled folder/tdxhydro-postprocessing/data/vpu')
+region_root = root / 'data' / 'regions'
+group_root = root / 'data' / 'groups'
+logs_root = root / 'data' / 'logs'
 
 if __name__ == '__main__':
     # find the ID of the region to process
@@ -17,105 +21,112 @@ if __name__ == '__main__':
     region_number = int(sys.argv[1])
     # region = 1020000010  # Example region number
 
-    # prepare directories and logging
     outputs_dir = region_root / f'{region_number}'
-    (outputs_dir / 'mods').mkdir(parents=True, exist_ok=True)
+    streams_src = outputs_dir / f'streams_{region_number}.geo.parquet'
+    confluences_src = outputs_dir / f'confluences_{region_number}.geo.parquet'
+    mapping_src = outputs_dir / f'streams_mapping_{region_number}.geo.parquet'
+    catchments_src = outputs_dir / f'catchments_{region_number}.geo.parquet'
+
+    # fast path: if every per-group output already exists, skip before reading any geometry.
+    # the datasets that get split are fixed by which region inputs are present, and the group
+    # ids come from just the groupId column of the streams file (a cheap, geometry-free read).
+    kinds = ['streams', 'confluences']
+    if mapping_src.exists():
+        kinds.append('streams_mapping')
+    if catchments_src.exists():
+        kinds.append('catchments')
+    if streams_src.exists() and hy.schema.group_id in pq.read_schema(streams_src).names:
+        existing_groups = pd.read_parquet(streams_src, columns=[hy.schema.group_id])[hy.schema.group_id]
+        existing_groups = sorted(existing_groups.dropna().astype(int).unique().tolist())
+        expected_outputs = [
+            group_root / str(g) / f'{kind}_{g}.geo.parquet'
+            for g in existing_groups for kind in kinds
+        ]
+        if expected_outputs and all(p.exists() for p in expected_outputs):
+            print(f'All {len(expected_outputs)} group outputs for region {region_number} already exist, skipping')
+            sys.exit(0)
+
+    # prepare directories and logging
+    logs_root.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(
-        filename=outputs_dir / 'mods' / 'groups_log.log',
+        filename=logs_root / f'generate_groups_{region_number}.log',
         filemode='w',
         level=logging.INFO,
         format='%(asctime)s %(levelname)s %(message)s',
     )
 
-    streams_src = outputs_dir / f'streams_{region_number}.geo.parquet'
-    confluences_src = outputs_dir / f'confluences_{region_number}.geo.parquet'
     streams_gdf = gpd.read_parquet(streams_src)
     confluences_gdf = gpd.read_parquet(confluences_src)
     logging.info(f'Read {len(streams_gdf):,} reaches and {len(confluences_gdf):,} confluences')
 
-    # use the vpuId assigned previously in step 2
-    if hy.schema.vpu_id not in streams_gdf.columns:
-        sys.exit(f'{streams_src} has no {hy.schema.vpu_id} column; rerun step 2 to assign vpu groups')
-    missing = streams_gdf[hy.schema.vpu_id].isna()
+    # use the groupId assigned previously in step 2
+    if hy.schema.group_id not in streams_gdf.columns:
+        sys.exit(f'{streams_src} has no {hy.schema.group_id} column; rerun step 2 to assign groupIds')
+    missing = streams_gdf[hy.schema.group_id].isna()
     if missing.any():
         unmatched = streams_gdf.loc[missing, hy.schema.last_river_id].unique()
         raise ValueError(
-            f'{int(missing.sum())} reach(es) in region {region_number} have no {hy.schema.vpu_id}; '
+            f'{int(missing.sum())} reach(es) in region {region_number} have no {hy.schema.group_id}; '
             f'e.g. outlets {unmatched[:10].tolist()}'
         )
-    streams_gdf[hy.schema.vpu_id] = streams_gdf[hy.schema.vpu_id].astype(int)
+    streams_gdf[hy.schema.group_id] = streams_gdf[hy.schema.group_id].astype(int)
 
-    # confluences carry no vpuId; a confluence belongs to the vpu of its downstream reach (riverId),
-    # which shares the junction. the -1 outlet aggregate row has no downstream reach, so it maps to no
-    # vpu and is dropped from the per-vpu files.
-    vpu_by_river = streams_gdf.set_index(hy.schema.river_id)[hy.schema.vpu_id]
-    confluences_gdf[hy.schema.vpu_id] = confluences_gdf[hy.schema.river_id].map(vpu_by_river)
-    dropped = int(confluences_gdf[hy.schema.vpu_id].isna().sum())
-    confluences_gdf = confluences_gdf.dropna(subset=[hy.schema.vpu_id])
-    confluences_gdf[hy.schema.vpu_id] = confluences_gdf[hy.schema.vpu_id].astype(int)
+    group_by_river = streams_gdf.set_index(hy.schema.river_id)[hy.schema.group_id]
+    confluences_gdf[hy.schema.group_id] = confluences_gdf[hy.schema.river_id].map(group_by_river)
+    dropped = int(confluences_gdf[hy.schema.group_id].isna().sum())
+    confluences_gdf = confluences_gdf.dropna(subset=[hy.schema.group_id])
+    confluences_gdf[hy.schema.group_id] = confluences_gdf[hy.schema.group_id].astype(int)
     if dropped:
-        logging.info(f'Dropped {dropped} confluence row(s) with no vpu (e.g. the -1 outlet aggregate)')
+        logging.info(f'Dropped {dropped} confluence row(s) with no groupId (e.g. the -1 outlet aggregate)')
 
-    # streams and confluences are always split; simplified streams and catchments are split too
-    # when steps 2 and 3 produced them. each dataset must carry a vpuId column to group on.
+    # streams and confluences are always split; simplified streams and catchments are split too if they exist
     datasets = {
         'streams': streams_gdf,
         'confluences': confluences_gdf,
     }
 
-    simplified_src = outputs_dir / f'streams_simplified_{region_number}.geo.parquet'
-    if simplified_src.exists():
-        simplified_gdf = gpd.read_parquet(simplified_src)
-        simplified_gdf[hy.schema.vpu_id] = simplified_gdf[hy.schema.vpu_id].astype(int)
-        datasets['streams_simplified'] = simplified_gdf
-        logging.info(f'Read {len(simplified_gdf):,} simplified reaches from {simplified_src}')
+    if mapping_src.exists():
+        simplified_gdf = gpd.read_parquet(mapping_src)
+        simplified_gdf[hy.schema.group_id] = simplified_gdf[hy.schema.group_id].astype(int)
+        datasets['streams_mapping'] = simplified_gdf
+        logging.info(f'Read {len(simplified_gdf):,} simplified reaches from {mapping_src}')
     else:
-        logging.info(f'No simplified streams at {simplified_src}; skipping that split')
+        logging.info(f'No simplified streams at {mapping_src}; skipping that split')
 
-    # catchments carry no vpuId; each catchment's id is its reach id, so it inherits the reach's vpu
-    catchments_src = outputs_dir / f'catchments_{region_number}.geo.parquet'
+    # catchments carry no groupId; each catchment's id is its reach id, so it inherits the reach's groupId
     if catchments_src.exists():
         catchments_gdf = gpd.read_parquet(catchments_src)
-        catchments_gdf[hy.schema.vpu_id] = catchments_gdf[hy.schema.river_id].map(vpu_by_river)
-        dropped = int(catchments_gdf[hy.schema.vpu_id].isna().sum())
-        catchments_gdf = catchments_gdf.dropna(subset=[hy.schema.vpu_id])
-        catchments_gdf[hy.schema.vpu_id] = catchments_gdf[hy.schema.vpu_id].astype(int)
+        catchments_gdf[hy.schema.group_id] = catchments_gdf[hy.schema.river_id].map(group_by_river)
+        dropped = int(catchments_gdf[hy.schema.group_id].isna().sum())
+        catchments_gdf = catchments_gdf.dropna(subset=[hy.schema.group_id])
+        catchments_gdf[hy.schema.group_id] = catchments_gdf[hy.schema.group_id].astype(int)
         datasets['catchments'] = catchments_gdf
         logging.info(f'Read {len(catchments_gdf):,} catchments from {catchments_src}')
         if dropped:
-            logging.info(f'Dropped {dropped} catchment(s) whose reach has no vpu')
+            logging.info(f'Dropped {dropped} catchment(s) whose reach has no groupId')
     else:
         logging.info(f'No catchments at {catchments_src}; skipping that split')
 
-    # if every per-vpu output already exists then skip
-    vpu_ids = sorted(streams_gdf[hy.schema.vpu_id].unique().tolist())
-    expected_outputs = [
-        vpu_root / str(v) / f'{kind}_{v}.geo.parquet'
-        for v in vpu_ids for kind in datasets
-    ]
-    if all(p.exists() for p in expected_outputs):
-        print(f'All {len(expected_outputs)} vpu outputs for region {region_number} already exist, skipping')
-        sys.exit(0)
-
-    # split every dataset into one parquet each per vpu
-    vpu_root.mkdir(parents=True, exist_ok=True)
-    datasets_by_vpu = {
-        kind: dict(tuple(gdf.groupby(hy.schema.vpu_id)))
+    # split every dataset into one parquet each per group
+    group_ids = sorted(streams_gdf[hy.schema.group_id].unique().tolist())
+    group_root.mkdir(parents=True, exist_ok=True)
+    datasets_by_group = {
+        kind: dict(tuple(gdf.groupby(hy.schema.group_id)))
         for kind, gdf in datasets.items()
     }
-    for vpu_id in vpu_ids:
-        out_dir = vpu_root / str(vpu_id)
+    for group_id in group_ids:
+        out_dir = group_root / str(group_id)
         out_dir.mkdir(parents=True, exist_ok=True)
 
         counts = {}
         for kind, gdf in datasets.items():
-            # a vpu with no rows for a dataset (e.g. no confluences) still gets an empty file for consistency
-            part = datasets_by_vpu[kind].get(vpu_id, gdf.iloc[0:0])
-            out_path = out_dir / f'{kind}_{vpu_id}.geo.parquet'
-            part.drop(columns=[hy.schema.vpu_id]).to_parquet(out_path)
+            # a group with no rows for a dataset (e.g. no confluences) still gets an empty file for consistency
+            part = datasets_by_group[kind].get(group_id, gdf.iloc[0:0])
+            out_path = out_dir / f'{kind}_{group_id}.geo.parquet'
+            part.drop(columns=[hy.schema.group_id]).to_parquet(out_path)
             counts[kind] = len(part)
 
-        msg = (f'region {region_number} -> vpu {vpu_id}: '
+        msg = (f'region {region_number} -> group {group_id}: '
                + ', '.join(f'{n:,} {kind}' for kind, n in counts.items())
                + f' -> {out_dir}')
         logging.info(msg)

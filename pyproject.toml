@@ -1,0 +1,24 @@
+[project]
+name = "tdxhydro-postprocessing"
+version = "0.1.0"
+description = "Post-processing tools for TDX-Hydro hydrography datasets"
+readme = "readme.md"
+license = "BSD-3-Clause-Clear"
+requires-python = ">=3.14"
+dependencies = [
+    "geopandas>=1.0",
+    "natsort",
+    "netCDF4",
+    "networkx",
+    "numpy",
+    "openpyxl",
+    "pandas",
+    "shapely>=2",
+    "pyarrow",
+    "pyproj",
+    "dask",
+    "xarray",
+]
+
+[tool.uv]
+package = false

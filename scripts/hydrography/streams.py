@@ -19,7 +19,7 @@ _agg_rules = {
     schema.river_id: 'last',
     schema.next_river_id: 'last',
     schema.last_river_id: 'last',  # constant within a connected group
-    schema.vpu_id: 'last',  # constant within a connected group
+    schema.group_id: 'last',  # constant within a connected group
     schema.topo_sort: 'last',
     schema.strahler_order: 'max',
     schema.tdx_magnitude_field: 'max',  # Shreve magnitude; the downstream-most reach already counts its upstreams
@@ -299,6 +299,21 @@ def merge_headwaters(gdf: gpd.GeoDataFrame, header_mergers: dict) -> gpd.GeoData
     return dissolve_groups(gdf, header_mergers, _build_aggfunc(gdf, length_rule='max'))
 
 
+def merge_headwaters_order2_geom(gdf: gpd.GeoDataFrame, header_mergers: dict) -> gpd.GeoDataFrame:
+    """
+    Same as merge_headwaters (attributes are aggregated identically: max length,
+    summed area, etc.), but the merged reach keeps ONLY the order-2 keeper geometry
+    instead of the union of the order-2 line and its order-1 upstream tributaries.
+    The order-1s are never mapped, so their geometry is dropped rather than merged in.
+    """
+    keeper_geom = gdf.set_index(schema.river_id)[schema.geometry]
+    merged = dissolve_groups(gdf, header_mergers, _build_aggfunc(gdf, length_rule='max'))
+    keeper_ids = set(header_mergers.keys())
+    mask = merged[schema.river_id].isin(keeper_ids)
+    merged.loc[mask, schema.geometry] = merged.loc[mask, schema.river_id].map(keeper_geom)
+    return merged
+
+
 def prune_branches(gdf: gpd.GeoDataFrame, branches_to_prune: dict) -> gpd.GeoDataFrame:
     """
     Drop the rows whose ids appear in the value-lists of branches_to_prune and
@@ -504,6 +519,4 @@ def find_short_streams(gdf: gpd.GeoDataFrame, min_length: float) -> dict:
 
 
 def consolidate_short_streams(gdf: gpd.GeoDataFrame, consolidations: dict) -> gpd.GeoDataFrame:
-    # a consolidation merges a linear chain of consecutive reaches, so lengths
-    # (and other length-like attrs) sum along the chain
     return dissolve_groups(gdf, consolidations, _build_aggfunc(gdf, length_rule='sum'))

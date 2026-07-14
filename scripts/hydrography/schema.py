@@ -5,7 +5,7 @@ river_id = 'riverId'
 river_index = 'riverIndex'
 next_river_id = 'nextRiverId'
 last_river_id = 'outletRiverId'
-vpu_id = 'vpuId'
+group_id = 'groupId'
 topo_sort = 'topologySortedOrder'
 strahler_order = 'strahlerOrder'
 shreve_order = 'shreveOrder'
@@ -85,7 +85,7 @@ final_columns_to_keep = [
     area,
     tdx_length_field,
     tdx_region_field,
-    vpu_id,
+    group_id,
     static_musk_k,
     static_musk_x,
     static_velocity_factor,
@@ -99,4 +99,4 @@ inlet_field = 'inlet'
 outlet_field = 'outlet'
 lake_id_field = 'lake_id'
 endorheic_field = 'endorheic'
-n_inlets_field = 'n_inlets'
+trace_inlet_field = 'trace_inlet'

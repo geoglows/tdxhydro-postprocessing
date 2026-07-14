@@ -5,16 +5,19 @@ from pathlib import Path
 import geopandas as gpd
 import pandas as pd
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+root = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(root))
 import hydrography as hy
 
-region_root = Path('/Users/rchales/code/untitled folder/tdxhydro-postprocessing/data/regions')
-global_root = Path('/Users/rchales/code/untitled folder/tdxhydro-postprocessing/data/global')
+region_root = root / 'data' / 'regions'
+global_root = root / 'data' / 'global'
+logs_root = root / 'data' / 'logs'
 
 if __name__ == '__main__':
     global_root.mkdir(parents=True, exist_ok=True)
+    logs_root.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(
-        filename=global_root / 'concatenate_log.log',
+        filename=logs_root / 'concatenate_global.log',
         filemode='w',
         level=logging.INFO,
         format='%(asctime)s %(levelname)s %(message)s',
