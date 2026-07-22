@@ -1,0 +1,10 @@
+{
+  "*": ["any",
+    [">=", "strahlerOrder", 7],
+    ["all", [">=", "$zoom", 5], [">=", "strahlerOrder", 6]],
+    ["all", [">=", "$zoom", 6], [">=", "strahlerOrder", 5]],
+    ["all", [">=", "$zoom", 7], [">=", "strahlerOrder", 4]],
+    ["all", [">=", "$zoom", 8], [">=", "strahlerOrder", 3]],
+    ["all", [">=", "$zoom", 9], [">=", "strahlerOrder", 2]]
+  ]
+}

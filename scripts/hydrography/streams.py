@@ -3,6 +3,7 @@ import logging
 import geopandas as gpd
 import numpy as np
 import pandas as pd
+import shapely
 
 from . import schema
 from .topology import make_upstream_id_map
@@ -71,9 +72,29 @@ tdx_geoparquet_dir = '../data/TDXHydroGeoParquet'
 mods_dir = '../data/modifications'
 
 __all__ = [
+    'add_outlet_coordinates',
     'find_zero_length',
     'remove_zero_length',
 ]
+
+
+def add_outlet_coordinates(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    """
+    Stamp lon/lat of each reach's outlet: coordinate 0 of the line, because TDX-Hydro
+    digitizes reaches downstream to upstream. Must run on the untouched source geometry -
+    the lake edits linemerge reaches into MultiLineStrings whose part order is not
+    guaranteed, so coordinate 0 is only reliably the outlet before that point. Once
+    stamped, _agg_rules carries the value of the downstream-most reach through every
+    dissolve, which is the merged reach's outlet.
+    """
+    geoms = gdf[schema.geometry].values
+    if not (shapely.get_type_id(geoms) == 1).all():
+        raise ValueError('outlet coordinates require single-part LineString geometry')
+    # get_point avoids materializing every vertex the way get_coordinates would
+    outlets = shapely.get_point(geoms, 0)
+    gdf[schema.lon_field] = shapely.get_x(outlets)
+    gdf[schema.lat_field] = shapely.get_y(outlets)
+    return gdf
 
 
 def find_zero_length(gdf: gpd.GeoDataFrame) -> dict:

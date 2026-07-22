@@ -8,6 +8,7 @@ from pyproj import Geod
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import hydrography.schema as schema
+from hydrography.streams import add_outlet_coordinates
 
 gpkg_dir = Path('test/gpkgs')
 gpq_dir = Path('/Volumes/EB406_T7_3/geoglows_v3/parquets')
@@ -62,8 +63,10 @@ if __name__ == '__main__':
             gdf[schema.tdx_strm_order_field] = gdf[schema.tdx_strm_order_field].astype(int)
             gdf[schema.tdx_geodesic_length_field] = gdf[schema.geometry].apply(_calculate_geodesic_length)
             gdf[schema.tdx_region_field] = region_number
+            # coordinate 0 of each line is the reach outlet - see add_outlet_coordinates
+            gdf = add_outlet_coordinates(gdf)
 
-            gdf = gdf[schema.tdx_streamnet_output_columns]
+            gdf = gdf[schema.tdx_standardized_columns]
 
         else:
             gdf[schema.tdx_link_field] = gdf[schema.basin_stream_id_field].astype(int) + (tdx_header_number * 10_000_000)

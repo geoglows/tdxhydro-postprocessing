@@ -1,8 +1,8 @@
-import hydrography.streams
-import hydrography.schema
 import hydrography.lakes
-import hydrography.topology
 import hydrography.pmtiling
+import hydrography.schema
+import hydrography.streams
+import hydrography.topology
 
 __all__ = [
     'streams',

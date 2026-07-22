@@ -14,7 +14,7 @@ import hydrography as hy
 region_root = root / 'data' / 'regions'
 tdx_root = root / 'data' / 'TDXHydroGeoParquet'
 network_data_root = root / 'data' / 'network_data'
-global_root = root / 'data' / 'global'
+global_root = root / 'data' / 'groups' / 'group=0'
 logs_root = root / 'data' / 'logs'
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 

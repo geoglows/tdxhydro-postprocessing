@@ -18,6 +18,8 @@ dependencies = [
     "pyproj",
     "dask",
     "xarray",
+    "zarr>=3.2.1",
+    "s3fs>=2026.6.0",
 ]
 
 [tool.uv]

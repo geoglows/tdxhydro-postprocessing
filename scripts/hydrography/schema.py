@@ -70,6 +70,8 @@ tdx_standardized_columns = [
     tdx_ds_area_field,
     tdx_geodesic_length_field,
     tdx_region_field,
+    lon_field,
+    lat_field,
     geometry,
 ]
 
@@ -91,6 +93,8 @@ final_columns_to_keep = [
     static_velocity_factor,
     geometry,
 ]
+
+metadata_columns_to_keep = [c for c in final_columns_to_keep if c != geometry] + [lat_field, lon_field]
 
 # ---------------------------------------------------------------------------
 # lake_table.csv controlled vocabulary

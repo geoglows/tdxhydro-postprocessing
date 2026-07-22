@@ -6,9 +6,7 @@ from pathlib import Path
 import geopandas as gpd
 import numpy as np
 import pandas as pd
-import shapely
 from natsort import natsorted
-from shapely.geometry import Point
 
 root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(root))
@@ -16,7 +14,7 @@ import hydrography as hy
 
 region_root = root / 'data' / 'regions'
 tdx_root = root / 'data' / 'TDXHydroGeoParquet'
-network_data_root = root.parent / 'network_data'
+network_data_root = root / 'network_data'
 logs_root = root / 'data' / 'logs'
 
 if __name__ == '__main__':
@@ -49,6 +47,11 @@ if __name__ == '__main__':
     gdf = gpd.read_parquet(tdx_root / f'TDX_streamnet_{region}_01.parquet')
     logging.info(f'Initial shape: {gdf.shape}')
 
+    # the standardized parquets already carry the outlet point; derive it for older files
+    # while the geometry is still single-part lines and coordinate 0 is unambiguous
+    if not {hy.schema.lon_field, hy.schema.lat_field}.issubset(gdf.columns):
+        gdf = hy.streams.add_outlet_coordinates(gdf)
+
     # add unique river ids and attributes
     gdf[hy.schema.area] = gdf[hy.schema.tdx_ds_area_field] - gdf[hy.schema.tdx_us_area_field]
     with open(network_data_root / 'tdxhydro_splits' / 'tdx_header_numbers.json') as f:
@@ -80,7 +83,7 @@ if __name__ == '__main__':
     gdf = gdf[~gdf[hy.schema.last_river_id].isin(to_drop)]
 
     # assign groups based on outletRiverId
-    groups_df = pd.read_csv(network_data_root / 'vpu_table.csv')
+    groups_df = pd.read_csv(network_data_root / 'groupIds_table.csv')
     group_id_map = groups_df.set_index(hy.schema.last_river_id)[hy.schema.group_id].to_dict()
     gdf[hy.schema.group_id] = gdf[hy.schema.last_river_id].map(group_id_map)
     missing_group = gdf.loc[gdf[hy.schema.group_id].isna(), hy.schema.last_river_id].unique()
@@ -157,32 +160,37 @@ if __name__ == '__main__':
     gdf[hy.schema.static_musk_k] = gdf[hy.schema.static_musk_k].round(0).astype(int)
     gdf[hy.schema.static_musk_x] = 0.20
 
-    gdf = gdf[hy.schema.final_columns_to_keep]
+    # lat/lon are metadata only - the geometry already carries them in the streams outputs
+    gdf = gdf[hy.schema.final_columns_to_keep + [hy.schema.lat_field, hy.schema.lon_field]]
+    streams = gdf[hy.schema.final_columns_to_keep]
 
     logging.info('Writing final outputs')
-    gdf.to_parquet(final_geoparquet_output)
+    streams.to_parquet(final_geoparquet_output)
     logging.info(f'Final streams written to {final_geoparquet_output}')
-    gdf.drop(columns=hy.schema.geometry).to_parquet(final_metadata_output)
+    gdf[hy.schema.metadata_columns_to_keep].to_parquet(final_metadata_output)
     logging.info(f'Metadata written to {final_metadata_output}')
     # full-resolution streams in web mercator with coordinates rounded to whole metres; the
     # source for the map tiles built in stream_revisions.sh
-    hy.pmtiling.to_mapping_geometry(gdf).to_parquet(mapping_streams_output)
+    hy.pmtiling.to_mapping_geometry(streams).to_parquet(mapping_streams_output)
     logging.info(f'Mapping streams written to {mapping_streams_output}')
 
+    # exclude the -1 group: those reaches leave the network, they do not meet at a junction
     confluences = (
         gdf
+        [gdf[hy.schema.next_river_id] != -1]
         .groupby(hy.schema.next_river_id)[hy.schema.river_id]
         .agg(list)
         .reset_index()
         .rename(columns={hy.schema.next_river_id: hy.schema.river_id, hy.schema.river_id: 'upstream_ids'})
     )
-    reach_start_points = (
-        gdf
-        .set_index(hy.schema.river_id).geometry
-        .apply(lambda g: Point(shapely.get_coordinates(g)[0]))
-        .to_dict()
-    )
-    confluences[hy.schema.geometry] = confluences[hy.schema.river_id].map(reach_start_points)
+    # the junction sits at the outlet of the upstream reaches, not at the outlet of the reach
+    # they flow into. where a lake edit repointed an inlet, the inlet's own outlet point is
+    # still the most defensible location for it
+    outlet_points = dict(zip(
+        gdf[hy.schema.river_id],
+        gpd.points_from_xy(gdf[hy.schema.lon_field], gdf[hy.schema.lat_field]),
+    ))
+    confluences[hy.schema.geometry] = confluences['upstream_ids'].apply(lambda ids: outlet_points[ids[0]])
     confluences['upstream_ids'] = confluences['upstream_ids'].apply(lambda x: ','.join(map(str, x)))
     confluences = gpd.GeoDataFrame(confluences, geometry=hy.schema.geometry, crs=gdf.crs)
     confluences.to_parquet(confluences_output)
