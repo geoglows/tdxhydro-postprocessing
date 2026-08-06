@@ -7,14 +7,20 @@ import pandas as pd
 from natsort import natsorted
 from zarr.codecs import BloscCodec
 
-root = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(root))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 import hydrography as hy
 
-tdxregion_root = root / 'data' / 'TDXHydroGeoParquet'
-region_root = root / 'data' / 'regions'
-global_root = root / 'data' / 'groups' / 'group=0'
-logs_root = root / 'data' / 'logs'
+# Must match the earlier steps or else it will revert the work done there
+WRITE_OPTS = {'compression': 'zstd', 'compression_level': 3}
+# The global streams table keeps default row groups, unlike the per-group ones. Small row groups
+# exist to let a client fetch a few hundred reaches out of a file over HTTP; this file is the
+# whole world in one piece, taken as a bulk download rather than subset, and the per-group files
+# are what serve the subsetting case. Chunking it would only add footer.
+
+# every output path hangs off the data root - see hydrography/paths.py and $RFS_DATA_ROOT
+region_root = hy.paths.region_root
+global_root = hy.paths.global_root
+logs_root = hy.paths.logs_root
 
 if __name__ == '__main__':
     global_root.mkdir(parents=True, exist_ok=True)
@@ -46,7 +52,10 @@ if __name__ == '__main__':
         )
 
     metadata_frames = pd.concat([pd.read_parquet(f) for f in metadata_frames], ignore_index=True)
-    metadata_frames.to_parquet(metadata_out)
+    # concat preserves the parts' dtypes, but this is the file most consumers read, so re-assert
+    # rather than inherit whatever the region files happened to carry
+    metadata_frames = hy.schema.enforce_int32(metadata_frames)
+    metadata_frames.to_parquet(metadata_out, **WRITE_OPTS)
     logging.info(f'Wrote {len(metadata_frames):,} rows to {metadata_out}')
 
     # make the dataframe a zarr chunked in groups of 50_000 rows along the df's index, 1 variable per column
@@ -77,6 +86,7 @@ if __name__ == '__main__':
 
     # # concatenate the simplified-geometry tables into one global table
     streams_frames = pd.concat([gpd.read_parquet(f) for f in streams_frames], ignore_index=True)
+    streams_frames = hy.schema.enforce_int32(streams_frames)
     (
         gpd
         .GeoDataFrame(
@@ -84,6 +94,6 @@ if __name__ == '__main__':
             geometry=hy.schema.geometry,
             crs=streams_frames.crs,
         )
-        .to_parquet(streams_out)
+        .to_parquet(streams_out, **WRITE_OPTS)
     )
     logging.info(f'Wrote {len(streams_frames):,} rows to {streams_out}')

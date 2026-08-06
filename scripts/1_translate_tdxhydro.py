@@ -1,18 +1,21 @@
 import json
 import logging
+import os
 import sys
 from pathlib import Path
 
 import geopandas as gpd
 from pyproj import Geod
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import hydrography.paths as paths
 import hydrography.schema as schema
 from hydrography.streams import add_outlet_coordinates
 
-gpkg_dir = Path('test/gpkgs')
-gpq_dir = Path('/Volumes/EB406_T7_3/geoglows_v3/parquets')
-save_dir = Path('test/')
+# the source gpkgs are not produced by this pipeline, so they are not under the data root
+gpkg_dir = Path(os.environ.get('TDXHYDRO_GPKG_DIR') or 'test/gpkgs')
+# the raw geoparquet every later step reads - see hydrography/paths.py and $RFS_DATA_ROOT
+gpq_dir = paths.tdx_root
 
 logging.basicConfig(
     level=logging.INFO,
@@ -39,11 +42,10 @@ def _calculate_geodesic_length(line) -> float:
 if __name__ == '__main__':
     logging.info('Converting TDX-Hydro GPKG to Geoparquet')
     # add globally unique ID numbers
-    with open(Path(__file__).parent / '..' / 'network_data' / 'tdxhydro_splits' / 'tdx_header_numbers.json') as f:
+    with open(paths.network_data_root / 'tdxhydro_splits' / 'tdx_header_numbers.json') as f:
         tdx_header_numbers = json.load(f)
 
     gpq_dir.mkdir(parents=True, exist_ok=True)
-    save_dir.mkdir(parents=True, exist_ok=True)
 
     for gpkg in sorted(gpkg_dir.glob('TDX*.gpkg')):
         region_number = gpkg.name.split('_')[-2]

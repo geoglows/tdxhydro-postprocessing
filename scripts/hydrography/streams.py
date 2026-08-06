@@ -68,9 +68,6 @@ def _build_aggfunc(gdf: gpd.GeoDataFrame, length_rule: str) -> dict:
     return agg
 
 
-tdx_geoparquet_dir = '../data/TDXHydroGeoParquet'
-mods_dir = '../data/modifications'
-
 __all__ = [
     'add_outlet_coordinates',
     'find_zero_length',

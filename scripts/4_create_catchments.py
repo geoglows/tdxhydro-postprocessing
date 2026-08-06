@@ -9,13 +9,16 @@ import geopandas as gpd
 import pandas as pd
 import shapely
 
-root = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(root))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 import hydrography as hy
 
-region_root = root / 'data' / 'regions'
-tdx_root = root / 'data' / 'TDXHydroGeoParquet'
-logs_root = root / 'data' / 'logs'
+# Must match the other steps; catchments are geometry, so they get the geometry row groups too
+WRITE_OPTS = {'compression': 'zstd', 'compression_level': 3, 'row_group_size': 500}
+
+# every output path hangs off the data root - see hydrography/paths.py and $RFS_DATA_ROOT
+region_root = hy.paths.region_root
+tdx_root = hy.paths.tdx_root
+logs_root = hy.paths.logs_root
 
 # the dissolve (a GEOS union per keeper group) is ~96% of the runtime. shapely's union_all
 # releases the GIL during the GEOS work, so unioning groups in worker threads parallelizes the
@@ -179,7 +182,7 @@ if __name__ == '__main__':
         raise RuntimeError(f'{len(duplicated)} catchment id(s) are duplicated, e.g. {duplicated[:10]}')
 
     catchments = catchments.sort_values(hy.schema.river_id).reset_index(drop=True)
-    catchments.to_parquet(catchments_output)
+    catchments.to_parquet(catchments_output, **WRITE_OPTS)
 
     logging.info(f'Catchments written to {catchments_output}')
     print(f'region {region_number}: {len(catchments):,} catchments -> {catchments_output}')

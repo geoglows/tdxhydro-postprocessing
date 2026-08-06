@@ -28,7 +28,7 @@ processed region's `mods/` directory (see 2_simplify_streams.py):
 Reaches removed outright (dropped watersheds, sub-250 km^2 outlets, zero-length
 reaches) are recorded nowhere as a keeper, so they correctly fall through to <NA>.
 
-Run after 6_concatenate_global.py (needs data/groups/group=0/metadata.parquet).
+Run after 6_concatenate_global.py (needs groups/group=0/metadata.parquet under the data root).
 """
 import json
 import logging
@@ -39,15 +39,18 @@ import numpy as np
 import pandas as pd
 from natsort import natsorted
 
-root = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(root))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 import hydrography as hy
 
-tdx_root = root / 'data' / 'TDXHydroGeoParquet'
-region_root = root / 'data' / 'regions'
-global_root = root / 'data' / 'groups' / 'group=0'
-network_data_root = root / 'network_data'
-logs_root = root / 'data' / 'logs'
+# Must match the earlier steps or else it will revert the work done there
+WRITE_OPTS = {'compression': 'zstd', 'compression_level': 3}
+
+# every output path hangs off the data root - see hydrography/paths.py and $RFS_DATA_ROOT
+tdx_root = hy.paths.tdx_root
+region_root = hy.paths.region_root
+global_root = hy.paths.global_root
+network_data_root = hy.paths.network_data_root
+logs_root = hy.paths.logs_root
 
 # canonical globally-unique original id column in the raw region parquet
 orig_id_col = hy.schema.tdx_link_no_field  # 'TDXHydroLinkNo'
@@ -184,7 +187,7 @@ if __name__ == '__main__':
     out[v3_id_col] = pd.Series(v3).astype('Int64')  # ids < 2**53, so exact; NaN -> <NA>
 
     global_root.mkdir(parents=True, exist_ok=True)
-    out.to_parquet(lookup_out, index=False)
+    out.to_parquet(lookup_out, index=False, **WRITE_OPTS)
 
     # ---- summary / sanity checks ----------------------------------------------
     unprocessed = [r for r in region_row_counts if not (region_root / r / 'mods').is_dir()]

@@ -3,11 +3,17 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PYTHON="$SCRIPT_DIR/../.venv/bin/python"
-export DATA="$SCRIPT_DIR/../data"
 
-mkdir -p "$DATA/groups/group=0"
-mkdir -p "$DATA/pmtiles"
-mkdir -p "$DATA/regions"
+export RFS_DATA_ROOT="/Users/rchales/data/rfsv3"
+export TDXHYDRO_ROOT="/Users/rchales/data/TDXHydroGeoParquet"
+# not GROUPS: that is a bash special variable (the user's gids) and assignments to it
+# are silently ignored, so the paths below would resolve relative to the cwd
+export GROUP_ROOT="$RFS_DATA_ROOT/hydrography"
+export SCRATCH="$RFS_DATA_ROOT/hydrography-scratchfiles"
+
+mkdir -p "$GROUP_ROOT/group=0"
+mkdir -p "$SCRATCH/pmtiles"
+mkdir -p "$SCRATCH/regions"
 
 cd "$SCRIPT_DIR" || exit 1
 
@@ -72,21 +78,21 @@ printf '%s\n' "${REGIONS[@]}" | xargs -P 12 -I{} "$PYTHON" 2_simplify_streams.py
 #printf '%s\n' "${REGIONS[@]}" | xargs -P 2 -I{} "$PYTHON" 4_create_catchments.py {}
 
 # subdivide regions to groups
-#printf '%s\n' "${REGIONS[@]}" | xargs -P 5 -I{} "$PYTHON" 5_generate_groups.py {}
+printf '%s\n' "${REGIONS[@]}" | xargs -P 5 -I{} "$PYTHON" 5_generate_groups.py {}
 
 # create global files
 "$PYTHON" 6_concatenate_global.py
 
-## map every original tdx-hydro reach to its id in the v3 stream set
-#"$PYTHON" 7_identify_id_map.py
-exit 0
+# map every original tdx-hydro reach to its id in the v3 stream set
+"$PYTHON" 7_identify_id_map.py
+
 export STREAM_TIER_FILTER="$(cat "$SCRIPT_DIR/pmtile_filters/z4_delayed.json")"
 
 tile_region() {
     set -eo pipefail
     local region="$1"
-    local mapping="$DATA/regions/$region/streams_mapping_${region}.geo.parquet"
-    local tile="$DATA/pmtiles/streams_${region}.pmtiles"
+    local mapping="$SCRATCH/regions/$region/streams_mapping_${region}.geo.parquet"
+    local tile="$SCRATCH/pmtiles/streams_${region}.pmtiles"
     if [ -f "$tile" ]; then
         echo "region $region: pmtiles already exists, skipping"
         return
@@ -96,16 +102,16 @@ tile_region() {
         return
     fi
     ogr2ogr -f GeoJSONSeq -t_srs EPSG:4326 /vsistdout/ "$mapping" \
-        | tippecanoe -o "$tile" -Z0 -z11 --layer streams \
+        | tippecanoe -o "$tile" -Z0 -z11 --layer streams -j "$STREAM_TIER_FILTER" \
             --exclude musk_k --exclude musk_x --exclude velocity_factor --exclude USContArea \
-            --drop-densest-as-needed --simplification=10 --no-simplification-of-shared-nodes \
-            -j "$STREAM_TIER_FILTER" --no-progress-indicator --force
+            --drop-densest-as-needed --simplification=10 --no-progress-indicator --force
     echo "region $region: tiled -> $tile"
 }
 export -f tile_region
-export TIPPECANOE_MAX_THREADS=14
+export TIPPECANOE_MAX_THREADS=15
 printf '%s\n' "${REGIONS[@]}" | xargs -P 6 -I{} bash -c 'tile_region "$@"' _ {}
-if [ ! -f "$DATA/groups/group=0/streams.pmtiles" ]; then
+GLOBAL_TILE="$GROUP_ROOT/group=0/streams.pmtiles"
+if [ ! -f "$GLOBAL_TILE" ]; then
   tile-join --force --no-tile-size-limit --name 'River Forecast System v3 Streams' \
-      -o "$DATA/groups/group=0/streams.pmtiles" "$DATA"/pmtiles/streams_*.pmtiles
+      -o "$GLOBAL_TILE" "$SCRATCH"/pmtiles/streams_*.pmtiles
 fi

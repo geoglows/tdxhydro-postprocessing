@@ -1,3 +1,6 @@
+import numpy as np
+import pandas as pd
+
 # ---------------------------------------------------------------------------
 # Canonical stream attribute columns (renamed or derived in this pipeline)
 # ---------------------------------------------------------------------------
@@ -104,3 +107,49 @@ outlet_field = 'outlet'
 lake_id_field = 'lake_id'
 endorheic_field = 'endorheic'
 trace_inlet_field = 'trace_inlet'
+
+
+# ---------------------------------------------------------------------------
+# Output dtypes
+# ---------------------------------------------------------------------------
+# Ids and indices are written as int32, not int64. Two reasons, both practical:
+#
+#  - JavaScript. A parquet int64 column decodes to BigInt in the browser, and BigInt does not
+#    compare or hash equal to Number. A client that builds `Map` keys from one and looks them up
+#    with the other gets no match and no error — the graph builds, every traversal returns only the
+#    reach it started from, and nothing anywhere says why. int32 decodes to Number and the whole
+#    class of bug disappears.
+#  - It is what the v3 zarr stores already use for `riverId`, so the two agree.
+#
+# Every value fits with room to spare: the largest riverId is 820,422,448 against int32's
+# 2,147,483,647, riverIndex tops out at the reach count, and groupId is three digits. enforce_int32
+# checks rather than assumes, so a future id scheme that outgrows the range fails the build instead
+# of silently wrapping into negative ids.
+int32_columns = (
+    river_id,
+    next_river_id,
+    last_river_id,
+    river_index,
+    group_id,
+    strahler_order,
+    shreve_order,
+)
+
+
+def enforce_int32(df: pd.DataFrame) -> pd.DataFrame:
+    """Downcast the id, index, group and order columns to int32 in place, refusing to wrap."""
+    limits = np.iinfo(np.int32)
+    for column in int32_columns:
+        if column not in df.columns:
+            continue
+        values = df[column]
+        if values.isna().any():
+            raise ValueError(f'{column} has {int(values.isna().sum()):,} null(s); cannot be int32')
+        low, high = int(values.min()), int(values.max())
+        if low < limits.min or high > limits.max:
+            raise ValueError(
+                f'{column} ranges {low:,}..{high:,}, outside int32 '
+                f'({limits.min:,}..{limits.max:,}). Widen the dtype rather than let it wrap.'
+            )
+        df[column] = values.astype('int32')
+    return df
