@@ -75,7 +75,7 @@ printf '%s\n' "${REGIONS[@]}" | xargs -P 12 -I{} "$PYTHON" 2_simplify_streams.py
 "$PYTHON" 3_global_stream_attributes.py 8
 
 # prepare catchments
-#printf '%s\n' "${REGIONS[@]}" | xargs -P 2 -I{} "$PYTHON" 4_create_catchments.py {}
+printf '%s\n' "${REGIONS[@]}" | xargs -P 2 -I{} "$PYTHON" 4_create_catchments.py {}
 
 # subdivide regions to groups
 printf '%s\n' "${REGIONS[@]}" | xargs -P 5 -I{} "$PYTHON" 5_generate_groups.py {}
@@ -91,17 +91,18 @@ export STREAM_TIER_FILTER="$(cat "$SCRIPT_DIR/pmtile_filters/z4_delayed.json")"
 tile_region() {
     set -eo pipefail
     local region="$1"
-    local mapping="$SCRATCH/regions/$region/streams_mapping_${region}.geo.parquet"
+    local streams="$SCRATCH/regions/$region/streams_${region}.geo.parquet"
     local tile="$SCRATCH/pmtiles/streams_${region}.pmtiles"
     if [ -f "$tile" ]; then
         echo "region $region: pmtiles already exists, skipping"
         return
     fi
-    if [ ! -f "$mapping" ]; then
-        echo "region $region: no streams_mapping, run step 2 first, skipping"
+    if [ ! -f "$streams" ]; then
+        echo "region $region: no streams, run step 2 first, skipping"
         return
     fi
-    ogr2ogr -f GeoJSONSeq -t_srs EPSG:4326 /vsistdout/ "$mapping" \
+    # the streams are stored in EPSG:3857; GeoJSON is defined in lon/lat, so reproject on the way in
+    ogr2ogr -f GeoJSONSeq -t_srs EPSG:4326 /vsistdout/ "$streams" \
         | tippecanoe -o "$tile" -Z0 -z11 --layer streams -j "$STREAM_TIER_FILTER" \
             --exclude musk_k --exclude musk_x --exclude velocity_factor --exclude USContArea \
             --drop-densest-as-needed --simplification=10 --no-progress-indicator --force

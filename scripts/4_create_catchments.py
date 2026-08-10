@@ -12,9 +12,6 @@ import shapely
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import hydrography as hy
 
-# Must match the other steps; catchments are geometry, so they get the geometry row groups too
-WRITE_OPTS = {'compression': 'zstd', 'compression_level': 3, 'row_group_size': 500}
-
 # every output path hangs off the data root - see hydrography/paths.py and $RFS_DATA_ROOT
 region_root = hy.paths.region_root
 tdx_root = hy.paths.tdx_root
@@ -182,7 +179,8 @@ if __name__ == '__main__':
         raise RuntimeError(f'{len(duplicated)} catchment id(s) are duplicated, e.g. {duplicated[:10]}')
 
     catchments = catchments.sort_values(hy.schema.river_id).reset_index(drop=True)
-    catchments.to_parquet(catchments_output, **WRITE_OPTS)
+    # every published geometry is web mercator snapped to a 1 m grid - see projection.py
+    hy.parquet.write_geoparquet(hy.projection.to_web_mercator(catchments), catchments_output)
 
     logging.info(f'Catchments written to {catchments_output}')
     print(f'region {region_number}: {len(catchments):,} catchments -> {catchments_output}')

@@ -9,20 +9,18 @@ import pyarrow.parquet as pq
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import hydrography as hy
 
-# Must match 2_simplify_streams.py and 3_global_stream_attributes.py: these are splits of the files
-# those steps wrote, and a different codec here would re-encode them on the way through.
-COMPRESSION = 'zstd'
-COMPRESSION_LEVEL = 3
-WRITE_OPTS = {'compression': COMPRESSION, 'compression_level': COMPRESSION_LEVEL}
-# Must match 2_simplify_streams.py. These splits are what clients actually download, so the row
-# group size that makes them subsettable matters more here than anywhere else in the pipeline.
-GEOMETRY_ROW_GROUP_SIZE = 500
-# Only the tables whose rows carry a whole reach's geometry, ~5.6 KB each, need to be written in
-# small row groups: a row group is the smallest thing a reader can fetch, so a large one forces a
-# client wanting a few hundred reaches to decompress hundreds of MB. Confluences are a single point
-# per row, ~29 bytes — a whole file is about a megabyte, so there is nothing to subset out of and
-# small groups would only add footer. Metadata is likewise light and stays on the default.
-LARGE_GEOMETRY_KINDS = {'streams', 'streams_mapping', 'catchments'}
+# These splits are what clients actually download, so how they are written matters more here than
+# anywhere else in the pipeline — see hydrography/parquet.py, which every step shares so that a
+# split does not re-encode what the step that produced it wrote.
+#
+# Only the tables whose rows carry a whole reach's geometry, ~5.6 KB each, need the small row
+# groups: a row group is the smallest thing a reader can fetch, so a large one forces a client
+# wanting a few hundred reaches to decompress hundreds of MB. Confluences are a single point per
+# row, ~29 bytes — a whole file is about a megabyte, so there is nothing to subset out of and small
+# groups would only add footer. Metadata is likewise light and stays on the default.
+LARGE_GEOMETRY_KINDS = {'streams', 'catchments'}
+# every product here carries geometry except metadata, the attribute table
+GEOMETRY_KINDS = LARGE_GEOMETRY_KINDS | {'confluences'}
 
 # Everything split here carries geometry except metadata, the attribute table.
 SUFFIXES = {'metadata': '.parquet'}
@@ -47,7 +45,6 @@ if __name__ == '__main__':
     outputs_dir = region_root / f'{region_number}'
     streams_src = outputs_dir / f'streams_{region_number}.geo.parquet'
     confluences_src = outputs_dir / f'confluences_{region_number}.geo.parquet'
-    mapping_src = outputs_dir / f'streams_mapping_{region_number}.geo.parquet'
     catchments_src = outputs_dir / f'catchments_{region_number}.geo.parquet'
     metadata_src = outputs_dir / f'metadata_{region_number}.parquet'
 
@@ -57,8 +54,6 @@ if __name__ == '__main__':
     kinds = ['streams', 'confluences']
     if metadata_src.exists():
         kinds.append('metadata')
-    if mapping_src.exists():
-        kinds.append('streams_mapping')
     if catchments_src.exists():
         kinds.append('catchments')
     if streams_src.exists() and hy.schema.group_id in pq.read_schema(streams_src).names:
@@ -105,7 +100,7 @@ if __name__ == '__main__':
     if dropped:
         logging.info(f'Dropped {dropped} confluence row(s) with no groupId (e.g. the -1 outlet aggregate)')
 
-    # streams and confluences are always split; simplified streams and catchments are split too if they exist
+    # streams and confluences are always split; metadata and catchments are split too if they exist
     datasets = {
         'streams': streams_gdf,
         'confluences': confluences_gdf,
@@ -124,14 +119,6 @@ if __name__ == '__main__':
         logging.info(f'Read {len(metadata_df):,} metadata rows from {metadata_src}')
     else:
         logging.info(f'No metadata at {metadata_src}; skipping that split')
-
-    if mapping_src.exists():
-        simplified_gdf = gpd.read_parquet(mapping_src)
-        simplified_gdf[hy.schema.group_id] = simplified_gdf[hy.schema.group_id].astype('int32')
-        datasets['streams_mapping'] = simplified_gdf
-        logging.info(f'Read {len(simplified_gdf):,} simplified reaches from {mapping_src}')
-    else:
-        logging.info(f'No simplified streams at {mapping_src}; skipping that split')
 
     # catchments carry no groupId; each catchment's id is its reach id, so it inherits the reach's groupId
     if catchments_src.exists():
@@ -162,11 +149,13 @@ if __name__ == '__main__':
         for kind, gdf in datasets.items():
             # a group with no rows for a dataset (e.g. no confluences) still gets an empty file for consistency
             part = datasets_by_group[kind].get(group_id, gdf.iloc[0:0])
+            part = part.drop(columns=[hy.schema.group_id])
             out_path = out_dir / out_name(kind, group_id)
-            opts = dict(WRITE_OPTS)
-            if kind in LARGE_GEOMETRY_KINDS:
-                opts['row_group_size'] = GEOMETRY_ROW_GROUP_SIZE
-            part.drop(columns=[hy.schema.group_id]).to_parquet(out_path, **opts)
+            if kind in GEOMETRY_KINDS:
+                row_group_size = hy.parquet.GEOMETRY_ROW_GROUP_SIZE if kind in LARGE_GEOMETRY_KINDS else None
+                hy.parquet.write_geoparquet(part, out_path, row_group_size=row_group_size)
+            else:
+                hy.parquet.write_parquet(part, out_path)
             counts[kind] = len(part)
 
         msg = (f'region {region_number} -> group {group_id}: '

@@ -10,24 +10,14 @@ from natsort import natsorted
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import hydrography as hy
 
-# Must match 2_simplify_streams.py or else it will revert the work done there
-WRITE_OPTS = {'compression': 'zstd', 'compression_level': 3}
-# Must match 2_simplify_streams.py. This step REWRITES the files that step wrote, so without the
-# row group size the rewrite silently collapses them back into one group per file — measured: 10
-# row groups in, 1 out — and undoes the only thing that makes the geometry subsettable.
-GEOMETRY_ROW_GROUP_SIZE = 500
-
-
-def write_opts_for(path) -> dict:
-    """Small row groups for the stream geometry tables, defaults for everything else.
-
-    This step only ever rewrites metadata_* and streams_*, so nothing lighter reaches here — but
-    keying on the name rather than the suffix keeps it correct if the glob ever widens. Confluences
-    would not want them: one point per row is ~29 bytes, so a whole file is about a megabyte.
-    """
-    if path.name.startswith('streams') and path.name.endswith('.geo.parquet'):
-        return {**WRITE_OPTS, 'row_group_size': GEOMETRY_ROW_GROUP_SIZE}
-    return WRITE_OPTS
+# This step REWRITES the files step 2 wrote, so it has to write them the same way — see
+# hydrography/parquet.py. Going through pyarrow's defaults instead would silently collapse them
+# back into one row group per file (measured: 10 row groups in, 1 out), undoing the only thing that
+# makes the geometry subsettable, and re-encode the geometry column back to WKB.
+#
+# Only metadata_* and streams_* reach here, and streams_* are the tables the small row groups are
+# for. Confluences would not want them — one point per row is ~29 bytes, so a whole file is about a
+# megabyte — but this step's globs never match them.
 
 # every output path hangs off the data root - see hydrography/paths.py and $RFS_DATA_ROOT
 region_root = hy.paths.region_root
@@ -48,7 +38,11 @@ def slot_river_index(frame_path: Path, index_lookup: pd.DataFrame) -> None:
     stamped = frame.merge(index_lookup, on=hy.schema.river_id, how='left')[new_cols]
     # a left merge widens the joined column to int64 (and to float if anything failed to match),
     # so re-assert the dtypes rather than let the write undo what step 2 set
-    hy.schema.enforce_int32(stamped).to_parquet(frame_path, index=False, **write_opts_for(frame_path))
+    stamped = hy.schema.enforce_int32(stamped)
+    if frame_path.name.endswith('.geo.parquet'):
+        hy.parquet.write_geoparquet(stamped, frame_path, index=False)
+    else:
+        hy.parquet.write_parquet(stamped, frame_path, index=False)
     logging.info(f'stamped riverIndex -> {frame_path.name}')
 
 
@@ -83,4 +77,4 @@ if __name__ == '__main__':
         )
         list(pool.map(lambda p: slot_river_index(p, river_index_lookup), parquets_to_update))
         # cache the lookups last and use it as a sentinel whose existence makes the script skip
-        river_index_lookup.to_parquet(global_output_sentinel, index=False, **WRITE_OPTS)
+        hy.parquet.write_parquet(river_index_lookup, global_output_sentinel, index=False)

@@ -14,23 +14,6 @@ import hydrography as hy
 # 16 bits puts the Hilbert grid at 65,536 cells across the globe, ~600 m at the equator — finer than
 # any reach's outlet point needs in order to be distinguished from its neighbour's.
 HILBERT_BITS = 16
-WRITE_OPTS = {'compression': 'zstd', 'compression_level': 3}
-
-# Row group size for the geometry tables, which decides whether a client can subset them at all.
-# Parquet's smallest readable unit is a row group: a reader that wants 1,000 reaches must fetch and
-# decompress every row group holding one. pyarrow's default puts a whole region in a single group —
-# on group 103 that was 63,523 rows whose geometry column alone is 64 MB compressed and 362 MB
-# decompressed, so a browser asking for one small watershed had to materialise 362 MB and crashed.
-#
-# At ~5.6 KB of WKB per reach, 500 rows lands near 1 MB compressed. Measured on that group, the
-# fetch for a 1,018-reach subset falls from 12.2 MB at 10,000 rows to 2.4 MB at 500, and peak memory
-# from 362 MB to a few MB. The extra footer (one entry per row group per column) costs ~0.5 MB on a
-# 128-group file, paid once by the first range request.
-#
-# Non-geometry tables keep the default: their rows are ~50x smaller, so the same row count is a
-# fraction of the memory and the pruning gain would not pay for the footer.
-GEOMETRY_ROW_GROUP_SIZE = 500
-GEOMETRY_WRITE_OPTS = {**WRITE_OPTS, 'row_group_size': GEOMETRY_ROW_GROUP_SIZE}
 
 # every output path hangs off the data root - see hydrography/paths.py and $RFS_DATA_ROOT
 region_root = hy.paths.region_root
@@ -47,11 +30,9 @@ if __name__ == '__main__':
 
     # final outputs to check for existence before computing
     final_geoparquet_output = region_root / f'{region}' / f'streams_{region}.geo.parquet'
-    mapping_streams_output = region_root / f'{region}' / f'streams_mapping_{region}.geo.parquet'
     final_metadata_output = region_root / f'{region}' / f'metadata_{region}.parquet'
     confluences_output = region_root / f'{region}' / f'confluences_{region}.geo.parquet'
-    outputs = [final_geoparquet_output, mapping_streams_output, final_metadata_output,
-               confluences_output]
+    outputs = [final_geoparquet_output, final_metadata_output, confluences_output]
     if all(output.exists() for output in outputs):
         print(f'All final outputs for region {region} already exist, skipping')
         sys.exit(0)
@@ -190,14 +171,11 @@ if __name__ == '__main__':
     streams = gdf[hy.schema.final_columns_to_keep]
 
     logging.info('Writing final outputs')
-    streams.to_parquet(final_geoparquet_output, **GEOMETRY_WRITE_OPTS)
+    # every published geometry is web mercator snapped to a 1 m grid - see projection.py
+    hy.parquet.write_geoparquet(hy.projection.to_web_mercator(streams), final_geoparquet_output)
     logging.info(f'Final streams written to {final_geoparquet_output}')
-    gdf[hy.schema.metadata_columns_to_keep].to_parquet(final_metadata_output, **WRITE_OPTS)
+    hy.parquet.write_parquet(gdf[hy.schema.metadata_columns_to_keep], final_metadata_output)
     logging.info(f'Metadata written to {final_metadata_output}')
-    # full-resolution streams in web mercator with coordinates rounded to whole metres; the
-    # source for the map tiles built in stream_revisions.sh
-    hy.pmtiling.to_mapping_geometry(streams).to_parquet(mapping_streams_output, **GEOMETRY_WRITE_OPTS)
-    logging.info(f'Mapping streams written to {mapping_streams_output}')
 
     # exclude the -1 group: those reaches leave the network, they do not meet at a junction
     confluences = (
@@ -218,7 +196,8 @@ if __name__ == '__main__':
     confluences[hy.schema.geometry] = confluences['upstream_ids'].apply(lambda ids: outlet_points[ids[0]])
     confluences['upstream_ids'] = confluences['upstream_ids'].apply(lambda x: ','.join(map(str, x)))
     confluences = gpd.GeoDataFrame(confluences, geometry=hy.schema.geometry, crs=gdf.crs)
+    confluences = hy.projection.to_web_mercator(confluences)
     # the groupby above rebuilds riverId as int64, so cast it back
     confluences = hy.schema.enforce_int32(confluences)
-    confluences.to_parquet(confluences_output, **WRITE_OPTS)
+    hy.parquet.write_geoparquet(confluences, confluences_output, row_group_size=None)
     logging.info(f'Confluences written to {confluences_output}')

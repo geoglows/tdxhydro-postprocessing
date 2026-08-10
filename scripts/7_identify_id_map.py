@@ -43,7 +43,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import hydrography as hy
 
 # Must match the earlier steps or else it will revert the work done there
-WRITE_OPTS = {'compression': 'zstd', 'compression_level': 3}
 
 # every output path hangs off the data root - see hydrography/paths.py and $RFS_DATA_ROOT
 tdx_root = hy.paths.tdx_root
@@ -187,7 +186,7 @@ if __name__ == '__main__':
     out[v3_id_col] = pd.Series(v3).astype('Int64')  # ids < 2**53, so exact; NaN -> <NA>
 
     global_root.mkdir(parents=True, exist_ok=True)
-    out.to_parquet(lookup_out, index=False, **WRITE_OPTS)
+    hy.parquet.write_parquet(out, lookup_out, index=False)
 
     # ---- summary / sanity checks ----------------------------------------------
     unprocessed = [r for r in region_row_counts if not (region_root / r / 'mods').is_dir()]

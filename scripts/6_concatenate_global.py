@@ -10,12 +10,11 @@ from zarr.codecs import BloscCodec
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import hydrography as hy
 
-# Must match the earlier steps or else it will revert the work done there
-WRITE_OPTS = {'compression': 'zstd', 'compression_level': 3}
 # The global streams table keeps default row groups, unlike the per-group ones. Small row groups
 # exist to let a client fetch a few hundred reaches out of a file over HTTP; this file is the
 # whole world in one piece, taken as a bulk download rather than subset, and the per-group files
-# are what serve the subsetting case. Chunking it would only add footer.
+# are what serve the subsetting case. Chunking it would only add footer. Everything else about
+# how these are written is shared with the earlier steps - see hydrography/parquet.py.
 
 # every output path hangs off the data root - see hydrography/paths.py and $RFS_DATA_ROOT
 region_root = hy.paths.region_root
@@ -34,14 +33,16 @@ if __name__ == '__main__':
 
     metadata_out = global_root / 'metadata.parquet'
     metadata_zarr_out = global_root / 'metadata.zarr'
-    streams_out = global_root / 'streams_mapping.geo.parquet'
+    streams_out = global_root / 'streams.geo.parquet'
 
     if metadata_out.exists() and metadata_zarr_out.exists() and streams_out.exists():
         logging.info('All global outputs already exist, skipping')
         exit(0)
 
     n_regions_expected = 50  # todo pull this from a file or config?
-    streams_frames = region_root.glob('*/streams_mapping_*.geo.parquet')
+    # the digit keeps this off any stale streams_mapping_* left over from before that
+    # product was removed, which would otherwise double every region
+    streams_frames = region_root.glob('*/streams_[0-9]*.geo.parquet')
     metadata_frames = region_root.glob('*/metadata_*.parquet')
 
     streams_frames = natsorted(list(streams_frames), key=str)
@@ -55,7 +56,7 @@ if __name__ == '__main__':
     # concat preserves the parts' dtypes, but this is the file most consumers read, so re-assert
     # rather than inherit whatever the region files happened to carry
     metadata_frames = hy.schema.enforce_int32(metadata_frames)
-    metadata_frames.to_parquet(metadata_out, **WRITE_OPTS)
+    hy.parquet.write_parquet(metadata_frames, metadata_out)
     logging.info(f'Wrote {len(metadata_frames):,} rows to {metadata_out}')
 
     # make the dataframe a zarr chunked in groups of 50_000 rows along the df's index, 1 variable per column
@@ -84,16 +85,12 @@ if __name__ == '__main__':
         )
     )
 
-    # # concatenate the simplified-geometry tables into one global table
+    # concatenate every region's streams into one global table
     streams_frames = pd.concat([gpd.read_parquet(f) for f in streams_frames], ignore_index=True)
     streams_frames = hy.schema.enforce_int32(streams_frames)
-    (
-        gpd
-        .GeoDataFrame(
-            streams_frames,
-            geometry=hy.schema.geometry,
-            crs=streams_frames.crs,
-        )
-        .to_parquet(streams_out, **WRITE_OPTS)
+    hy.parquet.write_geoparquet(
+        gpd.GeoDataFrame(streams_frames, geometry=hy.schema.geometry, crs=streams_frames.crs),
+        streams_out,
+        row_group_size=None,
     )
     logging.info(f'Wrote {len(streams_frames):,} rows to {streams_out}')
