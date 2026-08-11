@@ -2,7 +2,7 @@
 Filesystem layout for the pipeline.
 
 Two directories, two environment variables, both exported by
-stream_revisions.sh before it runs any step:
+pipeline.sh before it runs any step:
 
     RFS_DATA_ROOT    everything the pipeline writes
     TDXHYDRO_ROOT    the raw TDX-Hydro geoparquet it reads, which is kept
@@ -42,7 +42,7 @@ def _root_from_env(var: str) -> Path:
     value = os.environ.get(var)
     if not value:
         raise RuntimeError(
-            f'${var} is not set. It is exported by scripts/stream_revisions.sh, which is how these '
+            f'${var} is not set. It is exported by scripts/pipeline.sh, which is how these '
             f'steps are normally run. To run one on its own, set ${DATA_ROOT_VAR} and ${TDX_ROOT_VAR} '
             f'first, e.g. {DATA_ROOT_VAR}=/Users/rchales/data/rfsv3 '
             f'{TDX_ROOT_VAR}=/Users/rchales/data/TDXHydroGeoParquet python 2_simplify_streams.py <region>'

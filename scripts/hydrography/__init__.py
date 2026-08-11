@@ -1,3 +1,5 @@
+import hydrography.basins
+import hydrography.geometry
 import hydrography.lakes
 import hydrography.paths
 import hydrography.parquet
@@ -8,6 +10,8 @@ import hydrography.topology
 
 __all__ = [
     'streams',
+    'basins',
+    'geometry',
     'lakes',
     'paths',
     'schema',

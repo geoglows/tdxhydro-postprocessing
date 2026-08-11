@@ -6,6 +6,7 @@ from pathlib import Path
 import geopandas as gpd
 import numpy as np
 import pandas as pd
+import shapely
 from natsort import natsorted
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -14,6 +15,7 @@ import hydrography as hy
 # 16 bits puts the Hilbert grid at 65,536 cells across the globe, ~600 m at the equator — finer than
 # any reach's outlet point needs in order to be distinguished from its neighbour's.
 HILBERT_BITS = 16
+SIMPLIFY_TOLERANCE_METERS = 10.0
 
 # every output path hangs off the data root - see hydrography/paths.py and $RFS_DATA_ROOT
 region_root = hy.paths.region_root
@@ -138,7 +140,12 @@ if __name__ == '__main__':
     logging.info(f'After consolidating short streams, shape is {gdf.shape}')
     hy.topology.assert_topology_is_valid(gdf)
 
-    gdf = hy.topology.topological_order_hilbert_tiebreak(gdf, bits=HILBERT_BITS)
+    # Region-local nested-set ordering. riverIndex is NOT assigned here - it is a position in a
+    # single global ordering and cannot be known while one region is processed alone, so step 3
+    # redoes this traversal across all 50 regions at once. What this call is for is leaving the
+    # region files in a sensible topological order and stamping upstreamCount and the recomputed
+    # shreveOrder, which are region-local quantities (no reach drains across a region boundary).
+    gdf = hy.topology.nested_set_order(gdf, bits=HILBERT_BITS)
     logging.info(f'Ordered {len(gdf):,} reaches upstream-to-downstream')
 
     with open(outputs_dir / 'mods' / 'lake_edits.json', 'w') as f:
@@ -171,8 +178,14 @@ if __name__ == '__main__':
     streams = gdf[hy.schema.final_columns_to_keep]
 
     logging.info('Writing final outputs')
-    # every published geometry is web mercator snapped to a 1 m grid - see projection.py
-    hy.parquet.write_geoparquet(hy.projection.to_web_mercator(streams), final_geoparquet_output)
+    streams = hy.projection.to_web_mercator(streams)
+    before = int(shapely.get_num_coordinates(streams[hy.schema.geometry].values).sum())
+    streams[hy.schema.geometry] = shapely.simplify(
+        streams[hy.schema.geometry].values, SIMPLIFY_TOLERANCE_METERS, preserve_topology=True)
+    after = int(shapely.get_num_coordinates(streams[hy.schema.geometry].values).sum())
+    logging.info(f'Simplified stream geometry at {SIMPLIFY_TOLERANCE_METERS:g} m: '
+                 f'{before:,} -> {after:,} vertices ({100 * after / before:.1f}%)')
+    hy.parquet.write_geoparquet(streams, final_geoparquet_output)
     logging.info(f'Final streams written to {final_geoparquet_output}')
     hy.parquet.write_parquet(gdf[hy.schema.metadata_columns_to_keep], final_metadata_output)
     logging.info(f'Metadata written to {final_metadata_output}')

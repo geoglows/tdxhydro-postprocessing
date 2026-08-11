@@ -6,6 +6,7 @@ import pandas as pd
 # ---------------------------------------------------------------------------
 river_id = 'riverId'
 river_index = 'riverIndex'
+upstream_count = 'upstreamCount'
 next_river_id = 'nextRiverId'
 last_river_id = 'outletRiverId'
 group_id = 'groupId'
@@ -82,7 +83,7 @@ final_columns_to_keep = [
     river_id,
     next_river_id,
     last_river_id,
-    # river_index is added after all regions are processed
+    # the index columns are added after all regions are processed - see insert_index_columns
     strahler_order,
     shreve_order,
     tdx_us_area_field,
@@ -98,6 +99,23 @@ final_columns_to_keep = [
 ]
 
 metadata_columns_to_keep = [c for c in final_columns_to_keep if c != geometry] + [lat_field, lon_field]
+
+
+# Derived by 3_global_stream_attributes.py once every region exists, because both are positions in a
+# single global ordering and neither of them can be known while a region is being processed alone.
+# They travel together and are kept together in the file so a client projecting "the columns needed
+# to walk the network" reads one contiguous run of column chunks. See docs/river-index.md.
+index_columns = [
+    river_index,
+    upstream_count,
+]
+
+
+def insert_index_columns(columns: list) -> list:
+    """Return `columns` with the global index columns placed directly after the id columns."""
+    remaining = [c for c in columns if c not in index_columns]
+    at = remaining.index(last_river_id) + 1
+    return remaining[:at] + list(index_columns) + remaining[at:]
 
 # ---------------------------------------------------------------------------
 # lake_table.csv controlled vocabulary
@@ -130,6 +148,7 @@ int32_columns = (
     next_river_id,
     last_river_id,
     river_index,
+    upstream_count,
     group_id,
     strahler_order,
     shreve_order,
