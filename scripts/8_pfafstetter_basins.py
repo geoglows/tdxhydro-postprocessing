@@ -9,7 +9,15 @@ re-run, re-tuned or deleted without touching anything upstream of it.
 
     reads   regions/<region>/metadata_<region>.parquet
             regions/<region>/catchments_<region>.geo.parquet
-    writes  regions/<region>/basin_level<k>_<region>.geo.parquet, one per band
+    writes  regions/<region>/catchments_tile_<region>.geo.parquet, the leaf band
+            regions/<region>/basin_level<k>_<region>.geo.parquet, one per aggregate band
+
+**Every band's geometry is cut here, including the leaf's.** Step 4 publishes the catchments at the
+resolution the source DEM has, which is the right thing for a data product and far more than any
+tile needs; the tolerance a band is drawn at is a function of the zooms it covers and so belongs
+with the banding, which is here. So the leaf is a band like any other: it is simplified at its own
+zooms' tolerance into catchments_tile_<region>.geo.parquet, and that -- not the published
+catchments -- is what tile_catchments.sh tiles and what the aggregate levels are dissolved out of.
 
 The levels are built finest first and each one is dissolved out of the one below it rather than out
 of the leaf catchments, so only the first dissolve ever sees the whole region. The levels are
@@ -63,6 +71,7 @@ basins stay large at every level.
     python 8_pfafstetter_basins.py --bands       # "level:minzoom:maxzoom" per line, for the shell
 """
 import logging
+import math
 import os
 import sys
 import time
@@ -101,26 +110,63 @@ LEVEL_ZOOMS = {
     9: (8, 8),
 }
 
-# Full-resolution catchments, one polygon per reach, from here down. Where this starts is the
-# expensive decision: moving it one zoom earlier quadruples the features in every tile of that zoom,
-# because the same polygons are spread over a quarter as many tiles. See catchment_tiling_design.md.
+# One polygon per reach from here down - no more aggregation, only the leaf catchments themselves.
+# Where this starts is the expensive decision: moving it one zoom earlier quadruples the features in
+# every tile of that zoom, because the same polygons are spread over a quarter as many tiles. See
+# catchment_tiling_design.md.
 #
-# The band ends at z11, not z12. The leaf geometry is coverage-simplified in step 4 at a tolerance
-# that is sub-pixel at z11, so a z12 tile carries no vertex a z11 tile does not already have -- it
-# is a second full-resolution copy of the largest tileset in the pipeline for nothing. Clients
-# overzoom past the maximum, which draws the same geometry at the same fidelity.
+# The band ends at z11 and clients overzoom past it, which draws the same geometry at the same
+# fidelity. z11 is therefore the zoom the leaf tolerance below is derived from, and the deepest
+# detail anything downstream of this file can show.
 LEAF_ZOOMS = (9, 11)
 
 # web mercator resolution at zoom 0, metres per pixel at the equator, and the vertex spacing worth
 # keeping: a vertex closer than this many pixels to its neighbour cannot be seen at the band's
 # finest zoom.
+#
+# A quarter pixel rather than a whole one. At one pixel the tolerance is the largest error that is
+# invisible *in the limit*, which is the wrong target for two reasons: an error that size lands on
+# the pixel grid as a visibly moved edge about as often as not, and it leaves nothing for
+# tippecanoe's own per-zoom simplification to work with, so the two compose into something coarser
+# than either. Quartering it is the whole fix for faceted outlines at the low zooms and costs
+# almost nothing there - the aggregate bands are a rounding error next to the leaf - while at the
+# leaf it is the difference between a boundary that follows the terrain and one that does not.
 MERCATOR_M_PER_PX_Z0 = 156543.03392
-PIXELS_PER_VERTEX = 1.0
+PIXELS_PER_VERTEX = 0.25
+
+# The leaf band is simplified in chunks, for the reason step 4 chunks its coverage pass: a single
+# coverage_simplify call over a whole region's catchments does not fit in memory (31.7 GB without
+# completing, measured). Chunking is safe only because simplify_boundary=False pins each chunk's
+# outline, so chunk seams come out exact, and it is only cheap because the rows are in the published
+# riverIndex order, which makes a contiguous run a compact clump rather than a scattered set - a
+# pinned outline costs whatever is on it. Step 4 establishes the order; the row-order check below
+# is what confirms this file is reading it.
+CHUNK_SIZE = 20_000
 
 
 def zoom_tolerance(zoom: int, pixels: float = PIXELS_PER_VERTEX) -> float:
-    """Web mercator metres per pixel at ``zoom``, times the vertex spacing worth keeping."""
-    return pixels * MERCATOR_M_PER_PX_Z0 / 2 ** zoom
+    """Web mercator metres per pixel at ``zoom``, times the vertex spacing worth keeping, rounded
+    to the nearest power of two.
+
+    **The rounding is not cosmetic.** This value is the lattice ``snap`` rounds every vertex onto,
+    and a lattice that is not a power of two puts the coordinates somewhere float64 cannot say
+    exactly: ``set_precision`` computes ``round(x / g) * g``, which is exact when ``g`` is a power
+    of two and one ulp of noise in the low mantissa bytes when it is not. Those bytes are exactly
+    what ``BYTE_STREAM_SPLIT`` and zstd need to be zero -- parquet.py spells out that the encoding
+    makes files *larger* on full-precision floats, because the low byte planes become noise it has
+    to store instead of a run of zeros it can collapse.
+
+    Measured on 7020000010: the leaf band snapped onto the raw 19.109 m lattice came out at 565 MB
+    for 65.8 M vertices, against 229 MB for the 205.6 M vertices of the file it was cut from -- 2.5x
+    the bytes for a third of the geometry, and 0 % of its coordinates integer-valued where the
+    source's are 100 %.
+
+    Rounding rather than flooring keeps the value within 2^(1/2) of the pixel budget asked for, and
+    since the input halves per zoom the bands stay exactly one doubling apart: 16 m at z11, 32 at
+    z10, 64 at z9, and so on.
+    """
+    raw = pixels * MERCATOR_M_PER_PX_Z0 / 2 ** zoom
+    return float(max(1, 2 ** round(math.log2(raw))))
 
 
 def bands() -> list:
@@ -228,8 +274,9 @@ def snap(geometries: np.ndarray, grid: float) -> tuple:
     it does not look at the linework at all - a vertex goes to the nearest lattice point and that is
     a function of its own coordinates. Both sides of a shared divide start from the same vertices,
     so both land on the same points, and the seam closes the same way it did before. The lattice is
-    the band's own tolerance, one pixel at the finest zoom the band is drawn at, so anything it
-    moves was already below what that zoom can resolve.
+    the band's own tolerance - a quarter pixel at the finest zoom the band is drawn at, rounded to a
+    power of two - so anything it moves was already below what that zoom can resolve. See
+    ``zoom_tolerance`` for why the power of two is not optional.
 
     It is what makes the telescope actually telescope. On the same region the levels went 4.63M,
     2.69M, 2.15M, 2.01M, 1.92M, 1.78M, 1.21M vertices - barely falling, because the footprint was
@@ -334,6 +381,36 @@ def repair(geometries: np.ndarray, fallback: np.ndarray = None) -> tuple:
     return geometries, int(lost.sum())
 
 
+def simplify_leaf(geometries: np.ndarray, tolerance: float, chunk_size: int = CHUNK_SIZE) -> tuple:
+    """Cut the leaf catchments to their band's tolerance, in place, chunk by chunk.
+
+    The same simplify -> repair -> snap -> repair sequence the aggregate levels run, for the same
+    reasons, with one difference: it is chunked. There are 10^5 polygons here against 10^4 at the
+    finest aggregate level and 10^1 at the coarsest, and a whole-region ``coverage_simplify`` does
+    not fit in memory - see ``CHUNK_SIZE``.
+
+    In place so the source geometry is released as it goes. A region's raw catchments are ~78 bytes
+    per vertex once GEOS holds them, which is already most of this script's peak, and holding the
+    cut copy alongside all of it would double that for no reason: the caller wants only the cut
+    version, both to write and to dissolve the levels out of.
+
+    Returns the vertex count before and after, and how many polygons kept a less simplified geometry
+    because a repair or the snap would have collapsed them.
+    """
+    before = after = held = 0
+    for start in range(0, len(geometries), chunk_size):
+        block = slice(start, start + chunk_size)
+        raw = geometries[block]
+        before += int(shapely.get_num_coordinates(raw).sum())
+        clean, lost = repair(simplify_coverage(raw, tolerance), fallback=raw)
+        snapped, collapsed = snap(clean, tolerance)
+        clean, lost_again = repair(snapped, fallback=clean)
+        after += int(shapely.get_num_coordinates(clean).sum())
+        held += lost + collapsed + lost_again
+        geometries[block] = clean
+    return before, after, held
+
+
 def outlet_candidates(frame: pd.DataFrame, label: np.ndarray) -> pd.DataFrame:
     """The rows that could be a basin outlet at ``label``'s level, or at any coarser one.
 
@@ -405,8 +482,11 @@ if __name__ == '__main__':
     outputs_dir = region_root / f'{region}'
     levels = sorted(LEVEL_ZOOMS)
     level_outputs = {lv: outputs_dir / f'basin_level{lv}_{region}.geo.parquet' for lv in levels}
-    if not force and all(p.exists() for p in level_outputs.values()):
-        print(f'All basin levels for region {region} already exist, skipping')
+    # the leaf band is written here too, and the aggregate levels are dissolved out of it, so it is
+    # part of the same all-or-nothing chain as the levels rather than a separate skip
+    leaf_output = outputs_dir / f'catchments_tile_{region}.geo.parquet'
+    if not force and leaf_output.exists() and all(p.exists() for p in level_outputs.values()):
+        print(f'All bands for region {region} already exist, skipping')
         sys.exit(0)
 
     # catchments are built one region at a time and the set on disk is often partial, so a region
@@ -442,17 +522,38 @@ if __name__ == '__main__':
     candidates = outlet_candidates(metadata, basin_ids[levels[-1]])
     logging.info(f'{len(candidates):,} of {len(metadata):,} reaches can be a basin outlet')
 
-    # The telescope. The finest level is dissolved out of the leaf catchments; every level above it
+    crs = catchments.crs
+    parts = catchments[hy.schema.geometry].to_numpy()
+    del catchments
+
+    # The leaf band, cut at the tolerance z11 can resolve. This is the first thing done with the
+    # geometry, not the last, because it serves both purposes at once: it is what gets tiled, and
+    # it is what the levels telescope out of. Dissolving the levels out of the published catchments
+    # instead would union geometry at DEM resolution to produce basins drawn at z8 and coarser.
+    leaf_tolerance = max(zoom_tolerance(LEAF_ZOOMS[1]), 1.0)
+    started = time.time()
+    raw, kept, held = simplify_leaf(parts, leaf_tolerance)
+    # the row order is the catchments', asserted against the metadata's above, so the ids can be
+    # taken off either. riverIndex rides along for the same reason it does on the published
+    # catchments: a leaf tile carries the same id *and* index the stream network does.
+    leaf = gpd.GeoDataFrame(
+        metadata[[hy.schema.river_id, hy.schema.river_index]].copy(), geometry=parts, crs=crs)
+    hy.parquet.write_geoparquet(hy.schema.enforce_int32(leaf), leaf_output)
+    del leaf
+    logging.info(f'leaf (z{LEAF_ZOOMS[0]}-{LEAF_ZOOMS[1]}): {len(parts):,} catchments, '
+                 f'{raw:,} -> {kept:,} vertices at {leaf_tolerance:,.0f} m '
+                 f'({100 * kept / raw:.2f}%), {held:,} kept an earlier geometry, '
+                 f'{time.time() - started:.0f}s -> {leaf_output.name}')
+    print(f'leaf (z{LEAF_ZOOMS[0]}-{LEAF_ZOOMS[1]}): {len(parts):,} catchments, {kept:,} vertices')
+
+    # The telescope. The finest level is dissolved out of the leaf band above; every level after it
     # is dissolved out of the level below, which is already both aggregated and simplified. That is
     # the speed argument: running every level against the leaves means seven passes over the whole
     # region, where this is one pass over the leaves and six over a few thousand polygons each. It
     # costs nothing in fidelity because the levels are nested - the same polygons are being unioned
     # either way - and because the tolerance only ever coarsens going up, so a level never needs a
     # vertex the level below it already dropped.
-    crs = catchments.crs
-    parts = catchments[hy.schema.geometry].to_numpy()
     part_basin = basin_ids[levels[-1]]
-    del catchments
 
     for position, level in reversed(list(enumerate(levels))):
         started = time.time()

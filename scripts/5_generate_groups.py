@@ -58,10 +58,12 @@ def drop_interior_rings(outline):
 def union_catchments(geometries):
     """The outline of a group's catchments, as one polygon.
 
-    Step 4 hands over an edge-matched coverage, so shared edges cancel and the union is one pass
-    rather than a general overlay. GEOS refuses the whole set for one bad edge, though, and the
-    1 m snap does leave a few, so the general parallel union stays as the fallback - it gives the
-    same answer, and measured on group 718 it is 10.9 s against 36.5 s for a plain union_all.
+    ``coverage_union_all`` is the fast path: shared edges cancel and the union is one pass rather
+    than a general overlay. It needs an edge-matched coverage, though, and step 4's output is not
+    one - re-measured on 7020000010, 7,999 of 8,000 catchments carry a mismatched shared edge at
+    every simplification tolerance tried, so GEOS refuses the set. The fallback is therefore the
+    normal case here rather than the exception; it gives the same answer, and measured on group 718
+    it is 10.9 s against 36.5 s for a plain union_all. See hydrography/geometry.py.
     """
     try:
         outline = shapely.make_valid(shapely.coverage_union_all(geometries))

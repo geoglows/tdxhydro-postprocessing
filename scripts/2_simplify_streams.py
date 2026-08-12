@@ -15,7 +15,6 @@ import hydrography as hy
 # 16 bits puts the Hilbert grid at 65,536 cells across the globe, ~600 m at the equator — finer than
 # any reach's outlet point needs in order to be distinguished from its neighbour's.
 HILBERT_BITS = 16
-SIMPLIFY_TOLERANCE_METERS = 10.0
 
 # every output path hangs off the data root - see hydrography/paths.py and $RFS_DATA_ROOT
 region_root = hy.paths.region_root
@@ -178,13 +177,14 @@ if __name__ == '__main__':
     streams = gdf[hy.schema.final_columns_to_keep]
 
     logging.info('Writing final outputs')
+    # The geometry goes out at the resolution it came in at. Generalizing for a zoom is tippecanoe's
+    # job (see tile_streams.sh) and it does it per zoom, where a tolerance baked in here would apply
+    # at every zoom including the deepest - and could never be recovered by a consumer of the
+    # published file. The 1 m mercator grid to_web_mercator snaps onto is the only quantization left,
+    # and it is there for the parquet encoding rather than for rendering.
     streams = hy.projection.to_web_mercator(streams)
-    before = int(shapely.get_num_coordinates(streams[hy.schema.geometry].values).sum())
-    streams[hy.schema.geometry] = shapely.simplify(
-        streams[hy.schema.geometry].values, SIMPLIFY_TOLERANCE_METERS, preserve_topology=True)
-    after = int(shapely.get_num_coordinates(streams[hy.schema.geometry].values).sum())
-    logging.info(f'Simplified stream geometry at {SIMPLIFY_TOLERANCE_METERS:g} m: '
-                 f'{before:,} -> {after:,} vertices ({100 * after / before:.1f}%)')
+    vertices = int(shapely.get_num_coordinates(streams[hy.schema.geometry].values).sum())
+    logging.info(f'Stream geometry kept at source resolution: {vertices:,} vertices')
     hy.parquet.write_geoparquet(streams, final_geoparquet_output)
     logging.info(f'Final streams written to {final_geoparquet_output}')
     hy.parquet.write_parquet(gdf[hy.schema.metadata_columns_to_keep], final_metadata_output)

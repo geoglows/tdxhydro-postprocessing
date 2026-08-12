@@ -1,6 +1,6 @@
 """
 Build one region's leaf catchment polygons: one per surviving reach, in the published row order,
-simplified as a coverage.
+cut down to the resolution the source DEM actually has.
 
 Two things happen here, and they are one step because the second wants the geometry the first is
 already holding:
@@ -10,11 +10,30 @@ already holding:
    that were folded into it. Which basins those are is read back out of the json journal step 2
    wrote, replayed in the same order.
 
-2. **Simplification.** The source basins are polygonised DEM cells, so a boundary is a run of
-   ~3.4 m stair treads: 1,903 vertices per polygon on average, ~10.4 billion across the network,
-   12 GB on disk. None of that is information -- the source DEM is 1/9 arcsec -- and no renderer
-   can carry it. 100 m of coverage simplification keeps ~8% of the vertices for an area error under
-   0.0001%, and stays sub-pixel until z11.
+2. **A coverage pass near the source's own resolution.** ``TOLERANCE_METERS`` is a statement about
+   the DEM this data came off, not about any zoom. The source basins are polygonised 1/9 arcsec
+   cells, so a boundary is a run of ~3.4 m stair treads -- 1,903 vertices per polygon on average,
+   ~10.4 billion across the network, 12 GB on disk -- and a tolerance a few times that cell size
+   takes the staircase and very little else.
+
+   Generalizing for a zoom happens in the tiling stage instead -- step 8 cuts each band, including
+   the leaf, at a tolerance derived from the zooms that band is drawn at. Nothing zoom-dependent is
+   decided here, so what is published carries the resolution the data actually has.
+
+**What this pass does NOT do is node the coverage.** It is worth being explicit, because the
+opposite was believed for a while and it is the kind of thing that gets designed around. The raw
+dissolve leaves a vertex present on one side of a shared edge and absent on the other, and
+``coverage_simplify`` does not repair that: measured on 7020000010, an 8,000-polygon run in
+published order comes out of this step with 7,999 polygons carrying invalid coverage edges and
+``coverage_union_all`` raising a side-location conflict -- at 10, 20, 30, 50, 100 *and* 300 m alike.
+Coarsening does not help and never did. What does node a coverage is snapping it onto a lattice
+coarse enough to merge the mismatched pair, which is what step 8 does per band and why its dissolves
+mostly take the fast path.
+
+So the consumers carry the fallback rather than relying on this: ``union_catchments`` in step 5 and
+``dissolve_by`` in step 8 both try ``coverage_union_all`` and fall back to
+``hy.geometry.hierarchical_union``, which gives the same answer more slowly. The tolerance here is
+therefore free to be chosen on resolution and file size alone.
 
 Two properties of the geometry govern how the middle step is done, both measured in the design note:
 
@@ -32,8 +51,9 @@ run per region -- a region outline is a drainage divide shared vertex-for-vertex
 region's catchments -- and, for the same reason, what lets a region be simplified in chunks at all.
 A pinned outline is only cheap if the chunk is a compact blob, so the catchments are put in the
 published riverIndex order *before* they are chunked: Hilbert-ordered watersheds, DFS post-order
-within each, so a contiguous run is a compact clump. Chunking the same region in riverId order
-keeps 78.8% of the vertices where this keeps 19.7%.
+within each, so a contiguous run is a compact clump. Measured at a 30 m tolerance, chunking the same
+region in riverId order keeps 78.8% of the vertices where this keeps 19.7% -- four times the
+reduction for a reindex, and the gap only widens as the tolerance coarsens.
 
     RFS_DATA_ROOT=... TDXHYDRO_ROOT=... python 4_create_catchments.py <region> [--force]
 """
@@ -59,7 +79,24 @@ tdx_root = hy.paths.tdx_root
 logs_root = hy.paths.logs_root
 
 dissolve_threads = os.cpu_count() or 8
-TOLERANCE_METERS = 100.0
+# A few times the 3.4 m cell of the 1/9 arcsec DEM the source basins were polygonised from: enough
+# to take the raster staircase, not enough to move a boundary anywhere the source could have told
+# the difference. Sub-pixel until z13.
+#
+# Chosen by measurement rather than by argument, because the file size does NOT fall monotonically
+# with the tolerance - it rises to a hump at 10 m and only then falls. Region 7020000010:
+#
+#     tolerance   vertices      kept     parquet    bytes/vertex
+#         5 m     205,614,049   100.00%  228.8 MB   1.11
+#        10 m     137,164,013    66.71%  250.2 MB   1.82
+#        20 m      62,719,701    30.50%  162.6 MB   2.59
+#       100 m      ~17,100,000     8.31%  ~48 MB    ~2.9   (what this used to be)
+#
+# The staircase vertices are nearly free - consecutive deltas of +/-1 m on the integer grid
+# projection.py snaps to, which zstd collapses - so removing them raises the per-vertex cost faster
+# than it lowers the count until the count falls far enough to win again. 20 m is past the hump:
+# a third of the vertices AND a smaller file than either finer setting.
+TOLERANCE_METERS = 20.0
 CHUNK_SIZE = 20_000
 
 
@@ -231,7 +268,7 @@ def build_leaf_catchments(region_number: int, order: pd.DataFrame) -> gpd.GeoDat
 
     started = time.time()
     before, after = simplify_coverage(catchments[hy.schema.geometry].values)
-    logging.info(f'simplified at {TOLERANCE_METERS:g} m in chunks of {CHUNK_SIZE:,}: '
+    logging.info(f'coverage pass at {TOLERANCE_METERS:g} m in chunks of {CHUNK_SIZE:,}: '
                  f'{before:,} -> {after:,} vertices ({100 * after / before:.2f}%), '
                  f'{time.time() - started:.0f}s')
 

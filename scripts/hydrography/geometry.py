@@ -37,10 +37,17 @@ def hierarchical_union(geometries, workers: int = None, chunk: int = union_chunk
     ``shapely.coverage_union_all`` is faster still, and whether it is usable depends entirely on
     which catchments these are. On the *raw* ones it is not: measured on the same group, 6,769 of
     the 6,771 have invalid coverage edges, and GEOS raises a side-location conflict at every
-    precision tried, including the 1 m grid the geometry is already snapped to. Step 4's
-    ``coverage_simplify`` rebuilds every shared edge to match on both sides, and after it the fast
-    path works for most groups - so a caller holding simplified catchments should try it first and
-    keep this as the fallback for the few groups GEOS still refuses.
+    precision tried, including the 1 m grid the geometry is already snapped to.
+
+    **Simplification does not fix that, contrary to what this docstring used to say.** Re-measured
+    on 7020000010 straight out of step 4: an 8,000-polygon run leaves 7,999 with invalid coverage
+    edges and the same side-location conflict, at 10, 20, 30, 50, 100 and 300 m alike. Coarsening
+    never helped. What does is *snapping* onto a lattice coarse enough to merge the mismatched
+    vertex pair - which is why step 8, whose bands are snapped, unions 29,086 of 30,445 basins on
+    the fast path, and why step 5, whose catchments are not, mostly lands here.
+
+    So a caller should still try the fast path first and keep this as the fallback, but should
+    expect to use the fallback whenever it is holding step 4's output rather than a snapped band.
     """
     workers = workers or os.cpu_count() or 8
     merged = list(geometries)

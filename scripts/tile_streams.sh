@@ -22,9 +22,16 @@ tile_region() {
         echo "region $region: no streams, run step 2 first, skipping"
         return
     fi
+    # Step 2 writes the geometry at source resolution and does not generalize it, so all of the
+    # simplification happens here, per zoom, where it can be undone by asking for a deeper one.
+    # -pn holds the nodes where reaches meet: a confluence is one point shared by three features,
+    # and simplifying each of them independently is free to move it three different ways and open
+    # a gap in the network. It also makes a stretch shared by two features simplify identically in
+    # both. tippecanoe's default tolerance - within one tile unit - is left alone.
     ogr2ogr -f GeoJSONSeq -t_srs EPSG:4326 /vsistdout/ "$streams" \
         | tippecanoe -o "$tile" -Z0 -z11 --layer streams -j "$STREAM_TIER_FILTER" \
             --exclude musk_k --exclude musk_x --exclude velocity_factor --exclude USContArea \
+            --no-simplification-of-shared-nodes \
             --drop-densest-as-needed --no-progress-indicator --force
     echo "region $region: tiled -> $tile"
 }

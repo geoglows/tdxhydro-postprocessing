@@ -73,7 +73,11 @@ band_paths() {
     local region_dir="$SCRATCH_ROOT/regions/$region"
     local work="$SCRATCH_ROOT/pmtiles/catchment_levels_$region"
     if [ "$level" = leaf ]; then
-        BAND_SRC="$region_dir/catchments_${region}.geo.parquet"
+        # the leaf band, not the published catchments: step 8 cuts it to what z11 can resolve, the
+        # same way it cuts every aggregate level to its own band's zooms. The published file carries
+        # the source DEM's resolution and is several times larger - ogr2ogr already peaks near 9GB
+        # on this one, which is the memory bound TILE_JOBS above is set against.
+        BAND_SRC="$region_dir/catchments_tile_${region}.geo.parquet"
         BAND_POLY="$work/leaf.z$minzoom-$maxzoom.pmtiles"
         BAND_LINE="$work/leaf.z$minzoom-$maxzoom.lines.pmtiles"
     else
@@ -89,23 +93,50 @@ export -f band_paths
 # than the obvious tab because BSD xargs rewrites tabs in a -I item to spaces, which silently glues
 # every field into one and leaves ogr2ogr printing its usage.
 #
+# The item names the band rather than spelling out its paths, and calls band_paths to get them back.
+# That is not only about not repeating the derivation: **BSD xargs refuses a -I item that expands
+# past 255 bytes**, with "command line cannot be assembled, too long", and two absolute paths under
+# $SCRATCH_ROOT plus a layer name is right at that edge - it went over the day the leaf band's source
+# was renamed from catchments_* to catchments_tile_*, and the run built one band of sixteen and then
+# said nothing more about the rest. Naming the band costs about forty bytes and cannot drift there.
+#
 # --read-parallel splits the newline-delimited input across threads. It is the only flag here that
 # touches the parse, and the parse is the wall clock on the leaf band. -nlt MULTILINESTRING hands
 # ogr2ogr's boundary of each polygon to tippecanoe, so the strokes come from a line layer that
 # clipping cannot fake an edge into.
 tile_one() {
     set -eo pipefail
-    local size src out layer minzoom maxzoom geom
-    IFS='|' read -r size src out layer minzoom maxzoom geom <<< "$1"
+    local size region level minzoom maxzoom geom src out layer
+    IFS='|' read -r size region level minzoom maxzoom geom <<< "$1"
 
+    band_paths "$region" "$level" "$minzoom" "$maxzoom"
+    src="$BAND_SRC"
+    if [ "$geom" = lines ]; then
+        out="$BAND_LINE"
+        layer=catchment_lines
+    else
+        out="$BAND_POLY"
+        layer=catchments
+    fi
+
+    # --simplification=4 is a quarter of a tile pixel, matching the quarter pixel step 8 cut the
+    # band's geometry at; 10, which this used to pass, is the top of what the tippecanoe manual
+    # calls "probably no visible difference" and it composed with a coarse source into something
+    # that was. -Sm 1 then leaves the band's deepest zoom - the one actually being looked at, and
+    # the one clients overzoom from - at tippecanoe's own standard tolerance, so only the
+    # intermediate zooms of a band pay for being cheap.
+    #
+    # -pn is the shared-edge flag. The input is an exact coverage, so a boundary between two
+    # catchments is the same linework in both of them, and simplifying the two copies independently
+    # pulls them apart into slivers. It replaces --detect-shared-borders, which is deprecated
+    # ("faster and more correct", per the manual) and which only ever ran on the polygon layer -
+    # the line layer, which is the one that is actually drawn, got no shared-edge handling at all.
     local -a ogr=(-f GeoJSONSeq -t_srs EPSG:4326 -lco COORDINATE_PRECISION=5)
-    local -a tip=(--layer "$layer" --read-parallel --simplification=10 --no-progress-indicator --force)
+    local -a tip=(--layer "$layer" --read-parallel
+                  --simplification=4 --simplification-at-maximum-zoom=1
+                  --no-simplification-of-shared-nodes --no-progress-indicator --force)
     if [ "$geom" = lines ]; then
         ogr+=(-nlt MULTILINESTRING)
-    else
-        # exact-coverage input, so a shared edge is simplified once and both neighbours get the
-        # same line - without this the polygons pull apart from each other as they generalize
-        tip+=(--detect-shared-borders)
     fi
 
     # Written aside and moved into place, because the move is the only atomic step available and
@@ -144,10 +175,10 @@ for region in "${REGIONS[@]}"; do
         fi
         size="$(stat -f%z "$BAND_SRC" 2>/dev/null || stat -c%s "$BAND_SRC")"
         if [ ! -f "$BAND_POLY" ] || [ "$BAND_SRC" -nt "$BAND_POLY" ]; then
-            TASKS+="$size|$BAND_SRC|$BAND_POLY|catchments|$minzoom|$maxzoom|polygons"$'\n'
+            TASKS+="$size|$region|$level|$minzoom|$maxzoom|polygons"$'\n'
         fi
         if [ ! -f "$BAND_LINE" ] || [ "$BAND_SRC" -nt "$BAND_LINE" ]; then
-            TASKS+="$size|$BAND_SRC|$BAND_LINE|catchment_lines|$minzoom|$maxzoom|lines"$'\n'
+            TASKS+="$size|$region|$level|$minzoom|$maxzoom|lines"$'\n'
         fi
     done <<< "$BANDS_RAW"
 done
