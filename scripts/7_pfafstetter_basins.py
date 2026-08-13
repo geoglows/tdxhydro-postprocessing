@@ -9,14 +9,20 @@ re-run, re-tuned or deleted without touching anything upstream of it.
 
     reads   regions/<region>/metadata_<region>.parquet
             regions/<region>/catchments_<region>.geo.parquet
-    writes  regions/<region>/catchments_tile_<region>.geo.parquet, the leaf band
-            regions/<region>/basin_level<k>_<region>.geo.parquet, one per aggregate band
+    writes  regions/<region>/catchments_tile_<region>.fgb (+ .lines.fgb), the leaf band
+            regions/<region>/basin_level<k>_<region>.fgb (+ .lines.fgb), one per aggregate band
+
+The bands are written as FlatGeobuf pairs - polygons plus their boundary rings as lines - rather
+than geoparquet, because tiling is their only consumer and tippecanoe reads a named fgb in
+parallel but cannot read parquet at all. Writing the tiling feed here, where the geometry is
+already in memory, is what removed the tile script's conversion phase - see
+catchment_tiling_design.md.
 
 **Every band's geometry is cut here, including the leaf's.** Step 4 publishes the catchments at the
 resolution the source DEM has, which is the right thing for a data product and far more than any
 tile needs; the tolerance a band is drawn at is a function of the zooms it covers and so belongs
 with the banding, which is here. So the leaf is a band like any other: it is simplified at its own
-zooms' tolerance into catchments_tile_<region>.geo.parquet, and that -- not the published
+zooms' tolerance into catchments_tile_<region>.fgb, and that -- not the published
 catchments -- is what tile_catchments.sh tiles and what the aggregate levels are dissolved out of.
 
 The levels are built finest first and each one is dissolved out of the one below it rather than out
@@ -81,6 +87,7 @@ from pathlib import Path
 import geopandas as gpd
 import numpy as np
 import pandas as pd
+import pyogrio
 import shapely
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -343,6 +350,28 @@ def simplify_leaf(geometries: np.ndarray, tolerance: float, chunk_size: int = CH
     return before, after, held
 
 
+def lines_path(path: Path) -> Path:
+    """The boundary-line variant of a band's fgb path."""
+    return path.with_name(path.name.replace('.fgb', '.lines.fgb'))
+
+
+def write_band(gdf: gpd.GeoDataFrame, path: Path) -> None:
+    """Write one band as the polygon + boundary-line FlatGeobuf pair the tiles are built from.
+
+    Integer columns go out as float64 because tippecanoe's fgb reader fails ``-j`` filter
+    comparisons on integer attributes and silently drops the features; the cast reproduces the
+    typing GeoJSON had, and integral doubles come back out of the tiles as integers. No spatial
+    index: tippecanoe never reads it and building one buffers every feature for a Hilbert sort."""
+    frame = gdf.copy()
+    for column in frame.columns:
+        if pd.api.types.is_integer_dtype(frame[column]):
+            frame[column] = frame[column].astype('float64')
+    options = dict(driver='FlatGeobuf', promote_to_multi=True, SPATIAL_INDEX='NO')
+    pyogrio.write_dataframe(frame, path, geometry_type='MultiPolygon', **options)
+    frame = frame.set_geometry(frame.geometry.boundary)
+    pyogrio.write_dataframe(frame, lines_path(path), geometry_type='MultiLineString', **options)
+
+
 def outlet_candidates(frame: pd.DataFrame, label: np.ndarray) -> pd.DataFrame:
     """The rows that could be a basin outlet at ``label``'s level, or at any coarser one.
 
@@ -413,11 +442,12 @@ if __name__ == '__main__':
 
     outputs_dir = region_root / f'{region}'
     levels = sorted(LEVEL_ZOOMS)
-    level_outputs = {lv: outputs_dir / f'basin_level{lv}_{region}.geo.parquet' for lv in levels}
+    level_outputs = {lv: outputs_dir / f'basin_level{lv}_{region}.fgb' for lv in levels}
     # the leaf band is written here too, and the aggregate levels are dissolved out of it, so it is
     # part of the same all-or-nothing chain as the levels rather than a separate skip
-    leaf_output = outputs_dir / f'catchments_tile_{region}.geo.parquet'
-    if leaf_output.exists() and all(p.exists() for p in level_outputs.values()):
+    leaf_output = outputs_dir / f'catchments_tile_{region}.fgb'
+    outputs = [leaf_output, *level_outputs.values()]
+    if all(p.exists() and lines_path(p).exists() for p in outputs):
         print(f'All bands for region {region} already exist, skipping')
         # os._exit, not sys.exit: pyarrow's thread pool destructor can hang at interpreter exit, and
         # this step runs under xargs, where one wedged process holds its slot and stalls the run.
@@ -475,7 +505,7 @@ if __name__ == '__main__':
     # catchments: a leaf tile carries the same id *and* index the stream network does.
     leaf = gpd.GeoDataFrame(
         metadata[[hy.schema.river_id, hy.schema.river_index]].copy(), geometry=parts, crs=crs)
-    hy.parquet.write_geoparquet(hy.schema.enforce_int32(leaf), leaf_output)
+    write_band(hy.schema.enforce_int32(leaf), leaf_output)
     del leaf
     logging.info(f'leaf (z{LEAF_ZOOMS[0]}-{LEAF_ZOOMS[1]}): {len(parts):,} catchments, '
                  f'{raw:,} -> {kept:,} vertices at {leaf_tolerance:,.0f} m '
@@ -540,7 +570,7 @@ if __name__ == '__main__':
 
         merged = merged[[hy.schema.river_id, hy.schema.river_index, 'basinId', 'level', 'pfafCode',
                          'riverCount', 'areaM2', 'strahlerOrder', hy.schema.geometry]]
-        hy.parquet.write_geoparquet(merged, level_outputs[level])
+        write_band(merged, level_outputs[level])
         logging.info(f'level {level} (z{min_zoom}-{max_zoom}): {len(merged):,} basins, '
                      f'{raw:,} -> {kept:,} vertices at {tolerance:,.0f} m, '
                      f'{time.time() - started:.0f}s -> {level_outputs[level].name}')

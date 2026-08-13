@@ -283,16 +283,6 @@ def recompute_outlets(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
 def compute_topology(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     # assign OutletRiverID attribute to all rivers in the watershed
     gdf = recompute_outlets(gdf)
-
-    # compute topological sort - use strahler order and drainage area to avoid expensive graph algorithms
-    #
-    # riverId is the third key, and it is not decoration. The first two tie for 41.7% of raw reaches
-    # (measured on 7020000010 and 1020000010), and a stable sort resolves a tie by source row order -
-    # so without it, topologySortedOrder is a fact about how the input file happened to be written.
-    # That rank is what dissolve_groups and find_short_streams pick a merge keeper from
-    # (streams.py:242, streams.py:521), so reordering or repartitioning the source silently changes
-    # which reach survives a merge. riverId is unique, so the sort is now total and the whole step is
-    # reproducible from the ids alone.
     gdf.sort_values(
         [schema.strahler_order, schema.tdx_ds_area_field, schema.river_id],
         ascending=True, kind='stable', inplace=True,

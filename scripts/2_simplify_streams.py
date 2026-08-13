@@ -37,8 +37,8 @@ if __name__ == '__main__':
     outputs = [final_geoparquet_output, final_metadata_output, confluences_output]
     if all(output.exists() for output in outputs):
         print(f'All final outputs for region {region} already exist, skipping')
-        sys.stdout.flush()
-        os._exit(0)
+        sys.exit(0)
+    print(f'Hydrologically refining stream topology for region {region}')
 
     # prepare directories and logging
     outputs_dir = region_root / f'{region}'
@@ -53,11 +53,6 @@ if __name__ == '__main__':
     gdf = gpd.read_parquet(tdx_root / f'TDX_streamnet_{region}_01.parquet')
     logging.info(f'Initial shape: {gdf.shape}')
 
-    # the standardized parquets already carry the outlet point; derive it for older files
-    # while the geometry is still single-part lines and coordinate 0 is unambiguous
-    if not {hy.schema.lon_field, hy.schema.lat_field}.issubset(gdf.columns):
-        gdf = hy.streams.add_outlet_coordinates(gdf)
-
     # add unique river ids and attributes
     gdf[hy.schema.area] = gdf[hy.schema.tdx_ds_area_field] - gdf[hy.schema.tdx_us_area_field]
     with open(network_data_root / 'tdxhydro_splits' / 'tdx_header_numbers.json') as f:
@@ -66,8 +61,11 @@ if __name__ == '__main__':
     gdf[hy.schema.river_id] = (gdf[hy.schema.tdx_link_field] + spacer).astype(int)
     gdf[hy.schema.next_river_id] = -1
     gdf.loc[gdf[hy.schema.tdx_ds_link_field] != -1, hy.schema.next_river_id] = gdf[hy.schema.tdx_ds_link_field] + spacer
-    gdf = gdf.drop(columns=[hy.schema.tdx_link_field, hy.schema.tdx_ds_link_field, ])
-    gdf.rename(columns=hy.schema.rename_map, inplace=True)
+    gdf = (
+        gdf
+        .drop(columns=[hy.schema.tdx_link_field, hy.schema.tdx_ds_link_field, ])
+        .rename(columns=hy.schema.rename_map)
+    )
 
     # prepare the topology attributes
     gdf = hy.topology.compute_topology(gdf)

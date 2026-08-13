@@ -2,9 +2,9 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$SCRIPT_DIR/pipeline_env.sh"
-
 cd "$SCRIPT_DIR" || exit 1
+
+source "pipeline_env.sh"
 
 ################## prepare global tdxhydro baseline
 #"$PYTHON" 1_translate_tdxhydro.py
@@ -21,8 +21,9 @@ printf '%s\n' "${REGIONS[@]}" | xargs -P 5 -I{} "$PYTHON" 5_generate_groups.py {
 "$PYTHON" 6_concatenate_global.py
 
 ################## create nested pfafstetter style basins from catchments
-printf '%s\n' "${REGIONS[@]}" | xargs -P 4 -I{} "$PYTHON" 8_pfafstetter_basins.py {}
+printf '%s\n' "${REGIONS[@]}" | xargs -P 4 -I{} "$PYTHON" 7_pfafstetter_basins.py {}
 
+################## pmtiles
 ./tile_streams.sh
 ./tile_catchments.sh
 ./tile_groups.sh

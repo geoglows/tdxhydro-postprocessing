@@ -143,7 +143,7 @@ dissolve_threads = max(1, (os.cpu_count() or 8) // chunk_threads)
 # than it lowers the count until the count falls far enough to win again. 20 m is past the hump:
 # a third of the vertices AND a smaller file than either finer setting.
 TOLERANCE_METERS = 20.0
-CHUNK_SIZE = 20_000
+CHUNK_SIZE = int(os.environ.get('CATCHMENT_CHUNK_SIZE', 20_000))
 
 
 def _load_json(path: Path) -> dict:
@@ -199,21 +199,36 @@ def resolve_keeper(rid: int, redirect: dict) -> int:
     return rid
 
 
-def union_threaded(members: list, workers: int, groups_per_task: int = 300) -> list:
+def union_threaded(wkb: np.ndarray, offsets: np.ndarray, workers: int,
+                   groups_per_task: int = 300) -> tuple:
     """
-    Union each list of geometries in ``members``, one geometry out per entry. Runs the per-group
-    GEOS unions across worker threads (shapely.union_all drops the GIL during the union).
-    """
+    Union the source basins of each group into one geometry, group ``i`` being the rows
+    ``offsets[i]:offsets[i + 1]`` of ``wkb``. Runs across worker threads (shapely drops the GIL
+    inside GEOS). Returns the dissolved geometries and the source vertex count.
 
-    def union_chunk(start: int) -> list:
-        return [a[0] if len(a) == 1 else shapely.union_all(a)
-                for a in members[start:start + groups_per_task]]
+    The WKB is decoded per task rather than for the whole chunk at once: a group's source basins
+    are the largest thing in the step -- 5x their WKB as GEOS objects -- and they are dead the
+    moment their union exists, so materialising a chunk of them costs peak RSS for nothing.
+    """
+    groups = len(offsets) - 1
+
+    def union_chunk(start: int) -> tuple:
+        stop = min(start + groups_per_task, groups)
+        base, end = offsets[start], offsets[stop]
+        flat = shapely.from_wkb(wkb[base:end])
+        counted = int(shapely.get_num_coordinates(flat).sum())
+        bounds = offsets[start:stop + 1] - base
+        return counted, [flat[bounds[i]] if bounds[i + 1] - bounds[i] == 1
+                         else shapely.union_all(flat[bounds[i]:bounds[i + 1]])
+                         for i in range(stop - start)]
 
     geometries = []
+    vertices = 0
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        for part in pool.map(union_chunk, range(0, len(members), groups_per_task)):
+        for counted, part in pool.map(union_chunk, range(0, groups, groups_per_task)):
+            vertices += counted
             geometries.extend(part)
-    return geometries
+    return geometries, vertices
 
 
 def source_crs(basins_src: Path):
@@ -341,19 +356,13 @@ def build_leaf_catchments(region_number: int, order: pd.DataFrame) -> gpd.GeoDat
 
     def build_chunk(start: int) -> tuple:
         stop = min(start + CHUNK_SIZE, len(river_ids))
-        # one from_wkb for the whole chunk rather than one per catchment, then split on the group
-        # bounds. Same arrays out; ~20,000 fewer python-level calls in, and the vertex count for the
-        # log comes off the flat array in one call instead of one per group.
         block = rows[bounds[start]:bounds[stop]]
-        flat = shapely.from_wkb(wkb[block])
+        source = wkb[block]
         wkb[block] = None  # released as it is consumed
-        before = int(shapely.get_num_coordinates(flat).sum())
         offsets = bounds[start:stop + 1] - bounds[start]
-        members = [flat[offsets[i]:offsets[i + 1]] for i in range(stop - start)]
-        del flat
 
-        merged = union_threaded(members, dissolve_threads)
-        del members
+        merged, before = union_threaded(source, offsets, dissolve_threads)
+        del source
         # The reprojection has to happen before the simplification, whose tolerance is in mercator
         # metres. The 1 m snap does not - see projection.snap_to_grid - and it is four times cheaper
         # here, on a fifth of the vertices, than it was as part of the reprojection: as
