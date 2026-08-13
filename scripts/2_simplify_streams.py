@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -36,7 +37,8 @@ if __name__ == '__main__':
     outputs = [final_geoparquet_output, final_metadata_output, confluences_output]
     if all(output.exists() for output in outputs):
         print(f'All final outputs for region {region} already exist, skipping')
-        sys.exit(0)
+        sys.stdout.flush()
+        os._exit(0)
 
     # prepare directories and logging
     outputs_dir = region_root / f'{region}'
@@ -95,6 +97,11 @@ if __name__ == '__main__':
         gdf.to_parquet(outputs_dir / 'mods' / 'missing_group_debug.parquet')
         raise RuntimeError(f'{len(missing_group)} reaches have no groupId; e.g. {missing_group[:10]}')
 
+    # every lake outlet named in the table, held out of every merge below: a lake outlet carries
+    # the lake's identity and its traced lines, so joining it to a river moves both onto the river
+    protected = hy.lakes.lake_outlets(gdf)
+    logging.info(f'{len(protected):,} lake outlets are protected from simplification')
+
     # modify lake and reservoirs
     lake_edits = hy.lakes.find_lake_edits(gdf, min_inlet_area=100_000_000)
     gdf = hy.lakes.apply_lake_edits(gdf, lake_edits)
@@ -110,7 +117,7 @@ if __name__ == '__main__':
     # consolidate order-1 reaches orphaned by zero length outlet removal into their
     # neighbor. uses the STALE outletRiverId to recover the sibling set, so it must
     # run before recompute_outlets overwrites those ids
-    coastal_orphans = hy.streams.find_orphaned_coastal_outlets(gdf)
+    coastal_orphans = hy.streams.find_orphaned_coastal_outlets(gdf, protected=protected)
     gdf = hy.streams.prune_branches(gdf, branches_to_prune=coastal_orphans)
     logging.info(f'After consolidating orphaned coastal order-1s, shape is {gdf.shape}')
 
@@ -119,22 +126,22 @@ if __name__ == '__main__':
     hy.topology.assert_topology_is_valid(gdf)
 
     # dissolve headwater streams with min order of 2
-    header_mergers = hy.streams.find_headwater_mergers(gdf, min_order=2)
     # OLD: union the order-2 line with its order-1 upstream tributaries into one geometry
     # gdf = hy.streams.merge_headwaters(gdf, header_mergers=header_mergers)
     # NEW: keep only the order-2 geometry; order-1 tributaries are not mapped
+    header_mergers = hy.streams.find_headwater_mergers(gdf, min_order=2, protected=protected)
     gdf = hy.streams.merge_headwaters_order2_geom(gdf, header_mergers=header_mergers)
     logging.info(f'After dissolving headwaters, shape is {gdf.shape}')
     hy.topology.assert_topology_is_valid(gdf)
 
     # prune branches with min order of 2
-    branches_to_prune = hy.streams.find_branches_to_prune(gdf)
+    branches_to_prune = hy.streams.find_branches_to_prune(gdf, protected=protected)
     gdf = hy.streams.prune_branches(gdf, branches_to_prune=branches_to_prune)
     logging.info(f'After pruning branches, shape is {gdf.shape}')
     hy.topology.assert_topology_is_valid(gdf)
 
     # consolidate shorter streams into their neighbors where possible targeting minimum 2km length
-    consolidations = hy.streams.find_short_streams(gdf, min_length=2000)
+    consolidations = hy.streams.find_short_streams(gdf, min_length=2000, protected=protected)
     gdf = hy.streams.consolidate_short_streams(gdf, consolidations=consolidations)
     logging.info(f'After consolidating short streams, shape is {gdf.shape}')
     hy.topology.assert_topology_is_valid(gdf)

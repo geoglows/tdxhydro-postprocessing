@@ -21,7 +21,8 @@ Geometry is 92-96% of every file that has any, so it is the only part worth tuni
                 was already exploiting. projection.to_web_mercator is what zeroes them,
                 by snapping every published geometry to a 1 m grid.
 
-Measured: streams for group 103 fall from 71.8 MB to 29.1 MB and the catchments of a test
+Measured: streams for group 101 (103 when this was measured - see group_renumbering.csv)
+fall from 71.8 MB to 29.1 MB and the catchments of a test
 region from 95.2 MB to 33.2 MB, both about 60%. Roughly two thirds of that is the snap and
 one third the encoding — neither is worth much without the other.
 
@@ -41,8 +42,11 @@ import shapely
 __all__ = [
     'WRITE_OPTS',
     'GEOMETRY_ROW_GROUP_SIZE',
+    'SOURCE_WRITE_OPTS',
+    'SOURCE_ROW_GROUP_SIZE',
     'write_geoparquet',
     'write_parquet',
+    'write_source_geoparquet',
 ]
 
 COMPRESSION = 'zstd'
@@ -50,6 +54,16 @@ COMPRESSION_LEVEL = 3
 WRITE_OPTS = {'compression': COMPRESSION, 'compression_level': COMPRESSION_LEVEL}
 
 GEOMETRY_ROW_GROUP_SIZE = 500
+
+# The raw TDX-Hydro geoparquet step 1 writes is the one file this pipeline does not snap, so it
+# wants a different profile from everything above - see write_source_geoparquet.
+SOURCE_COMPRESSION_LEVEL = 9
+SOURCE_WRITE_OPTS = {'compression': COMPRESSION, 'compression_level': SOURCE_COMPRESSION_LEVEL}
+
+# Large enough that the per-group overhead is nothing, small enough that a reader can take one
+# group without taking the region. The size on disk does not move across 1, 2 and 12 groups of the
+# same file, so this is chosen entirely for what it lets a reader do.
+SOURCE_ROW_GROUP_SIZE = 20_000
 
 # geoarrow nests coordinates one list level per geometry dimension: a point is a bare
 # struct<x, y>, a linestring a list of those, a polygon a list of rings, a multipolygon a
@@ -103,6 +117,43 @@ def write_geoparquet(gdf: gpd.GeoDataFrame, path, row_group_size=GEOMETRY_ROW_GR
         use_dictionary=False,
         **opts,
     )
+
+
+def write_source_geoparquet(gdf: gpd.GeoDataFrame, path,
+                            row_group_size=SOURCE_ROW_GROUP_SIZE, **kwargs) -> None:
+    """Write the raw TDX-Hydro geoparquet: geoarrow and zstd, but *not* BYTE_STREAM_SPLIT.
+
+    This is the one product the pipeline writes on the wrong side of the 1 m mercator snap, and
+    that changes the answer. ``projection.to_web_mercator`` is what zeroes the low mantissa bytes
+    of a coordinate, and the encoding in write_geoparquet only pays once they are zero; the source
+    is full-precision WGS84 degrees that has had no snap, so those bytes are noise and splitting
+    them into their own planes costs the interleaving zstd was already exploiting. Measured on a
+    102 MB basins file, against the same file written every other way:
+
+        snappy, WKB (what this used to be)       101.7 MB   100%
+        zstd, WKB                                 57.3 MB    56%
+        zstd, geoarrow                            31.2 MB    31%
+        zstd, geoarrow + BYTE_STREAM_SPLIT        55.0 MB    54%   <- nearly double
+
+    So geoarrow is worth taking and the encoding on top of it is not. The gain is smaller on the
+    big regions - a 1.8 GB basins file goes to 47%, a 767 MB streamnet file to 36% - which still
+    puts the whole 144 GB source tree near 65 GB.
+
+    zstd 9 rather than the 3 the published files use, because this is the only file written once
+    and read on every pipeline run after that: it takes 1.7x the write time for another 5 points,
+    and read speed is flat across zstd levels either way.
+
+    One thing to know before diffing the output against an older copy. geoarrow's schema is fixed
+    per column, so a mixed Polygon/MultiPolygon column - which every basins file is - comes back
+    entirely as MultiPolygon. Coordinates are bit-identical and areas are exactly equal, so nothing
+    downstream can tell (step 4 only unions them), but a WKB comparison will say the file changed.
+    """
+    opts = {**SOURCE_WRITE_OPTS, 'row_group_size': row_group_size, **kwargs}
+    if len(gdf) == 0 or gdf.geometry.isna().all():
+        # same reason write_geoparquet falls back: geoarrow needs one geometry to take its type from
+        gdf.to_parquet(path, **opts)
+        return
+    gdf.to_parquet(path, geometry_encoding='geoarrow', **opts)
 
 
 def write_parquet(df: pd.DataFrame, path, **kwargs) -> None:

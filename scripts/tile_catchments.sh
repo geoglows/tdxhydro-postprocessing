@@ -23,7 +23,7 @@ if ! mkdir "$LOCK" 2>/dev/null; then
 fi
 trap 'rmdir "$LOCK" 2>/dev/null' EXIT
 
-# The banding comes from 8_pfafstetter_basins.py, the same definition it built these polygon sets
+# The banding comes from 7_pfafstetter_basins.py, the same definition it built these polygon sets
 # from, so the tiles and the polygons cannot disagree about what a band is. Edit it there. Read once
 # rather than per region: it is the same answer every time. A bash array cannot be exported to the
 # xargs children, so it travels as the raw newline-separated "level:minzoom:maxzoom" text and is

@@ -166,7 +166,8 @@ def nested_set_order(gdf: gpd.GeoDataFrame, bits: int = 16) -> gpd.GeoDataFrame:
        ordered freely. Doing it this way gives every group one contiguous riverIndex range, which is
        what lets a routing engine treat a group file as a dense array whose local index is
        ``riverIndex - riverIndexStart``. Ordering by anything else fragments them: measured on the
-       published network before this change, the 125 groups occupied 625 separate runs.
+       published network before this change, the groups (125 of them at the time, 127 now) occupied
+       625 separate runs.
     2. **terminal watersheds within a group, by the Hilbert index of the outlet.** Watersheds are
        disjoint components, so this too is unconstrained, and putting neighbouring basins next to
        each other in the file is what keeps the geometry compressible and the tiles coherent.
@@ -284,8 +285,16 @@ def compute_topology(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     gdf = recompute_outlets(gdf)
 
     # compute topological sort - use strahler order and drainage area to avoid expensive graph algorithms
+    #
+    # riverId is the third key, and it is not decoration. The first two tie for 41.7% of raw reaches
+    # (measured on 7020000010 and 1020000010), and a stable sort resolves a tie by source row order -
+    # so without it, topologySortedOrder is a fact about how the input file happened to be written.
+    # That rank is what dissolve_groups and find_short_streams pick a merge keeper from
+    # (streams.py:242, streams.py:521), so reordering or repartitioning the source silently changes
+    # which reach survives a merge. riverId is unique, so the sort is now total and the whole step is
+    # reproducible from the ids alone.
     gdf.sort_values(
-        [schema.strahler_order, schema.tdx_ds_area_field],
+        [schema.strahler_order, schema.tdx_ds_area_field, schema.river_id],
         ascending=True, kind='stable', inplace=True,
     )
     gdf.reset_index(drop=True, inplace=True)

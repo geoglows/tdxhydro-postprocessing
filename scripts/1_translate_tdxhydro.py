@@ -10,6 +10,7 @@ import shapely
 from pyproj import Geod
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import hydrography.parquet as parquet
 import hydrography.paths as paths
 import hydrography.schema as schema
 from hydrography.streams import add_outlet_coordinates
@@ -97,4 +98,8 @@ if __name__ == '__main__':
             gdf[schema.tdx_link_field] = gdf[schema.basin_stream_id_field].astype(int) + (tdx_header_number * 10_000_000)
             gdf = gdf.drop(columns=[schema.basin_stream_id_field])
 
-        gdf.to_parquet(out_file_name)
+        # geoarrow + zstd, and deliberately not the BYTE_STREAM_SPLIT the published files use:
+        # this is the one product written before the 1 m snap, and the encoding needs the snap to
+        # pay. See hydrography/parquet.py. recompress_tdxhydro.py brings an already-converted tree
+        # up to this without going back to the gpkgs.
+        parquet.write_source_geoparquet(gdf, out_file_name)

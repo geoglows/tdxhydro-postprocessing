@@ -13,7 +13,7 @@ untouched and does not need to re-run when the ordering changes.
 See docs/river-index.md for what the ordering guarantees and why it is built this way; the traversal
 itself lives in hydrography/topology.py::nested_set_order.
 
-    RFS_DATA_ROOT=... TDXHYDRO_ROOT=... python 3_global_stream_attributes.py [workers] [--force]
+    RFS_DATA_ROOT=... TDXHYDRO_ROOT=... python 3_global_stream_attributes.py [workers]
 """
 import logging
 import sys
@@ -78,27 +78,12 @@ def stamp_index_columns(frame_path: Path, index_lookup: pd.DataFrame) -> None:
     logging.info(f'stamped {len(stamped):,} rows -> {frame_path.name}')
 
 
-def log_gather_distance(df: pd.DataFrame) -> None:
-    """Report how far a reach sits from the reach it drains into - the number this ordering exists
-    to make small, and the one to watch if the traversal is ever changed."""
-    parent_row = hy.topology.parent_rows(df[hy.schema.river_id].to_numpy(),
-                                         df[hy.schema.next_river_id].to_numpy())
-    has_downstream = parent_row >= 0
-    distance = parent_row[has_downstream] - np.arange(len(df))[has_downstream]
-    logging.info(
-        f'gather distance over {len(distance):,} edges: mean {distance.mean():,.1f}, '
-        f'median {np.median(distance):,.0f}, within one 64B line (<=8) {(distance <= 8).mean():.2%}, '
-        f'p99 {np.percentile(distance, 99):,.0f}, beyond 4096 {int((distance > 4096).sum()):,}'
-    )
-
-
 if __name__ == '__main__':
     # keep console output (basicConfig above) and also tee the run into data/logs/
     logs_root.mkdir(parents=True, exist_ok=True)
     file_handler = logging.FileHandler(logs_root / 'global_stream_attributes.log', mode='w')
     file_handler.setFormatter(logging.Formatter('%(asctime)s %(levelname)s %(message)s'))
     logging.getLogger().addHandler(file_handler)
-    force = '--force' in sys.argv
     args = [a for a in sys.argv[1:] if not a.startswith('--')]
     MAX_WORKERS = int(args[0]) if args else 4
 
@@ -108,11 +93,11 @@ if __name__ == '__main__':
     # them. The stamped region files ARE the output - a marker is a second claim about them that can
     # outlive the thing it describes, and this one was also being published into group=0 as if it
     # were a product. Reading a parquet footer is cheap enough to just look.
-    if not force and metadata_parquets and all(
+    if metadata_parquets and all(
         set(hy.schema.index_columns) <= set(pq.read_schema(p).names) for p in metadata_parquets
     ):
         logging.info(f'all {len(metadata_parquets)} region metadata files already carry '
-                     f'{hy.schema.index_columns}, so the ordering is stamped. Pass --force to '
+                     f'{hy.schema.index_columns}, so the ordering is stamped. Delete them to '
                      f'recompute it.')
         exit(0)
 
@@ -140,7 +125,6 @@ if __name__ == '__main__':
             raise ValueError(f'groupId occupies {runs:,} runs of riverIndex but there are only '
                              f'{df[hy.schema.group_id].nunique():,} groups, so at least one group is '
                              f'split across the ordering.')
-        log_gather_distance(df)
 
         index_lookup = hy.schema.enforce_int32(df[index_lookup_columns].copy())
         parquets_to_update = natsorted(

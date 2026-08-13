@@ -35,7 +35,8 @@ So the consumers carry the fallback rather than relying on this: ``union_catchme
 ``hy.geometry.hierarchical_union``, which gives the same answer more slowly. The tolerance here is
 therefore free to be chosen on resolution and file size alone.
 
-Two properties of the geometry govern how the middle step is done, both measured in the design note:
+Three properties of the geometry govern how the middle step is done, the first two measured in the
+design note:
 
 **Coverage simplification, not per-polygon.** Neighbouring catchments share a boundary.
 Douglas-Peucker run on each polygon independently simplifies the shared stretch twice, from two
@@ -55,7 +56,18 @@ within each, so a contiguous run is a compact clump. Measured at a 30 m toleranc
 region in riverId order keeps 78.8% of the vertices where this keeps 19.7% -- four times the
 reduction for a reindex, and the gap only widens as the tolerance coarsens.
 
-    RFS_DATA_ROOT=... TDXHYDRO_ROOT=... python 4_create_catchments.py <region> [--force]
+**The 1 m snap happens last, and is a rounding rather than a precision reduction.** Only the
+*reprojection* has to precede the simplification -- the tolerance is in mercator metres. The snap
+was going through the same call as the reprojection and so inherited its place, which cost twice:
+it ran on the full-resolution dissolve, 4.4x the vertices it needed to see, and it ran as
+``set_precision``, which is a GEOS precision reduction and prices like an overlay. Together that
+was **48% of this step**, more than the dissolve and the simplification put together. Moved after
+the simplification and done as ``x -> floor(x + 0.5)`` on the coordinate buffer -- exact, because
+the grid is a power of two -- the same work is ~0.1%. ``set_precision`` is kept for the handful of
+rings the rounding self-intersects, where being an overlay is the point. See
+``projection.snap_to_grid``.
+
+    RFS_DATA_ROOT=... TDXHYDRO_ROOT=... python 4_create_catchments.py <region>
 """
 import json
 import logging
@@ -68,6 +80,8 @@ from pathlib import Path
 import geopandas as gpd
 import numpy as np
 import pandas as pd
+import pyarrow.parquet as pq
+import pyproj
 import shapely
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -78,7 +92,34 @@ region_root = hy.paths.region_root
 tdx_root = hy.paths.tdx_root
 logs_root = hy.paths.logs_root
 
-dissolve_threads = os.cpu_count() or 8
+# How many published-order chunks are in flight at once, and how many threads each one's dissolve
+# gets. The product is the core count; the split between them is what is tuned.
+#
+# Chunks used to be built one at a time, and for most of the step that left the machine idle. The
+# reprojection and the coverage simplification are single array calls into GEOS, so a worker
+# building one chunk uses exactly one core - at the `-P 3` this step used to run at, 3 cores of 16
+# for ~87% of the step. Both calls release the GIL (measured: four chunks simplify in 2.34 s across
+# four threads against 8.21 s one after another, 3.52x), so the chunks are what should be parallel,
+# and the dissolve - which was already threaded, and is only 7% of the step - gives up its threads
+# to pay for it.
+#
+# **The ceiling is memory, not cores**, and this is why the number is 2 rather than the 4 that is
+# fastest per region. Every chunk in flight holds its own GEOS copies on top of the region's WKB.
+# Measured on 1020000010 (135,159 catchments, 404M source vertices), against 566 s and ~24 GB
+# before:
+#
+#     chunk_threads      wall     peak RSS      two of these at once
+#         1              274 s    ~25 GB  (inferred)     ~50 GB
+#         2              177 s     29.0 GB               ~58 GB
+#         4              121 s     36.7 GB               ~73 GB   - does not fit in 64 GiB
+#
+# So the fastest single region is not the fastest run. Projecting those per-region times over the
+# 50 regions: 4 threads would force `-P 1` and take ~55 min, where 2 threads at `-P 2` takes ~40.
+# Process-level parallelism is also the better kind here - it overlaps one region's serial parts,
+# the WKB read and the final write, with another region's parallel ones, which threads inside a
+# single region cannot. Raise this and lower `-P` in pipeline.sh together, or the two multiply.
+chunk_threads = int(os.environ.get('CATCHMENT_CHUNK_THREADS', 2))
+dissolve_threads = max(1, (os.cpu_count() or 8) // chunk_threads)
 # A few times the 3.4 m cell of the 1/9 arcsec DEM the source basins were polygonised from: enough
 # to take the raster staircase, not enough to move a boundary anywhere the source could have told
 # the difference. Sub-pixel until z13.
@@ -91,6 +132,11 @@ dissolve_threads = os.cpu_count() or 8
 #        10 m     137,164,013    66.71%  250.2 MB   1.82
 #        20 m      62,719,701    30.50%  162.6 MB   2.59
 #       100 m      ~17,100,000     8.31%  ~48 MB    ~2.9   (what this used to be)
+#
+# The peak RSS this table used to also report (38-39 GB, barely moving across the three) was measured
+# when the whole region was held as GEOS objects at once. It is not the peak any more - see
+# read_source_wkb - but the conclusion it supported still holds: the tolerance is not what sets the
+# memory, so it is chosen on resolution and file size alone.
 #
 # The staircase vertices are nearly free - consecutive deltas of +/-1 m on the integer grid
 # projection.py snaps to, which zstd collapses - so removing them raises the per-vertex cost faster
@@ -153,49 +199,92 @@ def resolve_keeper(rid: int, redirect: dict) -> int:
     return rid
 
 
-def dissolve_threaded(gdf: gpd.GeoDataFrame, by: str, workers: int, groups_per_task: int = 300) -> gpd.GeoDataFrame:
+def union_threaded(members: list, workers: int, groups_per_task: int = 300) -> list:
     """
-    Union the geometries within each `by` group, one row out per group. Equivalent to
-    gdf.dissolve(by=by) for a geometry-only frame, but runs the per-group GEOS unions
-    across worker threads (shapely.union_all drops the GIL during the union).
+    Union each list of geometries in ``members``, one geometry out per entry. Runs the per-group
+    GEOS unions across worker threads (shapely.union_all drops the GIL during the union).
     """
-    grouped = gdf.groupby(by)[hy.schema.geometry].apply(lambda s: s.values)
-    keys = grouped.index.to_numpy()
-    arrays = grouped.to_list()
 
     def union_chunk(start: int) -> list:
-        return [shapely.union_all(a) for a in arrays[start:start + groups_per_task]]
+        return [a[0] if len(a) == 1 else shapely.union_all(a)
+                for a in members[start:start + groups_per_task]]
 
     geometries = []
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        for part in pool.map(union_chunk, range(0, len(arrays), groups_per_task)):
+        for part in pool.map(union_chunk, range(0, len(members), groups_per_task)):
             geometries.extend(part)
-    return gpd.GeoDataFrame({by: keys}, geometry=geometries, crs=gdf.crs)
+    return geometries
 
 
-def simplify_coverage(geometries, chunk_size: int = CHUNK_SIZE) -> tuple[int, int]:
-    """Simplify an ordered array of coverage polygons in place, chunk by chunk.
+def source_crs(basins_src: Path):
+    """The source's CRS, read from the file's GeoParquet metadata rather than from its geometry.
 
-    In place so the raw geometry is released as it goes: one region's source geometry is ~78 bytes
-    per vertex once GEOS has it, or roughly 16 GB for a large region, and holding the simplified
-    copy alongside all of it would be the peak of this script rather than the dissolve.
-
-    Returns the vertex count before and after.
+    Taking it off a real geometry would mean reading some, and the whole point here is not to. Both
+    encodings carry it the same way: GeoParquet stores the CRS as PROJJSON under the geometry
+    column, and a null means OGC:CRS84 by the spec.
     """
-    before = after = 0
-    for start in range(0, len(geometries), chunk_size):
-        block = slice(start, start + chunk_size)
-        raw = geometries[block]
-        before += int(shapely.get_num_coordinates(raw).sum())
-        # simplify_boundary=False is what keeps this chunk's outline identical to its neighbours'
-        clean = shapely.coverage_simplify(raw, TOLERANCE_METERS, simplify_boundary=False)
-        empty = int(shapely.is_empty(clean).sum())
-        if empty:
-            raise RuntimeError(f'chunk starting at row {start:,} simplified {empty} catchment(s) '
-                               f'out of existence')
-        after += int(shapely.get_num_coordinates(clean).sum())
-        geometries[block] = clean
-    return before, after
+    metadata = pq.ParquetFile(basins_src).schema_arrow.metadata or {}
+    geo = json.loads(metadata.get(b'geo', b'{}'))
+    column = geo.get('primary_column', hy.schema.geometry)
+    crs = geo.get('columns', {}).get(column, {}).get('crs', 'missing')
+    if crs == 'missing':
+        raise RuntimeError(f'{basins_src.name} carries no GeoParquet CRS metadata')
+    return pyproj.CRS.from_json_dict(crs) if crs is not None else pyproj.CRS.from_user_input('OGC:CRS84')
+
+
+def read_source_wkb(basins_src: Path, wanted: np.ndarray, batch_size: int = 20_000) -> np.ndarray:
+    """The source basins' geometry as WKB bytes, indexed by source row, for the rows in ``wanted``.
+
+    **This is the whole memory argument of this step.** A polygon costs ~78 bytes per vertex once
+    GEOS has it and ~16 bytes as WKB, so a region held as shapely objects is ~5x what the same
+    geometry costs as bytes -- and the peak here used to be holding all of it that way at once.
+    Kept as WKB and converted one published-order chunk at a time, region 7020000010 (2.42 GB
+    source, 117,948 catchments) goes **40.5 GB -> 19.7 GB peak RSS, 349 s -> 332 s, and the output
+    is byte-identical** -- same rows, same order, same geometry bytes.
+
+    What is left is still partly linear in the region: this array is the whole region's WKB (~5.6 GB
+    there), and the working set of one chunk is several GEOS copies of that chunk -- raw members,
+    the union, the reprojection, the simplified result -- times ``chunk_threads`` of them in flight.
+    ``CHUNK_SIZE`` is the dial for the second, but it is not free: the design note measures 20,000
+    keeping 7.96% of vertices against 5,000 keeping 10.38%, because every chunk outline is pinned.
+    Getting the rest would mean sorting the WKB to published order on disk so it could be read a
+    window at a time, which is a bigger change than this one.
+
+    Both source encodings are handled, because whether the tree has been through
+    recompress_tdxhydro.py decides which one is on disk: GeoParquet 1.0 stores the geometry as a
+    WKB ``binary`` column, which is already the wanted form, while 1.1 stores geoarrow, which has to
+    go through shapely to get back to bytes. That conversion is per batch, so it is bounded either
+    way.
+    """
+    wkb = np.empty(len(wanted), dtype=object)
+    parquet = pq.ParquetFile(basins_src)
+    geoarrow = parquet.schema_arrow.field(hy.schema.geometry).metadata is not None
+    row = 0
+    for batch in parquet.iter_batches(batch_size=batch_size, columns=[hy.schema.geometry]):
+        stop = row + batch.num_rows
+        keep = wanted[row:stop]
+        if keep.any():
+            column = batch.column(hy.schema.geometry)
+            if geoarrow:
+                block = shapely.to_wkb(gpd.GeoDataFrame.from_arrow(batch).geometry.values)
+            else:
+                block = column.to_numpy(zero_copy_only=False)
+            wkb[row:stop] = np.where(keep, block, None)
+        row = stop
+    if row != len(wanted):
+        raise RuntimeError(f'{basins_src.name} has {row:,} rows, expected {len(wanted):,}')
+    return wkb
+
+
+def simplify_chunk(geometries: np.ndarray, start: int) -> np.ndarray:
+    """One chunk of the coverage, simplified. ``start`` only names the chunk in the error."""
+    # simplify_boundary=False is what keeps this chunk's outline identical to its neighbours'
+    clean = shapely.coverage_simplify(geometries, TOLERANCE_METERS, simplify_boundary=False)
+    empty = int(shapely.is_empty(clean).sum())
+    if empty:
+        raise RuntimeError(f'chunk starting at row {start:,} simplified {empty} catchment(s) '
+                           f'out of existence')
+    return clean
 
 
 def build_leaf_catchments(region_number: int, order: pd.DataFrame) -> gpd.GeoDataFrame:
@@ -208,70 +297,113 @@ def build_leaf_catchments(region_number: int, order: pd.DataFrame) -> gpd.GeoDat
     outputs_dir = region_root / f'{region_number}'
     mods_dir = outputs_dir / 'mods'
 
-    # load the original basins. TDXHydroLinkNo is the basin id with the region spacer applied,
-    # so it is the same numbering as the stream riverId.
     basins_src = tdx_root / f'TDX_streamreach_basins_{region_number}_01.parquet'
-    basins = gpd.read_parquet(basins_src)
-    basins = (
-        basins[[hy.schema.tdx_link_no_field, hy.schema.geometry]]
-        .rename(columns={hy.schema.tdx_link_no_field: hy.schema.river_id})
-    )
-    basins[hy.schema.river_id] = basins[hy.schema.river_id].astype(int)
-    logging.info(f'Read {len(basins):,} source basins from {basins_src}')
+    source = pq.read_table(basins_src, columns=[hy.schema.tdx_link_no_field])
+    source_ids = source.column(0).to_numpy().astype(np.int64)
+    del source
+    logging.info(f'{len(source_ids):,} source basins in {basins_src.name}')
 
     # replay step 2's edits to map each original basin to the reach that absorbed it
     redirect, deleted = build_basin_edits(mods_dir)
-    keeper_map = {rid: resolve_keeper(rid, redirect) for rid in basins[hy.schema.river_id].unique()}
-    basins[hy.schema.river_id] = basins[hy.schema.river_id].map(keeper_map)
+    keeper_map = {rid: resolve_keeper(rid, redirect) for rid in np.unique(source_ids)}
+    keeper = pd.Series(source_ids).map(keeper_map).to_numpy()
 
-    # drop basins whose reach was removed outright (the zero-length cases)
-    before = len(basins)
-    basins = basins[~basins[hy.schema.river_id].isin(deleted)]
-    logging.info(f'Dropped {before - len(basins):,} basins for deleted (zero-length) reaches')
-
-    # dissolve each keeper's absorbed basins into one catchment polygon. only groups with more
-    # than one member need a union; singletons (untouched reaches) are passed through for speed.
-    counts = basins[hy.schema.river_id].value_counts()
-    multi_keepers = set(counts[counts > 1].index)
-    singles = basins[~basins[hy.schema.river_id].isin(multi_keepers)]
-    multi = basins[basins[hy.schema.river_id].isin(multi_keepers)]
-    merged = dissolve_threaded(multi, hy.schema.river_id, dissolve_threads) if len(multi) else multi
-    catchments = gpd.GeoDataFrame(
-        pd.concat([singles, merged], ignore_index=True),
-        geometry=hy.schema.geometry,
-        crs=basins.crs,
-    )
-    logging.info(f'Dissolved into {len(catchments):,} catchments '
-                 f'({len(multi_keepers):,} merged, {len(singles):,} unchanged) '
-                 f'using {dissolve_threads} threads')
-    del basins, singles, multi, merged
-
-    duplicated = catchments[hy.schema.river_id][catchments[hy.schema.river_id].duplicated()].tolist()
-    if duplicated:
-        raise RuntimeError(f'{len(duplicated)} catchment id(s) are duplicated, e.g. {duplicated[:10]}')
-
-    # every published geometry is web mercator snapped to a 1 m grid - see projection.py. it has to
-    # happen before the simplification, whose tolerance is in mercator metres.
-    catchments = hy.projection.to_web_mercator(catchments)
-
-    # Reindex onto the published row order. This is also the filter: the metadata holds exactly the
-    # reaches that survived step 2, so reaches dropped by the whole-watershed and <250 km^2 rules
-    # (which are not in the json journal) fall out here, and anything the journal says survives but
-    # has no catchment shows up as a null rather than as a silently missing row.
     river_ids = order[hy.schema.river_id].to_numpy()
-    catchments = catchments.set_index(hy.schema.river_id).reindex(river_ids)
-    missing = catchments[hy.schema.geometry].isna()
-    if missing.any():
-        absent = catchments.index[missing].tolist()
-        raise RuntimeError(f'{len(absent):,} reach(es) have no catchment, e.g. {absent[:5]}')
-    catchments = catchments.reset_index()
+    position = pd.Series(np.arange(len(river_ids), dtype=np.int64), index=river_ids)
+    place = position.reindex(keeper).to_numpy(dtype=float, copy=True)
+    place[np.isin(keeper, list(deleted))] = np.nan  # deleted outright (the zero-length cases)
+    wanted = ~np.isnan(place)
+    logging.info(f'{int((~wanted).sum()):,} source basins dropped (deleted or not in the metadata)')
+
+    counts = np.bincount(place[wanted].astype(np.int64), minlength=len(river_ids))
+    if (counts == 0).any():
+        absent = river_ids[counts == 0]
+        raise RuntimeError(f'{len(absent):,} reach(es) have no catchment, e.g. {absent[:5].tolist()}')
+
+    # source rows grouped by published row, so a chunk of published rows is a slice of this
+    by_place = np.argsort(place[wanted], kind='stable')
+    rows = np.flatnonzero(wanted)[by_place]
+    bounds = np.r_[0, np.cumsum(counts)]
 
     started = time.time()
-    before, after = simplify_coverage(catchments[hy.schema.geometry].values)
-    logging.info(f'coverage pass at {TOLERANCE_METERS:g} m in chunks of {CHUNK_SIZE:,}: '
+    crs = source_crs(basins_src)
+    wkb = read_source_wkb(basins_src, wanted)
+    logging.info(f'source geometry held as WKB in {time.time() - started:.0f}s; '
+                 f'{len(river_ids):,} catchments to build in chunks of {CHUNK_SIZE:,}')
+
+    # Build the coverage one chunk of the published order at a time. Each chunk is dissolved,
+    # reprojected and simplified on its own and then goes back to bytes, so the only geometry held
+    # as GEOS objects at any moment is what the chunks in flight are holding. The chunks are
+    # contiguous in the published order for the reason the coverage pass needs them to be - see the
+    # note above on compactness - and independent of each other for the same reason, which is what
+    # lets `chunk_threads` of them run at once.
+    out = np.empty(len(river_ids), dtype=object)
+
+    def build_chunk(start: int) -> tuple:
+        stop = min(start + CHUNK_SIZE, len(river_ids))
+        # one from_wkb for the whole chunk rather than one per catchment, then split on the group
+        # bounds. Same arrays out; ~20,000 fewer python-level calls in, and the vertex count for the
+        # log comes off the flat array in one call instead of one per group.
+        block = rows[bounds[start]:bounds[stop]]
+        flat = shapely.from_wkb(wkb[block])
+        wkb[block] = None  # released as it is consumed
+        before = int(shapely.get_num_coordinates(flat).sum())
+        offsets = bounds[start:stop + 1] - bounds[start]
+        members = [flat[offsets[i]:offsets[i + 1]] for i in range(stop - start)]
+        del flat
+
+        merged = union_threaded(members, dissolve_threads)
+        del members
+        # The reprojection has to happen before the simplification, whose tolerance is in mercator
+        # metres. The 1 m snap does not - see projection.snap_to_grid - and it is four times cheaper
+        # here, on a fifth of the vertices, than it was as part of the reprojection: as
+        # set_precision on the full-resolution dissolve it was 48% of this step.
+        chunk = hy.projection.to_web_mercator(gpd.GeoDataFrame(geometry=merged, crs=crs),
+                                              round_meters=None)
+        del merged
+        clean = simplify_chunk(chunk[hy.schema.geometry].values, start)
+        del chunk
+        # Rounding moves linework without re-noding the ring, so a few come back self-intersecting -
+        # 6 of 23,236 on 5020000010. set_precision used to repair those as part of doing the
+        # rounding, and it is still the right tool for them: it is an overlay, so it both rounds and
+        # repairs, and it lands on the same lattice. It is only the *whole array* that could not
+        # afford it. Handing it the handful that rounding broke costs nothing and keeps every
+        # coordinate on the grid, which plain repair does not - make_valid nodes the ring and the
+        # intersection it computes is wherever the segments actually cross.
+        snapped = hy.projection.snap_to_grid(clean)
+        broken = ~shapely.is_valid(snapped)
+        if broken.any():
+            snapped[broken] = shapely.set_precision(clean[broken],
+                                                    hy.projection.precision_meters)
+        # fallback is the rounded geometry, never the unrounded one: a row that even set_precision
+        # cannot fix keeps integer coordinates rather than reintroducing off-lattice ones.
+        clean, held = hy.geometry.repair(snapped, fallback=snapped)
+        del snapped
+        after = int(shapely.get_num_coordinates(clean).sum())
+        out[start:stop] = shapely.to_wkb(clean)
+        return before, after, held
+
+    starts = range(0, len(river_ids), CHUNK_SIZE)
+    with ThreadPoolExecutor(max_workers=chunk_threads) as pool:
+        counted = list(pool.map(build_chunk, starts))
+    before = sum(c[0] for c in counted)
+    after = sum(c[1] for c in counted)
+    held = sum(c[2] for c in counted)
+
+    logging.info(f'coverage pass at {TOLERANCE_METERS:g} m in chunks of {CHUNK_SIZE:,}, '
+                 f'{chunk_threads} at a time: '
                  f'{before:,} -> {after:,} vertices ({100 * after / before:.2f}%), '
                  f'{time.time() - started:.0f}s')
+    if held:
+        logging.info(f'{held:,} catchment(s) kept their unsnapped geometry: rounding onto the '
+                     f'{hy.projection.precision_meters:g} m grid broke them and the repair '
+                     f'left no area')
 
+    catchments = gpd.GeoDataFrame(
+        {hy.schema.river_id: river_ids},
+        geometry=shapely.from_wkb(out),
+        crs=f'EPSG:{hy.projection.web_mercator_epsg}',
+    )
     # riverIndex rides along so a leaf catchment carries the same id *and* index a reach does, which
     # is what lets one selector address the streams and every catchment layer alike
     catchments.insert(1, hy.schema.river_index, order[hy.schema.river_index].to_numpy())
@@ -280,10 +412,9 @@ def build_leaf_catchments(region_number: int, order: pd.DataFrame) -> gpd.GeoDat
 
 if __name__ == '__main__':
     # find the ID of the region to process
-    force = '--force' in sys.argv
-    args = [a for a in sys.argv[1:] if a != '--force']
+    args = sys.argv[1:]
     if len(args) != 1:
-        sys.exit('usage: 4_create_catchments.py <region_number> [--force]')
+        sys.exit('usage: 4_create_catchments.py <region_number>')
     region_number = int(args[0])
     # region_number = 1020000010  # Example region number
 
@@ -291,9 +422,13 @@ if __name__ == '__main__':
     mods_dir = outputs_dir / 'mods'
 
     catchments_output = outputs_dir / f'catchments_{region_number}.geo.parquet'
-    if not force and catchments_output.exists():
+    if catchments_output.exists():
         print(f'Catchments output {catchments_output} already exists, skipping region {region_number}')
-        sys.exit(0)
+        # os._exit, not sys.exit: pyarrow's thread pool destructor can hang at interpreter exit, and
+        # this step runs under xargs, where one wedged process holds its slot and stalls the run.
+        # See 5_generate_groups.py, where it happened. The flush is because print buffers to a pipe.
+        sys.stdout.flush()
+        os._exit(0)
 
     # prepare directories and logging
     mods_dir.mkdir(parents=True, exist_ok=True)
@@ -305,9 +440,6 @@ if __name__ == '__main__':
         format='%(asctime)s %(levelname)s %(message)s',
     )
 
-    # The metadata gives this step its two inputs at once: its row order is the published order the
-    # catchments have to come out in, and its membership is exactly which reaches survived step 2
-    # (the whole-watershed and <250 km^2 drops are not in the json journal).
     metadata = pd.read_parquet(
         outputs_dir / f'metadata_{region_number}.parquet',
         columns=[hy.schema.river_id, hy.schema.river_index],

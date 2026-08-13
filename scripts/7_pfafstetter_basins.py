@@ -67,8 +67,8 @@ catchments keyed by riverId and needs no code. And a handful of reaches have eno
 because step 2 collapses a lake's interior into its outlet (Superior, Baikal, Victoria), so a few
 basins stay large at every level.
 
-    RFS_DATA_ROOT=... TDXHYDRO_ROOT=... python 8_pfafstetter_basins.py <region> [--force]
-    python 8_pfafstetter_basins.py --bands       # "level:minzoom:maxzoom" per line, for the shell
+    RFS_DATA_ROOT=... TDXHYDRO_ROOT=... python 7_pfafstetter_basins.py <region>
+    python 7_pfafstetter_basins.py --bands       # "level:minzoom:maxzoom" per line, for the shell
 """
 import logging
 import math
@@ -93,7 +93,7 @@ logs_root = hy.paths.logs_root
 # The zoom banding. This is the one dial worth turning.
 # ---------------------------------------------------------------------------
 # basin level -> (min zoom, max zoom). One level per zoom from the first refinement to the leaf, so
-# detail arrives in even steps instead of lurching. The coarsest level holds z0-2 because there is
+# detail arrives in even steps instead of lurching. The coarsest level holds z0-3 because there is
 # nothing to refine into above it: it is the first split of the region, and the split radix rather
 # than the budget decides how many basins it has.
 #
@@ -101,13 +101,13 @@ logs_root = hy.paths.logs_root
 # exactly these levels and ramps the budgets to the leaf count, so the counts follow the zooms. Add
 # a level and the ramp gets gentler; take one away and it gets steeper.
 LEVEL_ZOOMS = {
-    3: (0, 2),
-    4: (3, 3),
-    5: (4, 4),
-    6: (5, 5),
-    7: (6, 6),
-    8: (7, 7),
-    9: (8, 8),
+    3: (0, 3),
+    4: (4, 4),
+    5: (5, 5),
+    6: (6, 6),
+    7: (7, 7),
+    8: (8, 8),
+    9: (9, 9),
 }
 
 # One polygon per reach from here down - no more aggregation, only the leaf catchments themselves.
@@ -115,10 +115,10 @@ LEVEL_ZOOMS = {
 # every tile of that zoom, because the same polygons are spread over a quarter as many tiles. See
 # catchment_tiling_design.md.
 #
-# The band ends at z11 and clients overzoom past it, which draws the same geometry at the same
-# fidelity. z11 is therefore the zoom the leaf tolerance below is derived from, and the deepest
+# The band ends at z10 and clients overzoom past it, which draws the same geometry at the same
+# fidelity. z10 is therefore the zoom the leaf tolerance below is derived from, and the deepest
 # detail anything downstream of this file can show.
-LEAF_ZOOMS = (9, 11)
+LEAF_ZOOMS = (10, 10)
 
 # web mercator resolution at zoom 0, metres per pixel at the equator, and the vertex spacing worth
 # keeping: a vertex closer than this many pixels to its neighbour cannot be seen at the band's
@@ -306,79 +306,11 @@ def snap(geometries: np.ndarray, grid: float) -> tuple:
     return snapped, int(kept.sum())
 
 
-def polygonal(geometries: np.ndarray) -> np.ndarray:
-    """Reduce anything that is not a polygon to the polygonal parts of itself.
-
-    A repair can hand back a GeometryCollection - the noded linework, or the areas alongside the
-    cut-lines that produced them - and a basin level is a polygon layer: the parquet writer has no
-    geoarrow layout for a collection and refuses the file outright.
-    """
-    odd = np.flatnonzero(~np.isin(shapely.get_type_id(geometries), (3, 6)))
-    if len(odd):
-        geometries = geometries.copy()
-        for index in odd:
-            parts = [p for p in shapely.get_parts(geometries[index])
-                     if shapely.get_type_id(p) in (3, 6)]
-            geometries[index] = shapely.union_all(parts) if parts else None
-    return geometries
-
-
-def _make_valid(geometries: np.ndarray) -> np.ndarray:
-    """``make_valid`` over an array, element by element only if the array call raises."""
-    try:
-        return shapely.make_valid(geometries, method='structure', keep_collapsed=False)
-    except shapely.errors.GEOSException:
-        pass
-    out = np.empty(len(geometries), dtype=object)
-    for i, geometry in enumerate(geometries):
-        for kwargs in ({'method': 'structure', 'keep_collapsed': False}, {}):
-            try:
-                out[i] = shapely.make_valid(geometry, **kwargs)
-                break
-            except shapely.errors.GEOSException:
-                continue
-    return out
-
-
-def repair(geometries: np.ndarray, fallback: np.ndarray = None) -> tuple:
-    """``make_valid`` for the ones that need it, as polygons and never as nothing.
-
-    ``coverage_simplify`` routinely leaves self-intersecting rings - measured on one region, 14,000
-    of 21,000 level-9 basins - because it moves each shared edge without re-noding the rings the
-    edge belongs to. Nothing downstream of a written file minded, tippecanoe included, but the level
-    above does: it unions these polygons, and GEOS refuses an invalid ring in either the coverage
-    union or the general one.
-
-    ``method='structure'`` rebuilds the polygon's areas rather than returning the noded linework as
-    a collection, so what comes back is still polygonal and can be unioned again. Measured on one
-    region it costs 3.7 s, removes 8 % of the vertices, and changes total area by zero.
-
-    This is also where an emptied basin is caught, which is why the test is not simply
-    ``is_valid``. **An empty polygon is a valid polygon**, so nothing here or in GEOS objects to
-    one, and it travels all the way to the parquet writer and to the next level's union before
-    anything does. It arrives two ways: ``make_valid`` collapses a basin whose repair leaves no
-    area, and ``coverage_simplify`` annihilates a basin smaller than the tolerance outright -
-    measured, a 1 km² single-reach basin against level 8's 1,223 m.
-
-    Either way, and however ``make_valid`` itself raised - it does, on the degenerate zero-length
-    segments snapping to a lattice leaves behind - the basin falls back to ``fallback``: the
-    geometry as it was before whichever step broke it, which is the last version known to be both
-    valid and non-empty. So a level always writes one non-empty polygon per basin, and the level
-    above it always gets a coverage it can union. The count comes back for the log.
-    """
-    fallback = geometries if fallback is None else fallback
-    broken = (~shapely.is_valid(geometries)) | shapely.is_empty(geometries) \
-        | shapely.is_missing(geometries)
-    if not broken.any():
-        return geometries, 0
-
-    geometries = geometries.copy()
-    fixed = polygonal(_make_valid(geometries[broken]))
-    lost = shapely.is_missing(fixed) | shapely.is_empty(fixed)
-    if lost.any():
-        fixed[lost] = fallback[broken][lost]
-    geometries[broken] = fixed
-    return geometries, int(lost.sum())
+# Both moved to hydrography/geometry.py: step 4 now needs the same repair for the same reason -
+# it rounds onto a lattice without re-noding what the rounding moved - and two copies of a
+# fallback this subtle is one too many. Imported under the old names; the call sites are unchanged.
+polygonal = hy.geometry.polygonal
+repair = hy.geometry.repair
 
 
 def simplify_leaf(geometries: np.ndarray, tolerance: float, chunk_size: int = CHUNK_SIZE) -> tuple:
@@ -471,12 +403,12 @@ def basin_outlets(candidates: pd.DataFrame, label: np.ndarray, n_basins: int) ->
 if __name__ == '__main__':
     if '--bands' in sys.argv:
         print('\n'.join(bands()))
-        sys.exit(0)
+        sys.stdout.flush()
+        os._exit(0)
 
-    force = '--force' in sys.argv
     args = [a for a in sys.argv[1:] if not a.startswith('--')]
     if len(args) != 1:
-        sys.exit('usage: 8_pfafstetter_basins.py <region> [--force]  |  --bands')
+        sys.exit('usage: 7_pfafstetter_basins.py <region>  |  --bands')
     region = int(args[0])
 
     outputs_dir = region_root / f'{region}'
@@ -485,16 +417,21 @@ if __name__ == '__main__':
     # the leaf band is written here too, and the aggregate levels are dissolved out of it, so it is
     # part of the same all-or-nothing chain as the levels rather than a separate skip
     leaf_output = outputs_dir / f'catchments_tile_{region}.geo.parquet'
-    if not force and leaf_output.exists() and all(p.exists() for p in level_outputs.values()):
+    if leaf_output.exists() and all(p.exists() for p in level_outputs.values()):
         print(f'All bands for region {region} already exist, skipping')
-        sys.exit(0)
+        # os._exit, not sys.exit: pyarrow's thread pool destructor can hang at interpreter exit, and
+        # this step runs under xargs, where one wedged process holds its slot and stalls the run.
+        # See 5_generate_groups.py, where it happened. The flush is because print buffers to a pipe.
+        sys.stdout.flush()
+        os._exit(0)
 
     # catchments are built one region at a time and the set on disk is often partial, so a region
     # that has not been through step 4 yet is skipped rather than failing the whole pipeline
     catchments_path = outputs_dir / f'catchments_{region}.geo.parquet'
     if not catchments_path.exists():
         print(f'region {region}: no catchments, run step 4 first, skipping')
-        sys.exit(0)
+        sys.stdout.flush()
+        os._exit(0)
 
     logs_root.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(filename=logs_root / f'pfafstetter_basins_{region}.log', filemode='w',

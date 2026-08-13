@@ -55,6 +55,33 @@ def drop_interior_rings(outline):
     return shapely.union_all(shells)
 
 
+def snap_to_lattice(outline):
+    """Put the outline on the 1 m grid every other published geometry sits on.
+
+    The inputs are already there - step 4 snaps each catchment - but a union is entitled to invent a
+    vertex where two rings cross, and this one takes the general-overlay path almost every time, so
+    the property is not inherited. It is worth holding onto for the reason parquet.py gives: the
+    geoarrow columns are BYTE_STREAM_SPLIT plus zstd, which pays only once the low mantissa bytes
+    are zero, and one off-lattice coordinate per stretch is enough to make that byte plane noise.
+
+    Rounding moves linework without re-noding the ring it belongs to, so the handful it
+    self-intersects go through ``set_precision``, which is an overlay and so rounds and repairs at
+    once onto the same lattice. Affordable here in a way it is not in step 4: one polygon, not a
+    region's worth.
+
+    Measured across all 127 groups of this build, this changed nothing - every vertex was already
+    integral and every outline valid. It is here so that stays a checked property of the file rather
+    than a lucky one, and it costs 0.4 s on the largest group against the ~50 s dissolve above.
+    """
+    snapped = hy.projection.snap_to_grid(outline)
+    if not shapely.is_valid(snapped):
+        snapped = shapely.set_precision(outline, hy.projection.precision_meters)
+    # fallback is the rounded geometry, never the unrounded one: an outline that even set_precision
+    # cannot fix keeps integer coordinates rather than reintroducing off-lattice ones
+    fixed, held = hy.geometry.repair(np.array([snapped], dtype=object))
+    return fixed[0], int(held)
+
+
 def union_catchments(geometries):
     """The outline of a group's catchments, as one polygon.
 
@@ -78,7 +105,14 @@ def union_catchments(geometries):
         if outline.is_empty:
             return None
     outline = drop_interior_rings(outline)
-    return None if outline.is_empty else outline
+    if outline.is_empty:
+        return None
+    outline, held = snap_to_lattice(outline)
+    if held:
+        logging.warning('a group outline kept its unsnapped geometry: rounding onto the '
+                        f'{hy.projection.precision_meters:g} m grid broke it and the repair left '
+                        f'no area')
+    return None if outline is None or outline.is_empty else outline
 
 
 def sort_by_river_index(gdf, index_by_river):
@@ -99,10 +133,9 @@ logs_root = hy.paths.logs_root
 
 if __name__ == '__main__':
     # find the ID of the region to process
-    force = '--force' in sys.argv
-    args = [a for a in sys.argv[1:] if a != '--force']
+    args = sys.argv[1:]
     if len(args) != 1:
-        sys.exit('usage: 5_generate_groups.py <region> [--force]')
+        sys.exit('usage: 5_generate_groups.py <region>')
     region_number = int(args[0])
     # region = 1020000010  # Example region number
 
@@ -121,9 +154,7 @@ if __name__ == '__main__':
     if catchments_src.exists():
         # the boundary is derived from the catchments, so it is expected exactly when they are
         kinds.extend(['catchments', 'boundary'])
-    # --force exists so that a change to the row ORDER can be republished. The skip below only knows
-    # whether the files exist, and a reordering leaves every filename exactly where it was.
-    if not force and streams_src.exists() and hy.schema.group_id in pq.read_schema(streams_src).names:
+    if streams_src.exists() and hy.schema.group_id in pq.read_schema(streams_src).names:
         existing_groups = pd.read_parquet(streams_src, columns=[hy.schema.group_id])[hy.schema.group_id]
         existing_groups = sorted(existing_groups.dropna().astype(int).unique().tolist())
         expected_outputs = [
@@ -132,7 +163,13 @@ if __name__ == '__main__':
         ]
         if expected_outputs and all(p.exists() for p in expected_outputs):
             print(f'All {len(expected_outputs)} group outputs for region {region_number} already exist, skipping')
-            sys.exit(0)
+            # os._exit, not sys.exit: an ordinary exit runs pyarrow's teardown, where the global
+            # thread pool's destructor sometimes waits forever on a condition variable. Under
+            # xargs -P 5 that wedged process holds its slot and the whole pipeline stops - observed
+            # here, with every group already written and 6_concatenate_global.py never started.
+            # print is block-buffered into a pipe, so the flush is what keeps the line above.
+            sys.stdout.flush()
+            os._exit(0)
 
     # prepare directories and logging
     logs_root.mkdir(parents=True, exist_ok=True)
@@ -243,7 +280,7 @@ if __name__ == '__main__':
         # The exact outline of the group: the union of the catchments just written. It is done here
         # rather than in a later step because the polygons are already in memory - a step that came
         # back for them would re-read the largest geometry in the dataset to produce 1 row. Step 6
-        # concatenates these 125 one-row files into group=0/groups.geo.parquet.
+        # concatenates these one-row files, one per group, into group=0/groups.geo.parquet.
         catchment_part = datasets_by_group.get('catchments', {}).get(group_id)
         if catchment_part is not None and len(catchment_part):
             started = time.time()
