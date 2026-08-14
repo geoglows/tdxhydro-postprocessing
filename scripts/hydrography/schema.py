@@ -64,7 +64,9 @@ rename_map = {
     tdx_geodesic_length_field: length,
 }
 
-# columns kept from the source TDX streamnet when translating to parquet
+# columns kept from the source TDX streamnet when translating to parquet. Length stays because
+# the published metadata carries it (final_columns_to_keep) - the planar TauDEM length beside the
+# geodesic one this pipeline computes.
 tdx_standardized_columns = [
     tdx_link_field,
     tdx_ds_link_field,
@@ -72,6 +74,7 @@ tdx_standardized_columns = [
     tdx_magnitude_field,
     tdx_us_area_field,
     tdx_ds_area_field,
+    tdx_length_field,
     tdx_geodesic_length_field,
     tdx_region_field,
     lon_field,
@@ -83,7 +86,16 @@ final_columns_to_keep = [
     river_id,
     next_river_id,
     last_river_id,
-    # the index columns are added after all regions are processed - see insert_index_columns
+    # riverIndex and upstreamCount sit here, directly after the ids, so "the columns needed to
+    # walk the network" read as one contiguous run of column chunks. Both come out of step 3's
+    # own traversal. upstreamCount is region-local physics and identical everywhere. riverIndex
+    # is SCOPED: region files carry the region-local position (0..n-1 within the region), and the
+    # group-partitioned published files carry the globally unique position - step 5 re-values the
+    # column with pure offset arithmetic while splitting, because a group is one contiguous run
+    # of the region-local ordering and the global ordering is just the groups concatenated in
+    # ascending groupId. See docs/river-index.md.
+    river_index,
+    upstream_count,
     strahler_order,
     shreve_order,
     tdx_us_area_field,
@@ -99,23 +111,6 @@ final_columns_to_keep = [
 ]
 
 metadata_columns_to_keep = [c for c in final_columns_to_keep if c != geometry] + [lat_field, lon_field]
-
-
-# Derived by 3_global_stream_attributes.py once every region exists, because both are positions in a
-# single global ordering and neither of them can be known while a region is being processed alone.
-# They travel together and are kept together in the file so a client projecting "the columns needed
-# to walk the network" reads one contiguous run of column chunks. See docs/river-index.md.
-index_columns = [
-    river_index,
-    upstream_count,
-]
-
-
-def insert_index_columns(columns: list) -> list:
-    """Return `columns` with the global index columns placed directly after the id columns."""
-    remaining = [c for c in columns if c not in index_columns]
-    at = remaining.index(last_river_id) + 1
-    return remaining[:at] + list(index_columns) + remaining[at:]
 
 # ---------------------------------------------------------------------------
 # lake_table.csv controlled vocabulary

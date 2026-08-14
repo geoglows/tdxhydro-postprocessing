@@ -1,7 +1,20 @@
+"""
+Convert the source TDX-Hydro GPKGs to geoparquet and stamp the globally unique reach ids.
+
+**This step owns the global id scheme.** Every downstream step - the one-time basin generation and
+every per-release step alike - reads ids as written here and never derives them: LINKNO and
+DSLINKNO go out already offset by the region's header number (tdx_header_numbers.json is consulted
+nowhere else for ids), so a reach id is globally unique the moment the file exists. Trees
+converted before this convention carry the stamped id in a TDXHydroLinkNo column beside a local
+LINKNO instead; downstream readers accept either vintage by preferring TDXHydroLinkNo and mapping
+DSLINKNO through the file's own local-to-global pairing.
+"""
 import json
 import logging
 import os
 import sys
+import time
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 import geopandas as gpd
@@ -10,6 +23,7 @@ import shapely
 from pyproj import Geod
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import hydrography.console as console
 import hydrography.parquet as parquet
 import hydrography.paths as paths
 import hydrography.schema as schema
@@ -63,43 +77,67 @@ def _calculate_geodesic_lengths(geoms) -> np.ndarray:
     return np.where(lengths < 0.0000001, 0.01, lengths)
 
 
+def convert(gpkg: Path, tdx_header_number: int, region_number: str) -> str:
+    """One GPKG to geoparquet, ids stamped. Written aside and renamed so an interrupted run can
+    never leave a truncated file the skip check would trust."""
+    out_file_name = gpq_dir / gpkg.name.replace('.gpkg', '.parquet')
+    if out_file_name.exists():
+        return f'{gpkg.name}: already converted, skipped'
+    started = time.time()
+
+    gdf = gpd.read_file(gpkg)
+
+    if 'streamnet' in gpkg.name:
+        gdf[schema.tdx_link_field] = gdf[schema.tdx_link_field].astype(int) + (tdx_header_number * 10_000_000)
+        gdf[schema.tdx_ds_link_field] = gdf[schema.tdx_ds_link_field].astype(int)
+        gdf.loc[gdf[schema.tdx_ds_link_field] != -1, schema.tdx_ds_link_field] = gdf[schema.tdx_ds_link_field] + (tdx_header_number * 10_000_000)
+        gdf[schema.tdx_strm_order_field] = gdf[schema.tdx_strm_order_field].astype(int)
+        gdf[schema.tdx_geodesic_length_field] = _calculate_geodesic_lengths(gdf[schema.geometry].values)
+        gdf[schema.tdx_region_field] = region_number
+        # coordinate 0 of each line is the reach outlet - see add_outlet_coordinates
+        gdf = add_outlet_coordinates(gdf)
+
+        gdf = gdf[schema.tdx_standardized_columns]
+
+    else:
+        gdf[schema.tdx_link_field] = gdf[schema.basin_stream_id_field].astype(int) + (tdx_header_number * 10_000_000)
+        gdf = gdf.drop(columns=[schema.basin_stream_id_field])
+
+    # geoarrow + zstd, and deliberately not the BYTE_STREAM_SPLIT the published files use:
+    # this is the one product written before the 1 m snap, and the encoding needs the snap to
+    # pay. See hydrography/parquet.py. recompress_tdxhydro.py brings an already-converted tree
+    # up to this without going back to the gpkgs.
+    partial = out_file_name.with_name(f'{out_file_name.name}.partial')
+    parquet.write_source_geoparquet(gdf, partial)
+    partial.replace(out_file_name)
+    return f'{gpkg.name}: {len(gdf):,} rows, {time.time() - started:.0f}s -> {out_file_name.name}'
+
+
 if __name__ == '__main__':
+    console.banner('Translate TDX-Hydro to geoparquet')
     logging.info('Converting TDX-Hydro GPKG to Geoparquet')
     # add globally unique ID numbers
     with open(paths.network_data_root / 'tdxhydro_splits' / 'tdx_header_numbers.json') as f:
         tdx_header_numbers = json.load(f)
 
+    gpkgs = sorted(gpkg_dir.glob('TDX*.gpkg'), key=lambda p: p.stat().st_size, reverse=True)
+
+    # Early exit if all outputs already exist
+    expected_outputs = [gpq_dir / gpkg.name.replace('.gpkg', '.parquet') for gpkg in gpkgs]
+    if all(out.exists() for out in expected_outputs):
+        logging.info(f'All {len(expected_outputs)} output files already exist, skipping')
+        sys.exit(0)
+
     gpq_dir.mkdir(parents=True, exist_ok=True)
 
-    for gpkg in sorted(gpkg_dir.glob('TDX*.gpkg')):
-        region_number = gpkg.name.split('_')[-2]
-        tdx_header_number = int(tdx_header_numbers[str(region_number)])
-        logging.info(gpkg)
-
-        out_file_name = gpq_dir / gpkg.name.replace('.gpkg', '.parquet')
-        if out_file_name.exists():
-            continue
-
-        gdf = gpd.read_file(gpkg)
-
-        if 'streamnet' in gpkg.name:
-            gdf[schema.tdx_link_field] = gdf[schema.tdx_link_field].astype(int) + (tdx_header_number * 10_000_000)
-            gdf[schema.tdx_ds_link_field] = gdf[schema.tdx_ds_link_field].astype(int)
-            gdf.loc[gdf[schema.tdx_ds_link_field] != -1, schema.tdx_ds_link_field] = gdf[schema.tdx_ds_link_field] + (tdx_header_number * 10_000_000)
-            gdf[schema.tdx_strm_order_field] = gdf[schema.tdx_strm_order_field].astype(int)
-            gdf[schema.tdx_geodesic_length_field] = _calculate_geodesic_lengths(gdf[schema.geometry].values)
-            gdf[schema.tdx_region_field] = region_number
-            # coordinate 0 of each line is the reach outlet - see add_outlet_coordinates
-            gdf = add_outlet_coordinates(gdf)
-
-            gdf = gdf[schema.tdx_standardized_columns]
-
-        else:
-            gdf[schema.tdx_link_field] = gdf[schema.basin_stream_id_field].astype(int) + (tdx_header_number * 10_000_000)
-            gdf = gdf.drop(columns=[schema.basin_stream_id_field])
-
-        # geoarrow + zstd, and deliberately not the BYTE_STREAM_SPLIT the published files use:
-        # this is the one product written before the 1 m snap, and the encoding needs the snap to
-        # pay. See hydrography/parquet.py. recompress_tdxhydro.py brings an already-converted tree
-        # up to this without going back to the gpkgs.
-        parquet.write_source_geoparquet(gdf, out_file_name)
+    # Several files convert at once - each worker owns one GPKG end to end. The dial is memory,
+    # not cores: a basins file is ~5 GB on disk and tens of GB as a GeoDataFrame, and the
+    # largest-first order below deliberately runs the biggest files together so the tail is small
+    # files draining fast. Six workers suits the 512 GB machine this runs on; override with
+    # $TRANSLATE_JOBS for anything smaller.
+    workers = max(1, int(os.environ.get('TRANSLATE_JOBS', 6)))
+    jobs = [(g, int(tdx_header_numbers[str(g.name.split('_')[-2])]), g.name.split('_')[-2])
+            for g in gpkgs]
+    with ProcessPoolExecutor(max_workers=workers) as pool:
+        for message in pool.map(convert, *zip(*jobs)):
+            logging.info(message)

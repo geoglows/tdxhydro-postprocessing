@@ -19,7 +19,7 @@ An original reach lands in one of three buckets:
     region
 
 The keeper mapping is reconstructed by replaying the edits recorded in each
-processed region's `mods/` directory (see 2_simplify_streams.py):
+processed region's `mods/` directory (see 3_simplify_streams.py):
   - lake_edits.json         interior `delete` reaches fold into the lake `outlet`
   - coastal_orphans.json    {keeper: [members]}
   - headwater_dissolves.json{keeper: [members]}
@@ -28,7 +28,7 @@ processed region's `mods/` directory (see 2_simplify_streams.py):
 Reaches removed outright (dropped watersheds, sub-250 km^2 outlets, zero-length
 reaches) are recorded nowhere as a keeper, so they correctly fall through to <NA>.
 
-Run after 6_concatenate_global.py (needs groups/group=0/metadata.parquet under the data root).
+Run after 5_concatenate_global.py (needs groups/group=0/metadata.parquet under the data root).
 """
 import json
 import logging
@@ -110,16 +110,14 @@ def resolve_terminals(member_to_keeper: dict) -> dict:
 
 
 def read_original_ids(region_file: Path) -> np.ndarray:
-    """All original reach ids in a raw region parquet, as canonical global ids."""
+    """All original reach ids in a raw region parquet, as canonical global ids: TDXHydroLinkNo on
+    the older converted tree, the already-stamped LINKNO on files step 1 writes now (step 1 owns
+    the header arithmetic; nothing here re-derives it)."""
     try:
         return pd.read_parquet(region_file, columns=[orig_id_col])[orig_id_col].to_numpy()
     except (KeyError, ValueError):
-        # older parquet without the precomputed column: rebuild LINKNO + spacer
-        region = region_file.name.split('_')[2]
-        with open(network_data_root / 'tdxhydro_splits' / 'tdx_header_numbers.json') as f:
-            spacer = 10_000_000 * int(json.load(f)[region])
         raw = pd.read_parquet(region_file, columns=[hy.schema.tdx_link_field])
-        return (raw[hy.schema.tdx_link_field].to_numpy() + spacer).astype(np.int64)
+        return raw[hy.schema.tdx_link_field].to_numpy().astype(np.int64)
 
 
 if __name__ == '__main__':
@@ -135,7 +133,7 @@ if __name__ == '__main__':
 
     metadata_path = global_root / 'metadata.parquet'
     if not metadata_path.exists():
-        sys.exit(f'{metadata_path} not found - run 6_concatenate_global.py first')
+        sys.exit(f'{metadata_path} not found - run 5_concatenate_global.py first')
 
     # v3 survivors: the reaches that exist in the final global stream set
     survivors = pd.read_parquet(metadata_path, columns=[hy.schema.river_id])[hy.schema.river_id].to_numpy()

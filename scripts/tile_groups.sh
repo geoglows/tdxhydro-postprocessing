@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
-# Tile the group boundaries. One global file, written by 6_concatenate_global.py, so there is
+# Tile the group boundaries. One global file, written by 6_publish_basins.py from the stamped level-8 basins, so there is
 # nothing per region to fan out over.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/pipeline_env.sh"
+pipeline_banner "Tile group boundary vectors"
 
 GROUPS_PARQUET="$GROUP_ROOT/group=0/groups.geo.parquet"
 GROUPS_TILE="$GROUP_ROOT/group=0/groups.pmtiles"
 if [ ! -f "$GROUPS_PARQUET" ]; then
-    echo "no $GROUPS_PARQUET, skipping group boundary tiles (run steps 4, 5 and 6)"
+    echo "no $GROUPS_PARQUET, skipping group boundary tiles (run steps 5 and 6)"
     exit 0
 fi
 # newer-than, not exists: step 6 rewriting the parquet has to retile, and an existence check
@@ -19,8 +20,8 @@ if [ -f "$GROUPS_TILE" ] && [ ! "$GROUPS_PARQUET" -nt "$GROUPS_TILE" ]; then
     exit 0
 fi
 
-# The outlines go in exact rather than simplified - step 5 dissolves them out of an exact coverage
-# and never cuts them - so this is the only place they are generalized, which is the point. -pn is
+# The outlines go in exact rather than simplified - step 6 dissolves them from the frozen level-8 basins (band-resolution, straddlers patched exactly)
+# so the deepest zoom carries what the band resolution has. -pn is
 # what makes that safe: adjacent groups share their whole dividing edge, and simplifying the two
 # copies of it independently pulls them apart into slivers at every zoom above the deepest.
 #

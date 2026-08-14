@@ -6,24 +6,21 @@ cd "$SCRIPT_DIR" || exit 1
 
 source "pipeline_env.sh"
 
-################## prepare global tdxhydro baseline
-#"$PYTHON" 1_translate_tdxhydro.py
+################## prepare global tdxhydro baseline, basins - one-time steps, not per build
+"$PYTHON" 1_translate_tdxhydro.py
+"$PYTHON" 2_global_basins.py
 
-################## analyze streams to correct and simplify representation
-printf '%s\n' "${REGIONS[@]}" | xargs -P 12 -I{} "$PYTHON" 2_simplify_streams.py {}
-"$PYTHON" 3_global_stream_attributes.py 8
+################## analyze streams to correct and simplify representation (region-local outputs)
+################## populates the scratch/regions directory with regionally unique indices and ids
+pipeline_banner "Simplify streams"
+printf '%s\n' "${REGIONS[@]}" | xargs -P "$SIMPLIFY_JOBS" -I{} "$PYTHON" 3_simplify_streams.py {}
+pipeline_banner "Create catchments"
+printf '%s\n' "${REGIONS[@]}" | xargs -P "$CATCHMENT_JOBS" -I{} "$PYTHON" 4_create_catchments.py {}
 
-################## apply the same changes to the catchments
-printf '%s\n' "${REGIONS[@]}" | xargs -P 3 -I{} "$PYTHON" 4_create_catchments.py {}
+################## Sort the regions, apply global indices, concatenate global files and split to group files
+"$PYTHON" 5_concatenate_global.py "$CONCAT_WORKERS"
+"$PYTHON" 6_publish_basins.py
 
-################## generate group and global level files from regional files
-printf '%s\n' "${REGIONS[@]}" | xargs -P 5 -I{} "$PYTHON" 5_generate_groups.py {}
-"$PYTHON" 6_concatenate_global.py
-
-################## create nested pfafstetter style basins from catchments
-printf '%s\n' "${REGIONS[@]}" | xargs -P 4 -I{} "$PYTHON" 7_pfafstetter_basins.py {}
-
-################## pmtiles
 ./tile_streams.sh
 ./tile_catchments.sh
 ./tile_groups.sh

@@ -49,16 +49,55 @@ Two limits, both measured and both fine (see the design note):
 - Pfafstetter only cuts at tributary junctions, so a basin that is a pure chain of reaches never
   subdivides. The recursion converges well short of one basin per reach. That is not a problem:
   the deepest zoom draws individual catchments keyed by ``riverId`` and needs no code at all.
-- A handful of reaches have enormous catchments because step 2 collapses a lake's interior into
+- A handful of reaches have enormous catchments because step 3 collapses a lake's interior into
   its outlet (Superior, Baikal, Victoria, ...). Nothing can subdivide those, so a few basins stay
   large at every level.
 """
+import math
+
 import numpy as np
 import pandas as pd
 
 from . import schema, topology
 
-__all__ = ['level_targets', 'assign_basin_codes']
+__all__ = ['LEVEL_ZOOMS', 'LEAF_ZOOMS', 'zoom_tolerance', 'level_targets', 'assign_basin_codes']
+
+# ---------------------------------------------------------------------------
+# The zoom banding. One authority, because three consumers must agree on it: 2_global_basins.py
+# cuts each level's polygons at its band's tolerance, 5_concatenate_global.py cuts the leaf band,
+# and tile_catchments.sh (via `2_global_basins.py --bands`) assigns the tiles the same zooms.
+# ---------------------------------------------------------------------------
+# basin level -> (min zoom, max zoom). The coarsest level holds z0-3 because it is the first split
+# of the region and nothing exists to refine above it. There is no level 9: level 8's band spans
+# z8-9, so z9 draws the level-8 basins again, cut for z9, the finest zoom that has to look right.
+LEVEL_ZOOMS = {
+    3: (0, 3),
+    4: (4, 4),
+    5: (5, 5),
+    6: (6, 6),
+    7: (7, 7),
+    8: (8, 9),
+}
+
+# One polygon per reach from here down: the published catchments thinned for a zoom, cut by the
+# catchments step. The band ends at z10 and clients overzoom past it.
+LEAF_ZOOMS = (10, 10)
+
+# web mercator metres per pixel at z0, and the vertex spacing worth keeping: a quarter pixel at
+# the band's finest zoom, because a full-pixel error lands as a visibly moved edge about half the
+# time and leaves tippecanoe's own per-zoom simplification nothing to work with.
+MERCATOR_M_PER_PX_Z0 = 156543.03392
+PIXELS_PER_VERTEX = 0.25
+
+
+def zoom_tolerance(zoom: int, pixels: float = PIXELS_PER_VERTEX) -> float:
+    """Metres per pixel at ``zoom`` times the spacing worth keeping, rounded to a power of two.
+
+    The rounding is not cosmetic: this value is the lattice ``set_precision`` rounds vertices
+    onto, and only a power-of-two grid puts the results exactly on float64 values - which is what
+    lets the parquet encoding collapse the low coordinate bytes instead of storing noise."""
+    raw = pixels * MERCATOR_M_PER_PX_Z0 / 2 ** zoom
+    return float(max(1, 2 ** round(math.log2(raw))))
 
 
 def level_targets(first_count: int, leaf_count: int, levels: list) -> dict:
@@ -162,13 +201,20 @@ def _pfafstetter_digits(members, parent, children, ds_area, order_of_row):
     return np.array([digit[r] for r in members], dtype=np.int8)
 
 
-def assign_basin_codes(df: pd.DataFrame, levels: list, log=None) -> pd.Series:
+def assign_basin_codes(df: pd.DataFrame, levels: list, log=None, growth: float = None) -> pd.Series:
     """One digit per level for every reach, as a fixed-width string.
 
     ``df`` must hold riverId, nextRiverId, outletRiverId, areaM2, DSContArea, lat, lon and be in a
-    topological order (upstream before downstream), which is what steps 2 and 3 write. Run it on one
+    topological order (upstream before downstream), which is what steps 3 and 4 write. Run it on one
     region at a time: the coastal rule ranks whole terminal watersheds against each other, which is
     a statement about one region's coast.
+
+    ``growth`` fixes the budget ramp directly: each level is allowed ``growth`` times the basins of
+    the one above, anchored at whatever the first split realised. Left as None, the ramp is
+    ``level_targets``' instead - geometric from the first split to one basin per reach - which makes
+    the budgets a property of the network the codes are computed on. A caller freezing codes for
+    good wants them to be a property of nothing but the split radix and the zoom pyramid, which is
+    what an explicit growth gives it; ~4x is the rate a tile pyramid wants.
 
     The code is carried as a string rather than an integer because it passes 19 digits by level 12,
     so it does not fit int32 and must not become an int64 (see schema.py on why not).
@@ -187,7 +233,7 @@ def assign_basin_codes(df: pd.DataFrame, levels: list, log=None) -> pd.Series:
 
     flows = parent >= 0
     if (np.arange(n)[flows] >= parent[flows]).any():
-        raise ValueError('rows are not in a topological order; assign_basin_codes needs step 2 order')
+        raise ValueError('rows are not in a topological order; assign_basin_codes needs step 3 order')
     order_of_row = np.arange(n, dtype=np.int64)
 
     children: dict = {}
@@ -228,7 +274,8 @@ def assign_basin_codes(df: pd.DataFrame, levels: list, log=None) -> pd.Series:
         code = code + digit.astype(str).astype(object)
         realised = len(np.unique(code))
         if targets is None:
-            targets = level_targets(realised, n, list(levels))
+            targets = (level_targets(realised, n, list(levels)) if growth is None else
+                       {lv: round(realised * growth ** i) for i, lv in enumerate(list(levels))})
         if log is not None:
             log(f'level {level:>2}: {realised:>8,} basins '
                 f'(target {"-" if budget == float("inf") else f"{int(budget):,}"})  '

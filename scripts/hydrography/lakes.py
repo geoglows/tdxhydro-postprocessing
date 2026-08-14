@@ -37,7 +37,7 @@ min_lake_inlet_area = 100_000_000
 
 # Douglas-Peucker tolerance for the traced lake lines, and only for those. Every other
 # reach is published at source resolution because generalizing for a zoom is tippecanoe's
-# job (see 2_simplify_streams.py) - a tolerance baked into the file applies at every zoom
+# job (see 3_simplify_streams.py) - a tolerance baked into the file applies at every zoom
 # and can never be undone. A lake trace is different in kind: it is not a channel that was
 # surveyed, it is a synthetic line drawn across open water to show which inlet connects to
 # which outlet and which way the water goes. The meander detail it inherits from the

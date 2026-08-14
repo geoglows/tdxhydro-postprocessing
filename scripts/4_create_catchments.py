@@ -5,9 +5,9 @@ cut down to the resolution the source DEM actually has.
 Two things happen here, and they are one step because the second wants the geometry the first is
 already holding:
 
-1. **The leaf catchments.** The source basins are one polygon per original TDX reach; step 2
+1. **The leaf catchments.** The source basins are one polygon per original TDX reach; step 3
    dissolved reaches into each other, so the surviving reach's catchment is the union of the basins
-   that were folded into it. Which basins those are is read back out of the json journal step 2
+   that were folded into it. Which basins those are is read back out of the json journal step 3
    wrote, replayed in the same order.
 
 2. **A coverage pass near the source's own resolution.** ``TOLERANCE_METERS`` is a statement about
@@ -16,9 +16,13 @@ already holding:
    ~10.4 billion across the network, 12 GB on disk -- and a tolerance a few times that cell size
    takes the staircase and very little else.
 
-   Generalizing for a zoom happens in the tiling stage instead -- step 8 cuts each band, including
-   the leaf, at a tolerance derived from the zooms that band is drawn at. Nothing zoom-dependent is
-   decided here, so what is published carries the resolution the data actually has.
+   Generalizing for a zoom happens downstream -- step 5 cuts the leaf tile band while it holds
+   this file's geometry for the group split, at a tolerance derived from the zooms the band is
+   drawn at -- so what is published carries the resolution the data has.
+
+The riverIndex embedded here is the REGION-LOCAL one step 3 stamped -- this file is a scratch
+intermediate in the region's own ordering. Step 5 re-values the column to the globally unique
+riverIndex while splitting the catchments into the published group files.
 
 **What this pass does NOT do is node the coverage.** It is worth being explicit, because the
 opposite was believed for a while and it is the kind of thing that gets designed around. The raw
@@ -27,13 +31,13 @@ dissolve leaves a vertex present on one side of a shared edge and absent on the 
 published order comes out of this step with 7,999 polygons carrying invalid coverage edges and
 ``coverage_union_all`` raising a side-location conflict -- at 10, 20, 30, 50, 100 *and* 300 m alike.
 Coarsening does not help and never did. What does node a coverage is snapping it onto a lattice
-coarse enough to merge the mismatched pair, which is what step 8 does per band and why its dissolves
-mostly take the fast path.
+coarse enough to merge the mismatched pair, which is what the retired basins step did per band and
+why its dissolves mostly took the fast path.
 
-So the consumers carry the fallback rather than relying on this: ``union_catchments`` in step 5 and
-``dissolve_by`` in step 8 both try ``coverage_union_all`` and fall back to
-``hy.geometry.hierarchical_union``, which gives the same answer more slowly. The tolerance here is
-therefore free to be chosen on resolution and file size alone.
+So the consumers carry the fallback rather than relying on this: ``union_catchments`` in step 6
+tries ``coverage_union_all`` and falls back to ``hy.geometry.hierarchical_union``, which gives the
+same answer more slowly (the retired basins step's ``dissolve_by`` carried the same pair). The
+tolerance here is therefore free to be chosen on resolution and file size alone.
 
 Three properties of the geometry govern how the middle step is done, the first two measured in the
 design note:
@@ -103,23 +107,32 @@ logs_root = hy.paths.logs_root
 # and the dissolve - which was already threaded, and is only 7% of the step - gives up its threads
 # to pay for it.
 #
-# **The ceiling is memory, not cores**, and this is why the number is 2 rather than the 4 that is
-# fastest per region. Every chunk in flight holds its own GEOS copies on top of the region's WKB.
-# Measured on 1020000010 (135,159 catchments, 404M source vertices), against 566 s and ~24 GB
-# before:
+# **The ceiling is memory, not cores.** Every chunk in flight holds its own GEOS copies on top of
+# the region's WKB. Measured on 1020000010 (135,159 catchments, 404M source vertices), against
+# 566 s and ~24 GB before:
 #
 #     chunk_threads      wall     peak RSS      two of these at once
 #         1              274 s    ~25 GB  (inferred)     ~50 GB
 #         2              177 s     29.0 GB               ~58 GB
-#         4              121 s     36.7 GB               ~73 GB   - does not fit in 64 GiB
+#         4              121 s     36.7 GB               ~73 GB
 #
-# So the fastest single region is not the fastest run. Projecting those per-region times over the
-# 50 regions: 4 threads would force `-P 1` and take ~55 min, where 2 threads at `-P 2` takes ~40.
-# Process-level parallelism is also the better kind here - it overlaps one region's serial parts,
-# the WKB read and the final write, with another region's parallel ones, which threads inside a
-# single region cannot. Raise this and lower `-P` in pipeline.sh together, or the two multiply.
+# On the 64 GiB machine this was measured on, that ruled out the setting that is fastest per
+# region: 4 threads did not fit twice over, so it would have forced `-P 1` and ~55 min across the
+# 50 regions where 2 threads at `-P 2` took ~40. The trade is gone on 512 GiB - 8 jobs at 4 chunk
+# threads is ~294 GB worst case and saturates 32 cores - so the setting is now simply the fastest
+# one, and the memory table is kept because it is what says how far this can go on a given machine:
+# divide the RAM by ~37 GB to get the job ceiling, and take the lower of that and cores/4.
+#
+# Process-level parallelism is still the better kind - it overlaps one region's serial parts, the
+# WKB read and the final write, with another region's parallel ones, which threads inside a single
+# region cannot - so jobs go up before chunk_threads does.
 chunk_threads = int(os.environ.get('CATCHMENT_CHUNK_THREADS', 2))
-dissolve_threads = max(1, (os.cpu_count() or 8) // chunk_threads)
+# How many of this script are running beside each other, from pipeline_env.sh. The dissolve is 7%
+# of the step and its threads are the ones that give way: at a full fan-out this is 1, and the
+# chunks - which are the other 93% - own the machine. Defaulting to 1 job keeps a bare
+# `python 4_create_catchments.py <region>` behaving as it always did, with the whole box to itself.
+catchment_jobs = max(1, int(os.environ.get('CATCHMENT_JOBS', 1)))
+dissolve_threads = max(1, (os.cpu_count() or 8) // (chunk_threads * catchment_jobs))
 # A few times the 3.4 m cell of the 1/9 arcsec DEM the source basins were polygonised from: enough
 # to take the raster staircase, not enough to move a boundary anywhere the source could have told
 # the difference. Sub-pixel until z13.
@@ -155,7 +168,7 @@ def _load_json(path: Path) -> dict:
 
 def build_basin_edits(mods_dir: Path) -> tuple[dict, set]:
     """
-    Replay, in the same order as 2_simplify_streams.py, the id-level edits that the
+    Replay, in the same order as 3_simplify_streams.py, the id-level edits that the
     stream simplification recorded in its json side-files, expressed for basins.
 
     Returns:
@@ -313,12 +326,17 @@ def build_leaf_catchments(region_number: int, order: pd.DataFrame) -> gpd.GeoDat
     mods_dir = outputs_dir / 'mods'
 
     basins_src = tdx_root / f'TDX_streamreach_basins_{region_number}_01.parquet'
-    source = pq.read_table(basins_src, columns=[hy.schema.tdx_link_no_field])
+    # the global id as step 1 stamped it: TDXHydroLinkNo on the older converted tree, the
+    # already-global LINKNO on files step 1 writes now
+    id_column = hy.schema.tdx_link_no_field \
+        if hy.schema.tdx_link_no_field in pq.read_schema(basins_src).names \
+        else hy.schema.tdx_link_field
+    source = pq.read_table(basins_src, columns=[id_column])
     source_ids = source.column(0).to_numpy().astype(np.int64)
     del source
     logging.info(f'{len(source_ids):,} source basins in {basins_src.name}')
 
-    # replay step 2's edits to map each original basin to the reach that absorbed it
+    # replay step 3's edits to map each original basin to the reach that absorbed it
     redirect, deleted = build_basin_edits(mods_dir)
     keeper_map = {rid: resolve_keeper(rid, redirect) for rid in np.unique(source_ids)}
     keeper = pd.Series(source_ids).map(keeper_map).to_numpy()
@@ -426,16 +444,18 @@ if __name__ == '__main__':
         sys.exit('usage: 4_create_catchments.py <region_number>')
     region_number = int(args[0])
     # region_number = 1020000010  # Example region number
+    # no step banner here: this runs 50 times over under `xargs -P`, so the marker belongs to the
+    # fan-out and pipeline.sh prints it once. A region reports itself in one line.
 
     outputs_dir = region_root / f'{region_number}'
     mods_dir = outputs_dir / 'mods'
 
     catchments_output = outputs_dir / f'catchments_{region_number}.geo.parquet'
     if catchments_output.exists():
-        print(f'Catchments output {catchments_output} already exists, skipping region {region_number}')
+        print(f'region {region_number}: catchments exist, skipping')
         # os._exit, not sys.exit: pyarrow's thread pool destructor can hang at interpreter exit, and
         # this step runs under xargs, where one wedged process holds its slot and stalls the run.
-        # See 5_generate_groups.py, where it happened. The flush is because print buffers to a pipe.
+        # See 5_concatenate_global.py, where it happened. The flush is because print buffers to a pipe.
         sys.stdout.flush()
         os._exit(0)
 
@@ -453,9 +473,9 @@ if __name__ == '__main__':
         outputs_dir / f'metadata_{region_number}.parquet',
         columns=[hy.schema.river_id, hy.schema.river_index],
     )
-    logging.info(f'{len(metadata):,} reaches in the published order')
+    logging.info(f'{len(metadata):,} reaches in the region-local order')
 
     catchments = build_leaf_catchments(region_number, metadata)
     hy.parquet.write_geoparquet(catchments, catchments_output)
     logging.info(f'Catchments written to {catchments_output}')
-    print(f'region {region_number}: {len(catchments):,} catchments -> {catchments_output}')
+    print(f'region {region_number}: {len(catchments):,} catchments -> {catchments_output.name}')

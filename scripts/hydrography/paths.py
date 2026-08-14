@@ -4,9 +4,10 @@ Filesystem layout for the pipeline.
 Two directories, two environment variables, both exported by
 pipeline.sh before it runs any step:
 
-    RFS_DATA_ROOT    everything the pipeline writes
-    TDXHYDRO_ROOT    the raw TDX-Hydro geoparquet it reads, which is kept
-                     separately from the outputs
+    RFS_DATA_ROOT    everything the pipeline writes per release
+    TDXHYDRO_ROOT    the raw TDX-Hydro geoparquet the releases are built from, kept separately
+                     from the outputs, plus the one-time global basins derived from it
+                     (global_basins/) - generated once, consumed by every release
 
 Every step derives its paths from those roots, so relocating either one is a
 matter of changing the one export in that script.
@@ -45,7 +46,7 @@ def _root_from_env(var: str) -> Path:
             f'${var} is not set. It is exported by scripts/pipeline.sh, which is how these '
             f'steps are normally run. To run one on its own, set ${DATA_ROOT_VAR} and ${TDX_ROOT_VAR} '
             f'first, e.g. {DATA_ROOT_VAR}=/Users/rchales/data/rfsv3 '
-            f'{TDX_ROOT_VAR}=/Users/rchales/data/TDXHydroGeoParquet python 2_simplify_streams.py <region>'
+            f'{TDX_ROOT_VAR}=/Users/rchales/data/TDXHydroGeoParquet python 3_simplify_streams.py <region>'
         )
     return Path(value).expanduser()
 
@@ -72,3 +73,11 @@ scratch_root = data_root / 'hydrography-scratchfiles'
 region_root = scratch_root / 'regions'
 pmtiles_root = scratch_root / 'pmtiles'
 logs_root = scratch_root / 'logs'
+
+# The frozen basin definition 2_global_basins.py generates once from the raw inputs. It lives
+# INSIDE the raw tree, not under the data root, because it shares the raw data's lifecycle
+# exactly: derived from nothing but those files, consumed by every release, regenerated only if
+# the raw data itself changes. Keeping it beside its source is also what keeps it safe - the
+# scratch tree is wiped and rebuilt as a matter of course, and a permanent artifact parked there
+# was destroyed by exactly such a wipe once.
+global_basins_root = tdx_root / 'global_basins'

@@ -346,7 +346,7 @@ def merge_headwaters_order2_geom(gdf: gpd.GeoDataFrame, header_mergers: dict) ->
 
     Because every merged row's geometry is replaced below, the dissolve is told not to
     union: on region 7020000010 that union covered ~74,000 groups and was 7.8 s of the
-    31 s the whole of 2_simplify_streams.py takes, all of it thrown away here.
+    31 s the whole of 3_simplify_streams.py takes, all of it thrown away here.
     """
     keeper_geom = gdf.set_index(schema.river_id)[schema.geometry]
     merged = dissolve_groups(

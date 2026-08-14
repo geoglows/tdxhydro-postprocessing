@@ -35,8 +35,11 @@ Two things about the pyarrow API are worth knowing before touching this:
 writes - the columns have to be named by their full leaf path - and pyarrow refuses
 ``column_encoding`` unless dictionary encoding is off, which is why it is disabled here.
 """
+import json
+
 import geopandas as gpd
 import pandas as pd
+import pyarrow.parquet as pq
 import shapely
 
 __all__ = [
@@ -44,6 +47,7 @@ __all__ = [
     'GEOMETRY_ROW_GROUP_SIZE',
     'SOURCE_WRITE_OPTS',
     'SOURCE_ROW_GROUP_SIZE',
+    'concat_geoparquet',
     'write_geoparquet',
     'write_parquet',
     'write_source_geoparquet',
@@ -117,6 +121,53 @@ def write_geoparquet(gdf: gpd.GeoDataFrame, path, row_group_size=GEOMETRY_ROW_GR
         use_dictionary=False,
         **opts,
     )
+
+
+def concat_geoparquet(paths: list, out) -> int:
+    """Stack files ``write_geoparquet`` wrote into one, a row group at a time.
+
+    Never holds more than one row group, so the total size does not matter, and the parts' row
+    grouping carries through unchanged. The parts must share a schema - ``write_geoparquet`` picks
+    the geoarrow nesting from the geometry types present, so a part with no multipolygon in it is
+    written a level shallower than its neighbours - and the bbox in the output's ``geo`` metadata is
+    the union of theirs.
+    """
+    handles = [pq.ParquetFile(path) for path in paths]
+    template = handles[0].schema_arrow
+    for path, handle in zip(paths[1:], handles[1:]):
+        if not handle.schema_arrow.equals(template, check_metadata=False):
+            raise ValueError(
+                f'{path} cannot be stacked with {paths[0]}: the schemas differ.\n'
+                f'{paths[0]}: {template}\n{path}: {handle.schema_arrow}'
+            )
+
+    metadata = dict(template.metadata or {})
+    geo = json.loads(metadata[b'geo'])
+    column = geo['primary_column']
+    boxes = [json.loads(dict(h.schema_arrow.metadata)[b'geo'])['columns'][column].get('bbox')
+             for h in handles]
+    if all(box is not None for box in boxes):
+        geo['columns'][column]['bbox'] = [min(b[0] for b in boxes), min(b[1] for b in boxes),
+                                          max(b[2] for b in boxes), max(b[3] for b in boxes)]
+    metadata[b'geo'] = json.dumps(geo).encode()
+    schema = template.with_metadata(metadata)
+
+    # the coordinate leaves off the parquet schema, rather than rebuilt from the geometry type the
+    # way coordinate_columns does it: the parts already say what nesting they were written at
+    leaves = [handles[0].schema.column(i).path for i in range(len(handles[0].schema))]
+    coordinates = [leaf for leaf in leaves
+                   if leaf.startswith(f'{column}.') and leaf.rsplit('.', 1)[-1] in ('x', 'y', 'z')]
+
+    rows = 0
+    with pq.ParquetWriter(out, schema, use_dictionary=False,
+                          column_encoding={c: 'BYTE_STREAM_SPLIT' for c in coordinates},
+                          **WRITE_OPTS) as writer:
+        for handle in handles:
+            for group in range(handle.num_row_groups):
+                table = handle.read_row_group(group)
+                writer.write_table(table)
+                rows += table.num_rows
+    return rows
 
 
 def write_source_geoparquet(gdf: gpd.GeoDataFrame, path,

@@ -26,9 +26,11 @@ logs_root = hy.paths.logs_root
 if __name__ == '__main__':
     # find the ID of the region to process
     if len(sys.argv) != 2:
-        sys.exit('usage: 2_simplify_streams.py <region>')
+        sys.exit('usage: 3_simplify_streams.py <region>')
     region = int(sys.argv[1])
     # region = 1020000010  # Example region number
+    # no step banner here: this runs 50 times over under `xargs -P`, so the marker belongs to the
+    # fan-out and pipeline.sh prints it once. A region reports itself in one line.
 
     # final outputs to check for existence before computing
     final_geoparquet_output = region_root / f'{region}' / f'streams_{region}.geo.parquet'
@@ -36,9 +38,8 @@ if __name__ == '__main__':
     confluences_output = region_root / f'{region}' / f'confluences_{region}.geo.parquet'
     outputs = [final_geoparquet_output, final_metadata_output, confluences_output]
     if all(output.exists() for output in outputs):
-        print(f'All final outputs for region {region} already exist, skipping')
+        print(f'region {region}: outputs exist, skipping')
         sys.exit(0)
-    print(f'Hydrologically refining stream topology for region {region}')
 
     # prepare directories and logging
     outputs_dir = region_root / f'{region}'
@@ -53,17 +54,28 @@ if __name__ == '__main__':
     gdf = gpd.read_parquet(tdx_root / f'TDX_streamnet_{region}_01.parquet')
     logging.info(f'Initial shape: {gdf.shape}')
 
-    # add unique river ids and attributes
+    # ids exactly as step 1 stamped them: TDXHydroLinkNo where the file carries that column (the
+    # converted tree on disk), the already-global LINKNO otherwise. Downstream ids come from
+    # mapping DSLINKNO through the file's own local-to-global pairing - the identity on new-style
+    # files - so the region header arithmetic lives in 1_translate_tdxhydro.py only.
     gdf[hy.schema.area] = gdf[hy.schema.tdx_ds_area_field] - gdf[hy.schema.tdx_us_area_field]
-    with open(network_data_root / 'tdxhydro_splits' / 'tdx_header_numbers.json') as f:
-        header_numbers_lookup = json.load(f)
-    spacer = 10_000_000 * header_numbers_lookup[str(region)]
-    gdf[hy.schema.river_id] = (gdf[hy.schema.tdx_link_field] + spacer).astype(int)
-    gdf[hy.schema.next_river_id] = -1
-    gdf.loc[gdf[hy.schema.tdx_ds_link_field] != -1, hy.schema.next_river_id] = gdf[hy.schema.tdx_ds_link_field] + spacer
+    id_column = hy.schema.tdx_link_no_field if hy.schema.tdx_link_no_field in gdf.columns \
+        else hy.schema.tdx_link_field
+    gdf[hy.schema.river_id] = gdf[id_column].astype(int)
+    to_global = pd.Series(gdf[hy.schema.river_id].to_numpy(),
+                          index=gdf[hy.schema.tdx_link_field].to_numpy())
+    ds_local = gdf[hy.schema.tdx_ds_link_field].to_numpy()
+    ds_global = to_global.reindex(ds_local).to_numpy()
+    dangling = (ds_local != -1) & pd.isna(ds_global)
+    if dangling.any():
+        raise RuntimeError(f'{int(dangling.sum()):,} reach(es) flow into an id that is not in the '
+                           f'file, e.g. DSLINKNO {ds_local[dangling][:5].tolist()}')
+    gdf[hy.schema.next_river_id] = np.where(ds_local == -1, -1,
+                                            np.nan_to_num(ds_global, nan=-1)).astype(int)
     gdf = (
         gdf
-        .drop(columns=[hy.schema.tdx_link_field, hy.schema.tdx_ds_link_field, ])
+        .drop(columns=[hy.schema.tdx_link_field, hy.schema.tdx_ds_link_field], errors='ignore')
+        .drop(columns=[hy.schema.tdx_link_no_field], errors='ignore')
         .rename(columns=hy.schema.rename_map)
     )
 
@@ -144,13 +156,18 @@ if __name__ == '__main__':
     logging.info(f'After consolidating short streams, shape is {gdf.shape}')
     hy.topology.assert_topology_is_valid(gdf)
 
-    # Region-local nested-set ordering. riverIndex is NOT assigned here - it is a position in a
-    # single global ordering and cannot be known while one region is processed alone, so step 3
-    # redoes this traversal across all 50 regions at once. What this call is for is leaving the
-    # region files in a sensible topological order and stamping upstreamCount and the recomputed
-    # shreveOrder, which are region-local quantities (no reach drains across a region boundary).
+    # The nested-set ordering, run once, here. Everything it derives is region-local physics -
+    # upstreamCount and the recomputed shreveOrder cannot cross a region boundary because no reach
+    # drains across one - and the ordering itself is group-major with the same sort keys the
+    # global ordering uses, so a group is one contiguous run of these rows in exactly its final
+    # internal order. The riverIndex stamped here is therefore the REGION-LOCAL position, and the
+    # globally unique riverIndex in the published group files is nothing but this value plus the
+    # group's global offset - pure arithmetic that step 5 applies while splitting, with no second
+    # traversal anywhere.
     gdf = hy.topology.nested_set_order(gdf, bits=HILBERT_BITS)
-    logging.info(f'Ordered {len(gdf):,} reaches upstream-to-downstream')
+    gdf[hy.schema.river_index] = np.arange(len(gdf), dtype=np.int32)
+    logging.info(f'Ordered {len(gdf):,} reaches upstream-to-downstream, region-local riverIndex '
+                 f'stamped')
 
     with open(outputs_dir / 'mods' / 'lake_edits.json', 'w') as f:
         json.dump(lake_edits, f)
