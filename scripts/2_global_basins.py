@@ -1,61 +1,5 @@
 #!/usr/bin/env python
-"""
-Generate the global basin product once, deterministically, from the raw TDX-Hydro inputs.
-
-This is the step that fixes the basins for good - codes, outlet registry and polygons. Everything
-after it revises the stream network, and every revision changes what a recomputed Pfafstetter run
-would produce, mostly by reshuffling digits rather than moving boundaries (measured globally:
-96-99% of area keeps its basin at every level while literal codes fall to 64% agreement by level
-8). Generating the basins here, from the raw network and raw catchments that every future revision
-descends from, makes them a permanent fact: releases do not rebuild basins, they re-stamp them -
-step 6 duplicates these files and adds the release's ids and indices so lookups stay valid.
-
-The hierarchy starts from the TDX regions: **a region is a level-2 basin**, and level 3 is the
-first split inside one, so codes run levels 3-8, one digit per level. There is no level 9. Codes
-are assigned by hydrography/basins.py with the budget ramp fixed at ``LEVEL_GROWTH`` per level, so
-the hierarchy is a property of the raw hydrography and the pyramid rate, not of any network's
-reach count. Every region parquet in $TDXHYDRO_ROOT is processed, including regions the revision
-steps currently exclude: excluded is a revision decision, and this step is upstream of all of
-those, so a region added to a build later already has its basins.
-
-Ids are read as step 1 stamped them and never derived here: the global id is ``TDXHydroLinkNo``
-where that column exists (the converted tree on disk) and the already-stamped ``LINKNO``
-otherwise (what 1_translate_tdxhydro.py writes); downstream ids come from mapping ``DSLINKNO``
-through the file's own local-to-global pairing. The region header arithmetic lives in step 1 only.
-
-Everything goes to $TDXHYDRO_ROOT/global_basins - inside the raw tree, not the data root, because
-this product shares the raw data's lifecycle: derived from nothing else, consumed by every
-release, regenerated only if the raw data changes. See hydrography/paths.py.
-
-    writes  global_basins/pfaf_codes.parquet     TDXHydroLinkNo, TDXHydroRegion, pfafCode -
-                                                 one row per raw reach
-            global_basins/basin_outlets.parquet  TDXHydroLinkNo, TDXHydroRegion, level3..level8 -
-                                                 one row per reach that is a basin pour point
-            global_basins/parts/<region>/basins_level{2..8}_<region>.geo.parquet
-                                                 per-region polygon intermediates, resumable
-            global_basins/basins_level{2..8}.geo.parquet
-                                                 the basin polygons, one file per level
-
-The outlet table marks every pour point of every basin (a level-3 outlet is an outlet at every
-deeper level, so the columns are monotone and the rows are the level-8 outlet set). It exists to
-be the constraint the revision steps respect: feed the ids to the ``protected`` set of the
-stream-revision step at whatever depth is worth preserving.
-
-The polygons are the raw per-reach catchments dissolved by code prefix, cut per level at the
-tolerance of the finest zoom its band is drawn at (level 8 spans z8-9, so z9 draws the same
-features), and published solid: interior rings are enclaves of other coastal groups and are
-filled, with the enclave basins still present as features of their own. The leaf catchments are
-not published here - they are per-release data and stay with the release pipeline.
-
-The leaf-to-level-8 dissolve runs in the source CRS, where the TauDEM catchments share exact
-pixel-edge vertices and the union cancels shared edges cleanly; the result is projected to web
-mercator and the coarser levels telescope out of it exactly as the retired per-build step did
-(dissolve, simplify at the band tolerance, snap onto the matching power-of-two lattice, repair).
-This is hours of GEOS for the planet, once; the per-region parts make a stopped run resume
-instead of restart.
-
-    TDXHYDRO_ROOT=... RFS_DATA_ROOT=... python 2_global_basins.py
-"""
+"""Generate the global basin product once, deterministically, from the raw TDX-Hydro inputs."""
 import logging
 import os
 import sys
@@ -71,22 +15,12 @@ import shapely
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import hydrography as hy
 
-# one digit per level, level 3 (the first split of a region) through level 8, straight from the
-# shared zoom banding in hydrography/basins.py. The region itself is level 2 and needs no digit;
-# there is deliberately no level 9.
 LEVEL_ZOOMS = hy.basins.LEVEL_ZOOMS
 zoom_tolerance = hy.basins.zoom_tolerance
 LEVELS = sorted(LEVEL_ZOOMS)
 
-# Each level's basin budget is this multiple of the level above it, anchored at whatever the first
-# split realised. 4x is the tile-pyramid rate: a zoom step quadruples the tile count, so each level
-# wants ~4x the features of the one above. Fixed here rather than taking ``level_targets``' natural
-# ramp so the hierarchy depends on nothing but the split radix and the pyramid rate - the natural
-# ramp ends at one basin per raw reach, measured at a 5.8x step and 2.8M level-8 basins globally,
-# an order finer than any band would draw.
 LEVEL_GROWTH = 4.0
 
-# threads for the per-group unions; GEOS releases the GIL, so threads scale
 UNION_THREADS = max(1, os.cpu_count() or 8)
 
 out_dir = hy.paths.global_basins_root
@@ -94,7 +28,6 @@ parts_dir = out_dir / 'parts'
 codes_output = out_dir / 'pfaf_codes.parquet'
 outlets_output = out_dir / 'basin_outlets.parquet'
 
-# raw streamnet columns needed for the code assignment; geometry is deliberately absent
 RAW_COLUMNS = ['LINKNO', 'DSLINKNO', 'strmOrder', 'USContArea', 'DSContArea', 'lon', 'lat']
 
 WGS84, MERCATOR = 'EPSG:4326', 'EPSG:3857'
@@ -116,13 +49,6 @@ def outlets_part(region: str) -> Path:
 
 def write_codes_parts(region: str, raw: pd.DataFrame, codes: pd.Series,
                       outlets: pd.DataFrame) -> None:
-    """This region's rows of the two registries, so a stopped run resumes them like the polygons.
-
-    Without these the codes were the one product with no part: every rerun re-ran
-    ``assign_basin_codes`` for every region just to rebuild the two global tables at the end, ~3.5 s
-    a region on the raw network, thrown away whenever the tables were already current. The polygons
-    have resumed from parts since this step was written; now the registries do too.
-    """
     frames = (
         (pd.DataFrame({
             hy.schema.tdx_link_no_field: raw[hy.schema.river_id].to_numpy(),
@@ -141,25 +67,15 @@ def write_codes_parts(region: str, raw: pd.DataFrame, codes: pd.Series,
 
 
 def global_ids(frame: pd.DataFrame) -> np.ndarray:
-    """The globally unique reach ids step 1 stamped, whichever column vintage the file carries."""
     column = hy.schema.tdx_link_no_field if hy.schema.tdx_link_no_field in frame.columns \
         else hy.schema.tdx_link_field
     return frame[column].to_numpy().astype(np.int64)
 
 
 def load_raw_region(path: Path) -> pd.DataFrame:
-    """One raw streamnet region as the attribute frame ``assign_basin_codes`` needs, in
-    topological order, with ids exactly as step 1 stamped them.
-
-    Downstream ids come from mapping ``DSLINKNO`` through the file's own LINKNO-to-global pairing
-    (the identity on files whose LINKNO is already global), so no header arithmetic happens here.
-    The (strahler, DSContArea, id) sort is a valid upstream-before-downstream order on the raw
-    network - ``assign_basin_codes`` verifies rather than trusts that - and the outlet sweep runs
-    back-to-front so every reach copies from a downstream row already resolved.
-    """
     try:
         df = pd.read_parquet(path, columns=RAW_COLUMNS + [hy.schema.tdx_link_no_field])
-    except Exception:                                   # a new-vintage file: LINKNO is global
+    except Exception:
         df = pd.read_parquet(path, columns=RAW_COLUMNS)
     ids = global_ids(df)
     local = df[hy.schema.tdx_link_field].to_numpy().astype(np.int64)
@@ -190,8 +106,6 @@ def load_raw_region(path: Path) -> pd.DataFrame:
 
 
 def outlet_flags(raw: pd.DataFrame, codes: pd.Series) -> pd.DataFrame:
-    """Every reach whose downstream crosses a basin boundary, with one boolean per level saying at
-    which depths it is a pour point."""
     code = codes.to_numpy().astype(np.int64)
     river = raw[hy.schema.river_id].to_numpy()
     parent = hy.topology.parent_rows(river, raw[hy.schema.next_river_id].to_numpy())
@@ -206,18 +120,8 @@ def outlet_flags(raw: pd.DataFrame, codes: pd.Series) -> pd.DataFrame:
     return table[table[f'level{LEVELS[-1]}']].reset_index(drop=True)
 
 
-# ---------------------------------------------------------------------------
-# The dissolves. Same machinery the retired per-build basins step proved out.
-# ---------------------------------------------------------------------------
 def dissolve_by(geometries: np.ndarray, group: np.ndarray, workers: int = None,
                 coverage: bool = True) -> tuple:
-    """One polygon per distinct ``group`` value, group ids ascending.
-
-    ``coverage=True`` tries the edge-cancelling fast path first (right once the carry is snapped),
-    falling back per group to the general union; ``coverage=False`` goes straight to the general
-    union, which the raw leaf catchments need - they are exact but not an edge-matched coverage in
-    GEOS's eyes. The unions run across threads because GEOS releases the GIL.
-    """
     order = np.argsort(group, kind='stable')
     ordered = group[order]
     edges = np.flatnonzero(np.r_[True, ordered[1:] != ordered[:-1], True])
@@ -232,13 +136,20 @@ def dissolve_by(geometries: np.ndarray, group: np.ndarray, workers: int = None,
         if len(rows) == 1:
             merged[index] = geometries[rows[0]]
             return
+        members = geometries[rows]
         try:
-            if coverage:
-                merged[index] = shapely.coverage_union_all(geometries[rows])
+            if not coverage:
+                merged[index] = shapely.union_all(members)
+                return
+            expected = float(shapely.area(members).sum())
+            candidate = shapely.coverage_union_all(members)
+            if abs(candidate.area - expected) <= hy.geometry.coverage_area_tolerance \
+                    * max(expected, 1.0):
+                merged[index] = candidate
             else:
-                merged[index] = shapely.union_all(geometries[rows])
+                retry.append(index)
         except shapely.errors.GEOSException:
-            retry.append(index)      # list.append is atomic; no lock needed
+            retry.append(index)
 
     with ThreadPoolExecutor(max_workers=workers or UNION_THREADS) as pool:
         list(pool.map(union, range(len(blocks))))
@@ -251,45 +162,62 @@ def dissolve_by(geometries: np.ndarray, group: np.ndarray, workers: int = None,
     return keys, merged, len(retry)
 
 
-# the band cut and the lattice snap are shared with the leaf-band cut in 5_concatenate_global.py -
-# same operations, same reasons - so they live in hydrography/geometry.py
 simplify_coverage = hy.geometry.simplify_coverage
 snap = hy.geometry.snap
 
 
-def fill_holes(geometries: np.ndarray) -> tuple:
-    """Every basin polygon with its interior rings removed, and how many rings were removed.
+def close_holes(geometries: np.ndarray) -> tuple:
+    """Close each basin's interior rings, leaving open only the ground another basin stands in.
 
-    Holes are enclaves of other coastal groups; the basins are published solid, with the enclave
-    basins still present as features of their own. Runs to a fixed point because two ringless
-    parts touching at points can jointly enclose a void that only becomes a ring once the union
-    merges them; converges in a pass or two, the bound is a backstop.
+    A band is a partition of the region, so a hole in one of its basins is one of two things. Most
+    are ground the partition never claimed - a watershed this release dropped, a no-runoff basin,
+    an endorheic sink - and a basin drawn with those punched out of it reads as shrapnel. The rest
+    are a *neighbouring basin* this one happens to enclose, and closing that kind is how a basin
+    comes to claim ground another already claims.
+
+    **This used to close every ring and that was the overlap the map showed.** Measured on
+    1020011530, whose level-4 basin 89 wraps around basin 55: closing rings blind put 7,441 km2 of
+    basin 55's ground - level-8 codes 550730 and its siblings - inside basin 89 as well, which the
+    renderer paints twice. Over the whole region, per level, overlap between basins before the fill
+    against after it:
+
+        level 8     0.4 km2  ->     17.1 km2
+        level 7     1.5 km2  ->    495.2 km2
+        level 6     5.0 km2  ->  3,400.2 km2
+        level 5     3.7 km2  ->  6,874.1 km2
+        level 4     4.2 km2  -> 17,330.2 km2
+        level 3     8.4 km2  -> 98,465.5 km2
+
+    The dissolve is not what breaks: the coverage handed to this function is clean to within a few
+    km2 at every level, and the whole defect was here. ``hy.geometry.fill_holes`` is the same
+    decision made per occupant rather than per ring - a ring with something in it closes *around*
+    what stands in it, so what is added back is the hole minus that basin - and step 6 already
+    dissolves the group outlines with it. Re-measured on the same region's level-4 band, it adds
+    1.4 km2 rather than 11,425 km2 and still closes 34 of the 46 rings.
+
+    The tree is this band only, so a hole occupied by a basin in the *neighbouring region* is still
+    closed. Fixing that needs every region's band at once, which is the one thing that would make
+    these builds depend on each other; measured globally at level 4 it is 28,575 km2 against the
+    651,711 km2 this removes.
     """
-    total = 0
-    for _ in range(8):
-        parts, index = shapely.get_parts(geometries, return_index=True)
-        ring_count = np.bincount(index, weights=shapely.get_num_interior_rings(parts),
-                                 minlength=len(geometries)).astype(np.int64)
-        if not ring_count.any():
-            break
-        shells = shapely.polygons(shapely.get_exterior_ring(parts))
-        geometries = geometries.copy()
-        edges = np.flatnonzero(np.r_[True, index[1:] != index[:-1], True])
-        for start, end in zip(edges[:-1], edges[1:]):
-            i = index[start]
-            if not ring_count[i]:
-                continue
-            group = shells[start:end]
-            try:
-                geometries[i] = group[0] if end - start == 1 else shapely.union_all(group)
-            except shapely.errors.GEOSException:
-                geometries[i] = shapely.union_all(shapely.make_valid(group))
-        total += int(ring_count.sum())
-    return geometries, total
+    tree = shapely.STRtree(geometries)
+    filled = np.empty(len(geometries), dtype=object)
+    closed = trimmed = held = 0
+    for index, geometry in enumerate(geometries):
+        try:
+            filled[index], shut, around = hy.geometry.fill_holes(geometry, tree, skip=index)
+        except shapely.errors.GEOSException:
+            # one basin GEOS will not rebuild keeps its holes. That is a ragged outline for one
+            # basin, against losing the whole region - and an hour of the build - to an exception
+            # raised on the last of its seven levels
+            filled[index], held = geometry, held + 1
+            continue
+        closed += shut
+        trimmed += around
+    return filled, closed, trimmed, held
 
 
 def promote_to_multi(geometries: np.ndarray) -> np.ndarray:
-    """Every polygon as a MultiPolygon so all files share one parquet schema."""
     parts, index = shapely.get_parts(geometries, return_index=True)
     promoted = shapely.multipolygons(parts, indices=index)
     if len(promoted) != len(geometries):
@@ -297,15 +225,8 @@ def promote_to_multi(geometries: np.ndarray) -> np.ndarray:
     return promoted
 
 
-# ---------------------------------------------------------------------------
-# Per-region attribute and polygon builds
-# ---------------------------------------------------------------------------
 def basin_attributes(raw: pd.DataFrame, codes: pd.Series, outlets: pd.DataFrame,
                      level: int, k: int) -> pd.DataFrame:
-    """One row per level-``k``-prefix basin: the raw-network facts that never change - member
-    count, summed local area, max order, and the pour point (largest-drainage boundary-crossing
-    reach, ties on the lower id, the convention that names a coastal group after its dominant
-    river)."""
     code = codes.to_numpy().astype(np.int64)
     prefix = code // 10 ** (len(LEVELS) - k)
     frame = pd.DataFrame({
@@ -333,26 +254,20 @@ def basin_attributes(raw: pd.DataFrame, codes: pd.Series, outlets: pd.DataFrame,
 
 
 def write_part(frame: pd.DataFrame, geometries: np.ndarray, level: int, region: str) -> None:
-    """One region's one level, written aside and renamed so a part is whole or absent."""
-    solid, plugged = fill_holes(geometries)
-    if plugged:
-        logging.info(f'{region} level {level}: {plugged:,} enclave hole(s) filled')
-    # the shell unions in fill_holes can hand back a self-intersecting ring. Repair fixes most;
-    # where make_valid refuses, repair falls back to the holed geometry, so any basin still
-    # carrying rings afterwards gets the last resort every dissolve here shares: its shells
-    # unioned on the 1 m grid, which snap-rounding makes valid by construction
-    solid, _ = hy.geometry.repair(solid, fallback=geometries)
-    parts_of, part_index = shapely.get_parts(solid, return_index=True)
-    ringed = np.flatnonzero(np.bincount(
-        part_index, weights=shapely.get_num_interior_rings(parts_of), minlength=len(solid)) > 0)
-    for i in ringed:
-        shells = shapely.polygons(shapely.get_exterior_ring(shapely.get_parts(solid[i])))
-        solid[i] = shapely.union_all(shells, grid_size=1.0)
-    if plugged or len(ringed):
-        logging.info(f'{region} level {level}: {plugged:,} enclave hole(s) filled' + (
-            f', {len(ringed)} refilled on the 1 m grid after a failed repair' if len(ringed) else ''))
-    # a filtered frame carries a gappy index, and a gappy index gets written as a column that a
-    # region without the filter does not have - the parts must share one schema to stack
+    solid, closed, trimmed, held = close_holes(geometries)
+    if closed or trimmed:
+        logging.info(f'{region} level {level}: {closed:,} hole(s) closed outright, {trimmed:,} '
+                     f'closed around a basin standing in them')
+    if held:
+        logging.warning(f'{region} level {level}: {held:,} basin(s) kept their holes, GEOS would '
+                        f'not rebuild them')
+    # A basin whose fill will not repair keeps its holes rather than its fill. That is the safe
+    # direction: an open ring is ground this basin does not draw, which costs nothing but a
+    # ragged outline, where a bad fill is ground two basins draw. The blind 1 m refill that used
+    # to sit here undid exactly what close_holes leaves open, so it is gone.
+    solid, lost = hy.geometry.repair(solid, fallback=geometries)
+    if lost:
+        logging.info(f'{region} level {level}: {lost:,} basin(s) kept their unfilled geometry')
     basins = gpd.GeoDataFrame(frame.reset_index(drop=True),
                               geometry=promote_to_multi(solid), crs=MERCATOR)
     basins.insert(0, 'basinId', np.arange(len(basins), dtype=np.int32))
@@ -373,9 +288,6 @@ def write_part(frame: pd.DataFrame, geometries: np.ndarray, level: int, region: 
 
 def build_region_polygons(region: str, raw: pd.DataFrame, codes: pd.Series,
                           outlets: pd.DataFrame, basins_path: Path) -> None:
-    """The telescope for one region: raw catchments -> level 8 in the source CRS, then each
-    coarser level dissolved from the one below in web mercator, each level written solid at its
-    band's tolerance, ending with the region itself as level 2."""
     started = time.time()
     catchments = gpd.read_parquet(basins_path)
     cat_ids = global_ids(catchments)
@@ -387,17 +299,18 @@ def build_region_polygons(region: str, raw: pd.DataFrame, codes: pd.Series,
     full = code_of.reindex(cat_ids)
     missing = int(full.isna().sum())
     if missing:
-        # a handful of raw reaches (zero-length connectors) have no catchment and vice versa
         logging.info(f'{region}: {missing:,} catchment polygon(s) have no coded reach, dropped')
     keep = full.notna().to_numpy()
     parts = geometry.to_numpy()[keep]
     full = full.to_numpy()[keep].astype(np.int64)
     del catchments, geometry
 
-    # leaf -> level 8 in the source CRS, where the pixel-edge vertices are exact
-    keys, merged, fallbacks = dissolve_by(parts, full, coverage=False)
-    logging.info(f'{region}: leaf -> level 8, {len(keys):,} basins, {fallbacks:,} repaired, '
+    keys, merged, fallbacks = dissolve_by(parts, full, coverage=True)
+    logging.info(f'{region}: leaf -> level 8, {len(keys):,} basins, {fallbacks:,} not a coverage, '
                  f'{time.time() - started:.0f}s')
+    if fallbacks:
+        print(f'{region}: {fallbacks:,} of {len(keys):,} level-8 basins did not dissolve as a '
+              f'coverage - run 1_translate_tdxhydro.py to node this region\'s source')
     del parts
     merged = gpd.GeoSeries(merged, crs=source_crs).to_crs(MERCATOR).to_numpy()
 
@@ -414,8 +327,6 @@ def build_region_polygons(region: str, raw: pd.DataFrame, codes: pd.Series,
         snapped, _ = snap(simplified, tolerance)
         merged, _ = hy.geometry.repair(snapped, fallback=simplified)
 
-        # attributes cover every coded reach; a basin made only of catchmentless reaches has no
-        # polygon, so align on the keys the dissolve actually produced
         attributes = basin_attributes(raw, codes, outlets, level, k)
         attributes = attributes[attributes['prefix'].isin(set(keys.tolist()))]
         if not np.array_equal(attributes['prefix'].to_numpy(), keys):
@@ -424,11 +335,7 @@ def build_region_polygons(region: str, raw: pd.DataFrame, codes: pd.Series,
         logging.info(f'{region} level {level}: {len(keys):,} basins at {tolerance:,.0f} m, '
                      f'{time.time() - started:.0f}s')
 
-    # the region itself: level 2, one solid polygon, named after its largest terminal drainage
-    try:
-        footprint = shapely.coverage_union_all(merged)
-    except shapely.errors.GEOSException:
-        footprint = hy.geometry.hierarchical_union(list(merged))
+    footprint = hy.geometry.union_coverage(merged)
     terminal = raw[raw[hy.schema.next_river_id] == -1]
     biggest = terminal.sort_values([hy.schema.tdx_ds_area_field, hy.schema.river_id],
                                    ascending=[False, True]).iloc[0]
@@ -444,14 +351,13 @@ def build_region_polygons(region: str, raw: pd.DataFrame, codes: pd.Series,
 
 
 def publish_levels(regions: list) -> None:
-    """Concat every region's parts into the per-level finals, mtime-skipped per level."""
     for level in [2, *LEVELS]:
         out = level_output(level)
+        if out.exists():
+            continue
         parts = [level_output(level, r) for r in regions]
         if any(not p.exists() for p in parts):
             print(f'not writing {out.name}: a region is missing this level')
-            continue
-        if out.exists() and all(p.stat().st_mtime <= out.stat().st_mtime for p in parts):
             continue
         partial = out.with_name(f'{out.name}.partial')
         rows = hy.parquet.concat_geoparquet(parts, partial)
@@ -461,14 +367,11 @@ def publish_levels(regions: list) -> None:
 
 if __name__ == '__main__':
     if '--bands' in sys.argv:
-        # every band as "level:minzoom:maxzoom", coarsest first, leaf last, for tile_catchments.sh
-        # - the tiles and the polygons must agree on what a band is, and this is the one authority
         for level, (lo, hi) in sorted(LEVEL_ZOOMS.items()):
             print(f'{level}:{lo}:{hi}')
         print(f'leaf:{hy.basins.LEAF_ZOOMS[0]}:{hy.basins.LEAF_ZOOMS[1]}')
         sys.exit(0)
 
-    # after --bands, never before: that mode's stdout is parsed by tile_catchments.sh
     hy.console.banner('Generate global basins (one time, not per release)')
 
     streamnets = sorted(hy.paths.tdx_root.glob('TDX_streamnet_*_01.parquet'))
@@ -476,22 +379,13 @@ if __name__ == '__main__':
         sys.exit(f'no TDX_streamnet parquet found under {hy.paths.tdx_root}')
     regions = [p.name.split('_')[2] for p in streamnets]
 
-    finals = [codes_output, outlets_output] + [level_output(lv) for lv in [2, *LEVELS]]
-    parts_done = all(level_output(lv, r).exists() for r in regions for lv in [2, *LEVELS])
-    # existence is not enough for the codes: a region added to the raw tree must grow them too -
-    # caught by a sandbox run where an added region's reaches had no frozen code. The region
-    # column is dictionary-encoded, so probing it alone is cheap
-    codes_current = False
-    if codes_output.exists() and outlets_output.exists():
-        have = set(pd.read_parquet(codes_output, columns=[hy.schema.tdx_region_field])
-                   [hy.schema.tdx_region_field].unique().tolist())
-        codes_current = have == set(regions)
-        if not codes_current:
-            print(f'{codes_output.name} covers {len(have)} region(s) but the raw tree has '
-                  f'{len(regions)}; the codes and outlet registry will be rewritten')
-    if all(p.exists() for p in finals) and parts_done and codes_current:
-        print('global basins already generated, skipping (delete the files to regenerate)')
+    outputs = [codes_output, outlets_output] + [level_output(lv) for lv in [2, *LEVELS]]
+    if all(path.exists() for path in outputs):
+        # exit 0, not 1: pipeline.sh runs under `set -e`, so a step with nothing to do must report
+        # success or it aborts the whole run. sys.exit(<string>) prints to stderr and exits 1.
+        print('all outputs exist, nothing to do')
         sys.exit(0)
+    need_codes = not (codes_output.exists() and outlets_output.exists())
 
     hy.paths.logs_root.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(filename=hy.paths.logs_root / 'global_basins.log', filemode='w',
@@ -501,9 +395,8 @@ if __name__ == '__main__':
     for path, region in zip(streamnets, regions):
         t0 = time.time()
         have_polygons = all(level_output(lv, region).exists() for lv in [2, *LEVELS])
-        # ``codes_current`` covers a tree whose global tables predate the per-region code parts:
-        # the rows are already frozen in them, so there is nothing to recover for this region.
-        have_codes = (codes_part(region).exists() and outlets_part(region).exists()) or codes_current
+        have_codes = not need_codes or (codes_part(region).exists()
+                                        and outlets_part(region).exists())
         if have_polygons and have_codes:
             print(f'{region}: complete, skipped')
             continue
@@ -522,9 +415,7 @@ if __name__ == '__main__':
         build_region_polygons(region, raw, codes, outlets, basins_path)
         print(f'{region}: {len(raw):,} reaches, polygons built, {time.time() - t0:.0f}s')
 
-    if not codes_current:    # probed against the region set at the top, before any skip
-        # from the parts rather than a list built during the loop, so a region skipped as complete
-        # still contributes its rows and the planet is never all held in memory at once
+    if need_codes:
         missing = [r for r in regions if not (codes_part(r).exists() and outlets_part(r).exists())]
         if missing:
             raise RuntimeError(f'{len(missing)} region(s) have no code part: {missing[:5]}')

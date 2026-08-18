@@ -1,5 +1,6 @@
 import hydrography.basins
 import hydrography.console
+import hydrography.coverage
 import hydrography.geometry
 import hydrography.lakes
 import hydrography.paths
@@ -13,6 +14,7 @@ __all__ = [
     'streams',
     'basins',
     'console',
+    'coverage',
     'geometry',
     'lakes',
     'paths',

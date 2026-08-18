@@ -16,7 +16,9 @@ import numpy as np
 import shapely
 
 __all__ = [
+    'fill_holes',
     'hierarchical_union',
+    'union_coverage',
     'union_chunk_size',
     'polygonal',
     'repair',
@@ -83,11 +85,14 @@ def hierarchical_union(geometries, workers: int = None, chunk: int = union_chunk
     on 7020000010 straight out of step 4: an 8,000-polygon run leaves 7,999 with invalid coverage
     edges and the same side-location conflict, at 10, 20, 30, 50, 100 and 300 m alike. Coarsening
     never helped. What does is *snapping* onto a lattice coarse enough to merge the mismatched
-    vertex pair - which is why the retired basins step, whose bands were snapped, unioned 29,086 of 30,445 basins on
-    the fast path, and why step 5, whose catchments are not, mostly lands here.
+    vertex pair - which is why the retired basins step, whose bands were snapped, unioned 29,086 of
+    30,445 basins on the fast path, and why step 5, whose catchments are not, used to land here.
 
-    So a caller should still try the fast path first and keep this as the fallback, but should
-    expect to use the fallback whenever it is holding step 4's output rather than a snapped band.
+    What fixes it at the root is noding the source, which 1_translate_tdxhydro.py now does once per
+    region with GEOS 3.14's coverage cleaner (see coverage.py). On a tree that has had that, the
+    catchments are a coverage and ``union_coverage`` takes the fast path; on one that has not, it
+    lands here. So this stays the fallback and callers should reach it through ``union_coverage``
+    rather than directly.
     """
     workers = workers or os.cpu_count() or 8
     merged = list(geometries)
@@ -103,6 +108,203 @@ def hierarchical_union(geometries, workers: int = None, chunk: int = union_chunk
         geometry = shapely.union_all([g for g in shapely.get_parts(geometry)
                                       if g.geom_type in ('Polygon', 'MultiPolygon')])
     return None if geometry.is_empty else geometry
+
+
+# How far a coverage union's area may sit from the summed area of its parts before the answer is
+# thrown away. A coverage is a partition, so the two are the same number, and every way the fast
+# path goes wrong - a sliver counted twice, a sliver lost - moves it. Measured, as a relative gap:
+#
+#     cleaned group 122 catchments   0          (13,535 polygons)
+#     cleaned group 108 catchments   0          (153,602 polygons)
+#     cleaned source basins, deg2    5.2e-14    (float cancellation on numbers this small)
+#     un-noded group 122, fast path  1.0e-09    <- the answer this exists to reject
+#     un-noded group 122, exact      3.4e-11    (the parts really do overlap: it is not a coverage)
+#
+# On a coverage the two agree bit for bit, so this is set four orders above the worst clean
+# measurement and three below the defect, rather than anywhere near the middle of them.
+coverage_area_tolerance = 1e-12
+
+
+def union_coverage(geometries, workers: int = None, chunk: int = union_chunk_size):
+    """Dissolve a coverage, by edge cancellation if the input really is one and the long way if not.
+
+    ``coverage_union_all`` is the right operation for these inputs and cannot be trusted blind.
+    Handed an un-noded coverage it raises a side-location conflict on some inputs - group 108's
+    153,602 catchments - and on others it *returns*, with slivers in it: on group 122 its answer is
+    390 m2 from the exact union and ``symmetric_difference`` against that union throws
+    ``unable to assign free hole to a shell``. A silently wrong dissolve is the one outcome worth
+    spending something to avoid.
+
+    What it is not worth spending is ``coverage_is_valid``, which is the obvious gate and costs
+    more than it saves: 37.7 s on group 108 against the 40.5 s ``hierarchical_union`` it would be
+    avoiding. So the check is on the *answer* rather than the input - a coverage is a partition, so
+    its union's area is the sum of its parts' areas, and ``shapely.area`` over the array is an
+    elementwise call that threads (see ``_elementwise``). Anything the fast path gets wrong shows
+    up there.
+
+    Measured on the cleaned files, against ``hierarchical_union`` on the same input:
+    group 122 0.47 s against 4.3 s, group 108 8.0 s against 40.5 s, both to the same area.
+    """
+    geometries = np.asarray(geometries, dtype=object)
+    if not len(geometries):
+        return None
+    expected = float(_elementwise(shapely.area, geometries).sum())
+    try:
+        geometry = shapely.coverage_union_all(geometries)
+    except shapely.errors.GEOSException:
+        geometry = None
+    if geometry is not None and not geometry.is_empty:
+        if abs(geometry.area - expected) <= coverage_area_tolerance * max(expected, 1.0):
+            return geometry
+    return hierarchical_union(geometries, workers=workers, chunk=chunk)
+
+
+def _occupant(hole, tree, skip: int):
+    """Whatever in ``tree``, other than ``skip``, has area inside ``hole``. None if nothing does.
+
+    The tree predicate does the work and is prepared, so the usual answer - nothing but the ring's
+    own owner - costs a bounding-box test. An intersection is only computed for a candidate that
+    survives it, and it is an *area* test rather than a hit test because everything sharing a ring
+    intersects it: a hole's own polygon runs along its whole edge and encloses none of it.
+    """
+    if tree is None:
+        return None
+    pieces = []
+    for candidate in tree.query(hole, predicate='intersects'):
+        if candidate == skip:
+            continue
+        piece = shapely.intersection(hole, tree.geometries[candidate])
+        if shapely.area(piece) > 0:
+            pieces.append(piece)
+    if not pieces:
+        return None
+    return pieces[0] if len(pieces) == 1 else shapely.union_all(pieces)
+
+
+def fill_holes(geometry, occupied=None, skip: int = None):
+    """Close a polygon's interior rings, keeping open only the ground something else is standing on.
+
+    A dissolve of a coverage keeps a hole wherever the coverage has one, and the holes are of two
+    kinds. Most are ground the coverage never claimed - a watershed this release dropped, a
+    no-runoff basin, an endorheic sink - and an outline drawn with those punched out of it reads as
+    shrapnel rather than as the region it is meant to bound. The rest are real: another group, or
+    another part of this one, that this outline happens to enclose. Filling that kind is how an
+    outline comes to claim ground another already claims, which is the overlap the caller reports.
+
+    **The unit is the occupant, not the ring.** Deciding per ring - keep the whole hole if anything
+    at all is inside it - was measured on the 30 published outlines and is far too blunt: 196 holes
+    totalling 86,210 km2 would stay open on account of an occupant covering less than a thousandth
+    of them, which is a 1,000 km2 hole held open by a sliver. So an occupied ring is closed *around*
+    its occupant: what gets added back is the hole minus whatever stands in it, and what stays open
+    is exactly that occupant's ground. Nothing this returns can overlap anything in ``occupied``
+    that it did not already overlap, and the ring being 99.9% empty no longer decides anything.
+
+    Measured over those 30 outlines, 91 s for all of them: of 4,554 rings, 3,279 close outright and
+    1,275 close around an occupant, leaving 1,060 rings that are somebody else's ground and adding
+    128,809 km2 - against 42,598 km2 for the per-ring rule, which is the 86,210 above.
+
+    ``occupied`` is an ``STRtree`` over every outline including this one, and ``skip`` is this
+    one's index in it. The geometry's own parts are checked separately against each other, and are
+    the one occupant that is not left standing in its hole: ground this outline already owns is
+    ground it can close over, so the ring and the island in it are merged into one solid part
+    rather than emitted as two that share a line - which is not a valid MultiPolygon.
+
+    Returns the geometry, how many rings were closed outright, and how many were closed around an
+    occupant. The geometry itself comes back unrebuilt when both counts are zero.
+    """
+    if geometry is None or shapely.is_empty(geometry):
+        return geometry, 0, 0
+    parts = shapely.get_parts(geometry)
+    mine = shapely.STRtree(parts) if len(parts) > 1 else None
+    shells, pieces, neighbours, closed, trimmed = [], {}, {}, 0, 0
+    for index, part in enumerate(parts):
+        rings = list(part.interiors)
+        if not rings:
+            shells.append(part)
+            continue
+        kept = []
+        for ring in rings:
+            hole = shapely.Polygon(ring)
+            theirs = _occupant(hole, occupied, skip)
+            ours = _occupant(hole, mine, index)
+            if theirs is None and ours is None:
+                closed += 1
+                continue
+            # the ring stays, and the ground inside it that nobody else claims comes back as a
+            # piece of its own, for the union below to put back into the part it came out of
+            kept.append(ring)
+            standing = [g for g in (theirs, ours) if g is not None]
+            free = shapely.difference(hole, standing[0] if len(standing) == 1
+                                      else shapely.union_all(standing))
+            if not shapely.is_empty(free) and shapely.area(free) > 0:
+                pieces.setdefault(index, []).append(free)
+            if ours is not None:
+                # a part of this same geometry standing in this one's hole. The two have to be
+                # merged rather than emitted side by side: the piece added back runs up to that
+                # part's edge, and a MultiPolygon whose members share a line rather than a point
+                # is not a valid one
+                neighbours.setdefault(index, []).extend(
+                    int(j) for j in mine.query(hole, predicate='intersects') if j != index)
+            trimmed += 1
+        shells.append(shapely.Polygon(part.exterior, kept))
+    if not closed and not trimmed:
+        return geometry, 0, 0
+
+    # Only what interlocks gets unioned. A piece lies inside a ring of the part it came from, so
+    # everything else is already final - which is what keeps this off the whole continent: unioning
+    # each outline as a whole instead had not finished the 30 of them after 8 minutes, against 91 s
+    # for all of them this way.
+    owner = list(range(len(shells)))
+
+    def root(node: int) -> int:
+        while owner[node] != node:
+            owner[node] = owner[owner[node]]
+            node = owner[node]
+        return node
+
+    for index, standing in neighbours.items():
+        for other in standing:
+            owner[root(index)] = root(other)
+    components = {}
+    for index in range(len(shells)):
+        components.setdefault(root(index), []).append(index)
+
+    rebuilt = []
+    for members in components.values():
+        merged = [shells[i] for i in members] + [p for i in members for p in pieces.get(i, ())]
+        if len(merged) == 1:
+            rebuilt.append(merged[0])
+        else:
+            rebuilt.extend(shapely.get_parts(_union_parts(merged)))
+    filled = rebuilt[0] if len(rebuilt) == 1 else shapely.multipolygons(rebuilt)
+    return filled, closed, trimmed
+
+
+def _union_parts(merged: list):
+    """``union_all`` over a rebuilt component, escalating rather than raising.
+
+    A shell and the piece put back inside it were cut from the same ring, so they share linework
+    that is coincident and not necessarily noded, and GEOS raises a side-location conflict on it.
+    Step 6 never saw this because a group outline is a small, already-snapped thing; a region's
+    level-2 footprint is not - measured on 2020024230, whose footprint carries over a thousand
+    rings, the plain call raises at 4115114.667 8880128.
+
+    The escalation is the same one ``dissolve_by`` uses and in the same order: repair the members,
+    then round onto the 1 m grid, which merges the mismatched vertex pair that the noding is
+    missing. Only the last step moves anything, and only by less than the metre these coordinates
+    are already snapped to.
+    """
+    attempts = (lambda: shapely.union_all(merged),
+                lambda: shapely.union_all(_make_valid(np.asarray(merged, dtype=object))),
+                lambda: shapely.union_all(_make_valid(np.asarray(merged, dtype=object)),
+                                          grid_size=1.0))
+    failed = None
+    for attempt in attempts:
+        try:
+            return attempt()
+        except shapely.errors.GEOSException as error:
+            failed = error
+    raise failed
 
 
 def polygonal(geometries: np.ndarray) -> np.ndarray:

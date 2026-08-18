@@ -1,46 +1,9 @@
 #!/usr/bin/env python
-"""
-Duplicate the frozen global basins into the published dataset, stamped with this release's ids.
-
-The basins themselves - codes, polygons, raw attributes - were generated once by 2_global_basins.py
-and never change. What changes per release is the network they sit over: reaches are dropped and
-merged, and riverIndex is a position in an ordering that only exists once step 4 has run. This
-step is the bridge: it copies the per-level basin files and adds, for each basin, the release
-reach its pour point survives as - ``riverId`` and ``riverIndex`` - so a lookup that starts from a
-basin lands on a valid row of the published network, and a lookup that starts from a reach can
-climb to its basins.
-
-The mapping is the same one the revisions themselves record: a pour point that survives keeps its
-id (revised ids are raw ids); one that was folded into a keeper follows the chain in the region's
-``mods/`` journal to the surviving reach. A basin whose pour point has no release representation -
-its watershed was dropped, or its whole region is not in this release - is left out of the
-published copy and counted, because a row that cannot be looked up is not a lookup table.
-
-    reads   $TDXHYDRO_ROOT/global_basins/basins_level{2..8}.geo.parquet, the frozen product
-            hydrography/group=0/metadata.parquet, this release's ids and indices
-            regions/<region>/mods/*.json, the edit journals
-    writes  hydrography/group=0/basins_level{2..8}.geo.parquet
-            pmtiles/basin_bands/basin_level{3..8}.fgb (+ .lines.fgb), the tiling feed
-            pmtiles/basin_bands/basin_level2.lines.fgb, region boundaries, lines only
-            group=<id>/boundary_<id>.geo.parquet and group=0/groups.geo.parquet, the group
-            outlines, dissolved from the stamped level-8 basins (see below)
-
-The fgb pairs are the basin half of tile_catchments.sh's input (step 5 cuts the leaf half): the
-stamped, release-filtered basins with their attributes embedded, written where the geometry is
-already in memory. The polygons go out largest-first so a pinprick enclave is written after - and
-drawn above - the solid basin whose filled hole it sits in; the tiling passes
---preserve-input-order to keep that. Level 2 contributes boundaries only: the region divides join
-the catchment_lines layer at every zoom, but region polygons are not a drawable band.
-
-Run after 5_concatenate_global.py. Rerunning is cheap and idempotent; each level rewrites only
-when its inputs are newer than the published copy, and the band feed only when the published copy
-is newer than it.
-"""
+"""Stamp the frozen global basins with this release's ids and dissolve the group outlines."""
 import json
 import logging
 import sys
 import time
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import geopandas as gpd
@@ -54,8 +17,6 @@ import hydrography as hy
 
 LEVELS = [2, 3, 4, 5, 6, 7, 8]
 
-# what rides in the tiles: the same attribute set the old catchment tiles carried, so the map
-# style and its -j filters keep working unchanged
 BAND_COLUMNS = [hy.schema.river_id, hy.schema.river_index, 'basinId', 'level', 'pfafCode',
                 'riverCount', hy.schema.area, 'strahlerOrder']
 
@@ -63,15 +24,12 @@ band_dir = hy.paths.pmtiles_root / 'basin_bands'
 
 
 def band_paths(level: int) -> tuple:
-    """(polygon fgb, lines fgb) for a level; level 2 has no polygon band."""
     poly = band_dir / f'basin_level{level}.fgb'
     lines = band_dir / f'basin_level{level}.lines.fgb'
     return (None if level == 2 else poly), lines
 
 
 def write_band_feed(basins: gpd.GeoDataFrame, level: int) -> None:
-    """One level's tiling feed. Same writer conventions as step 5's leaf band: integer columns as
-    float64 for tippecanoe's -j reader, no spatial index, written aside and renamed."""
     band_dir.mkdir(parents=True, exist_ok=True)
     frame = basins.sort_values(hy.schema.area, ascending=False, ignore_index=True)
     frame = frame[BAND_COLUMNS + [hy.schema.geometry]].copy()
@@ -80,9 +38,6 @@ def write_band_feed(basins: gpd.GeoDataFrame, level: int) -> None:
             frame[column] = frame[column].astype('float64')
     options = dict(driver='FlatGeobuf', promote_to_multi=True, SPATIAL_INDEX='NO')
     poly, lines = band_paths(level)
-    # the aside name must keep the .fgb extension: handed anything else, GDAL's FlatGeobuf driver
-    # treats the path as a directory dataset and buries the real file one level down - pyogrio
-    # reads that back transparently, tippecanoe cannot mmap it
     if poly is not None:
         partial = poly.with_name(poly.name.replace('.fgb', '.partial.fgb'))
         pyogrio.write_dataframe(frame, partial, geometry_type='MultiPolygon', **options)
@@ -97,9 +52,6 @@ MERGE_MOD_FILES = ('coastal_orphans.json', 'headwater_dissolves.json',
 
 
 def member_to_keeper_map(region_root: Path) -> dict:
-    """Every merged-away raw reach mapped to its final surviving keeper, replayed from each
-    processed region's edit journal (lake interiors fold into their lake outlet; the merge edits
-    are already shaped {keeper: [members]}). Keeper chains are followed to their end."""
     direct = {}
     for mods in sorted(region_root.glob('*/mods')):
         with open(mods / 'lake_edits.json') as f:
@@ -125,11 +77,23 @@ def member_to_keeper_map(region_root: Path) -> dict:
 
 if __name__ == '__main__':
     hy.console.banner('Publish basins and group boundaries')
+
+    published_of = {lv: hy.paths.global_root / f'basins_level{lv}.geo.parquet' for lv in LEVELS}
+    feeds_of = {lv: [p for p in band_paths(lv) if p is not None] for lv in LEVELS}
+    boundaries_out = hy.paths.global_root / 'groups.geo.parquet'
+    outputs = [*published_of.values(), *[p for feeds in feeds_of.values() for p in feeds],
+               boundaries_out]
+    if all(path.exists() for path in outputs):
+        # exit 0, not 1: pipeline.sh runs under `set -e`, so a step with nothing to do must report
+        # success or it aborts the whole run. sys.exit(<string>) prints to stderr and exits 1.
+        print('all outputs exist, nothing to do')
+        sys.exit(0)
+
     metadata_path = hy.paths.global_root / 'metadata.parquet'
     if not metadata_path.exists():
         sys.exit(f'{metadata_path} not found - run 5_concatenate_global.py first')
     sources = {lv: hy.paths.global_basins_root / f'basins_level{lv}.geo.parquet' for lv in LEVELS}
-    missing = [p.name for p in [*sources.values(), hy.paths.global_basins_root / "pfaf_codes.parquet"] if not p.exists()]
+    missing = [p.name for p in sources.values() if not p.exists()]
     if missing:
         sys.exit(f'frozen basins missing ({", ".join(missing)}) - run 2_global_basins.py first')
 
@@ -146,13 +110,11 @@ if __name__ == '__main__':
     logging.info(f'{len(index_of):,} release reaches, {len(keeper_of):,} merged raw reaches mapped')
 
     for level in LEVELS:
-        out = hy.paths.global_root / f'basins_level{level}.geo.parquet'
+        out = published_of[level]
         published = None
-        if not (out.exists() and out.stat().st_mtime >= max(sources[level].stat().st_mtime,
-                                                            metadata_path.stat().st_mtime)):
+        if not out.exists():
             basins = gpd.read_parquet(sources[level])
             pour = basins[hy.schema.tdx_link_no_field].to_numpy().astype(np.int64)
-            # a surviving pour point is its own release reach; a merged one follows its keeper
             release = np.where(pd.Series(pour).isin(index_of.index).to_numpy(), pour,
                                pd.Series(pour).map(keeper_of).fillna(-1).to_numpy().astype(np.int64))
             release[(release != -1) & ~pd.Series(release).isin(index_of.index).to_numpy()] = -1
@@ -174,119 +136,104 @@ if __name__ == '__main__':
             print(f'level {level}: {len(published):,} of {len(basins):,} basins '
                   f'({len(basins) - len(published):,} outside this release) -> {out.name}')
 
-        # the tiling feed follows the published copy: rebuilt when it is missing or older
-        poly, lines = band_paths(level)
-        stale = any(p is not None and (not p.exists() or p.stat().st_mtime < out.stat().st_mtime)
-                    for p in (poly, lines))
-        if stale:
+        if not all(p.exists() for p in feeds_of[level]):
             if published is None:
                 published = gpd.read_parquet(out)
             write_band_feed(published, level)
-            names = ' + '.join(p.name for p in (poly, lines) if p is not None)
+            names = ' + '.join(p.name for p in feeds_of[level])
             logging.info(f'level {level}: band feed -> {names}')
             print(f'level {level}: band feed -> {names}')
-    # ------------------------------------------------------------------
-    # Group boundaries, dissolved from the stamped level-8 basins.
-    #
-    # A group is a set of whole terminal watersheds and a level-8 basin never crosses a watershed
-    # divide, so a group's outline is the union of its basins' polygons - a few hundred solid,
-    # band-simplified shapes instead of the tens of thousands of full-resolution catchments the
-    # old dissolve unioned (measured 2.5x faster on the worst group, with far fewer vertices).
-    # The exception is the handful of coastal basins whose Hilbert-bundled watersheds straddle a
-    # group border (24 of 380,745 measured): those are excluded wholly and BOTH their sides are
-    # patched exactly from the published group catchments, so no minority area lands in the wrong
-    # group. The same patch covers reaches whose basin has no published polygon at all.
-    # ------------------------------------------------------------------
-    boundaries_out = hy.paths.global_root / 'groups.geo.parquet'
-    level8_out = hy.paths.global_root / 'basins_level8.geo.parquet'
-    freshest = max(level8_out.stat().st_mtime, metadata_path.stat().st_mtime)
-    if boundaries_out.exists() and boundaries_out.stat().st_mtime >= freshest:
-        print('group boundaries newer than their inputs, skipped')
+
+    group_ids = sorted(int(g) for g in metadata[hy.schema.group_id].unique())
+    catchment_paths = {g: hy.paths.group_dir(g) / f'catchments_{g}.geo.parquet' for g in group_ids}
+    absent = [p for p in catchment_paths.values() if not p.exists()]
+    if absent:
+        sys.exit(f'{len(absent)} group catchment file(s) missing, e.g. {absent[0]} - '
+                 f'run 5_concatenate_global.py first')
+    if boundaries_out.exists():
+        print(f'{boundaries_out.name} exists, skipped')
     else:
         t0 = time.time()
-        basins8 = gpd.read_parquet(level8_out)
-        # a code names a basin only within its region, so the basin key is region + code - keyed
-        # on the bare code, identical prefixes from different regions collide into false straddlers
-        codes = pd.read_parquet(hy.paths.global_basins_root / 'pfaf_codes.parquet',
-                                columns=[hy.schema.tdx_link_no_field, hy.schema.tdx_region_field,
-                                         'pfafCode'])
-        basin_of = pd.Series((codes[hy.schema.tdx_region_field] + codes['pfafCode']).to_numpy(),
-                             index=codes[hy.schema.tdx_link_no_field].to_numpy())
-        del codes
-        reach = pd.DataFrame({
-            'basin': basin_of.reindex(metadata[hy.schema.river_id].to_numpy()).to_numpy(),
-            'group': metadata[hy.schema.group_id].to_numpy(),
-            hy.schema.river_id: metadata[hy.schema.river_id].to_numpy(),
-        })
-        if pd.isna(reach['basin']).any():
-            raise RuntimeError('a release reach has no frozen code; rerun 2_global_basins.py')
-
-        published_basins = set((basins8[hy.schema.tdx_region_field] + basins8['pfafCode']).tolist())
-        groups_per_basin = reach.groupby('basin')['group'].nunique()
-        straddlers = set(groups_per_basin[groups_per_basin > 1].index.tolist())
-        clean = reach['basin'].isin(published_basins) & ~reach['basin'].isin(straddlers)
-        patch_reaches = reach[~clean]
-        basin_group = reach[clean].groupby('basin')['group'].first()
-        logging.info(f'boundaries: {len(straddlers)} straddler basin(s); '
-                     f'{len(patch_reaches):,} reach(es) patched from catchments')
-
-        basins8['_basin'] = basins8[hy.schema.tdx_region_field] + basins8['pfafCode']
-        basins8['_group'] = basins8['_basin'].map(basin_group)
-        # a basin whose own reaches were all merged away carries a code no release reach has, so
-        # the reach contingency cannot place it - but its drainage rides in its pour's keeper, and
-        # the stamped riverId IS that keeper, so it belongs to the keeper's group (measured: 1,176
-        # of 4,980 published basins in the heaviest-merged region, 5.8% of its area)
-        keeper_group = pd.Series(metadata[hy.schema.group_id].to_numpy(),
-                                 index=metadata[hy.schema.river_id].to_numpy())
-        basins8['_group'] = basins8['_group'].fillna(
-            basins8[hy.schema.river_id].map(keeper_group))
-        by_group = {int(g): part.geometry.to_numpy()
-                    for g, part in basins8.dropna(subset=['_group']).groupby('_group')}
-        patches_by_group = {int(g): part[hy.schema.river_id].to_numpy()
-                            for g, part in patch_reaches.groupby('group')}
 
         def outline_of(group_id: int):
-            pieces = list(by_group.get(group_id, ()))
-            wanted = patches_by_group.get(group_id)
-            if wanted is not None and len(wanted):
-                catchments = gpd.read_parquet(
-                    hy.paths.group_dir(group_id) / f'catchments_{group_id}.geo.parquet',
-                    columns=[hy.schema.river_id, hy.schema.geometry],
-                    filters=[(hy.schema.river_id, 'in', wanted.tolist())])
-                pieces.extend(catchments.geometry.to_numpy())
-            if not pieces:
-                return group_id, None
-            outline = shapely.make_valid(shapely.union_all(np.array(pieces, dtype=object)))
-            # solid, on the 1 m lattice, valid - the same finishing the catchment dissolve had
-            shells = shapely.polygons(shapely.get_exterior_ring(shapely.get_parts(outline)))
-            outline = shapely.union_all(shells)
+            geometries = gpd.read_parquet(catchment_paths[group_id],
+                                          columns=[hy.schema.geometry]).geometry.to_numpy()
+            geometries, _ = hy.geometry.repair(geometries)
+            outline = hy.geometry.union_coverage(geometries)
+            if outline is None:
+                return group_id, None, len(geometries)
             snapped = hy.projection.snap_to_grid(outline)
             if not shapely.is_valid(snapped):
                 snapped = shapely.set_precision(outline, hy.projection.precision_meters)
-            fixed, _ = hy.geometry.repair(np.array([snapped], dtype=object))
-            return group_id, fixed[0]
+            fixed, _ = hy.geometry.repair(np.array([snapped], dtype=object), np.array([outline],
+                                                                                     dtype=object))
+            return group_id, fixed[0], len(geometries)
 
-        group_ids = sorted(int(g) for g in reach['group'].unique())
-        with ThreadPoolExecutor(max_workers=8) as pool:
-            outlines = dict(pool.map(lambda g: outline_of(g), group_ids))
+        outlines = {}
+        for group_id in group_ids:
+            started_group = time.time()
+            group_id, outline, count = outline_of(group_id)
+            outlines[group_id] = outline
+            logging.info(f'group {group_id}: {count:,} catchments dissolved in '
+                         f'{time.time() - started_group:.1f}s')
         empty = [g for g, o in outlines.items() if o is None or o.is_empty]
         if empty:
             raise RuntimeError(f'group(s) {empty[:5]} dissolved to nothing')
 
+        dissolved = [outlines[g] for g in group_ids]
+        tree = shapely.STRtree(dissolved)
+        filled, closed, trimmed = [], 0, 0
+        for index, group_id in enumerate(group_ids):
+            geometry, shut, around = hy.geometry.fill_holes(dissolved[index], tree, skip=index)
+            filled.append(geometry)
+            closed += shut
+            trimmed += around
+            if shut or around:
+                logging.info(f'group {group_id}: {shut:,} hole(s) closed, '
+                             f'{around:,} closed around an occupant')
+        repaired, lost = hy.geometry.repair(np.array(filled, dtype=object),
+                                            np.array(dissolved, dtype=object))
+        if lost:
+            logging.warning(f'{lost} filled outline(s) kept their unfilled geometry')
+        outlines = dict(zip(group_ids, repaired))
+        logging.info(f'{closed:,} hole(s) closed and {trimmed:,} closed around an occupant, '
+                     f'across {len(group_ids)} outlines')
+        print(f'{closed + trimmed:,} holes closed in the group outlines '
+              f'({trimmed:,} around something standing in them)')
+
+        ordered = [outlines[g] for g in group_ids]
+        tree = shapely.STRtree(ordered)
+        overlaps = []
+        for left, right in zip(*tree.query(ordered, predicate='intersects')):
+            if left >= right:
+                continue
+            area = shapely.area(shapely.intersection(ordered[left], ordered[right]))
+            if area > 0:
+                overlaps.append((area, group_ids[left], group_ids[right]))
+        if overlaps:
+            overlaps.sort(reverse=True)
+            for area, left, right in overlaps[:20]:
+                logging.warning(f'groups {left} and {right} overlap by {area / 1e6:.3f} km2')
+            print(f'WARNING: {len(overlaps)} overlapping group pair(s), '
+                  f'{sum(a for a, _, _ in overlaps) / 1e6:.3f} km2 total, worst '
+                  f'{overlaps[0][1]}/{overlaps[0][2]} at {overlaps[0][0] / 1e6:.3f} km2')
+        else:
+            logging.info(f'no overlap between any of the {len(group_ids)} group outlines')
+            print(f'{len(group_ids)} group outlines, none overlapping')
+
+        crs = f'EPSG:{hy.projection.web_mercator_epsg}'
         for group_id in group_ids:
-            boundary = gpd.GeoDataFrame(geometry=[outlines[group_id]], crs=basins8.crs)
+            boundary = gpd.GeoDataFrame(geometry=[outlines[group_id]], crs=crs)
             hy.parquet.write_geoparquet(
                 boundary, hy.paths.group_dir(group_id) / f'boundary_{group_id}.geo.parquet',
                 row_group_size=None)
         stacked = gpd.GeoDataFrame(
             {hy.schema.group_id: np.array(group_ids, dtype='int32')},
-            geometry=[outlines[g] for g in group_ids], crs=basins8.crs)
-        # one row group per row: a row is a whole continent's divide, so the usual 500 would put
-        # the entire world in a single fetch
+            geometry=[outlines[g] for g in group_ids], crs=crs)
         hy.parquet.write_geoparquet(stacked, boundaries_out, row_group_size=1)
-        logging.info(f'{len(stacked)} group boundaries from the level-8 basins in '
-                     f'{time.time() - t0:.0f}s -> {boundaries_out.name}')
-        print(f'{len(stacked)} group boundaries from the level-8 basins '
-              f'({len(straddlers)} straddler(s) patched exactly), {time.time() - t0:.0f}s')
+        logging.info(f'{len(stacked)} group boundaries dissolved from the published catchments '
+                     f'in {time.time() - t0:.0f}s -> {boundaries_out.name}')
+        print(f'{len(stacked)} group boundaries from the published catchments, '
+              f'{time.time() - t0:.0f}s')
 
     print(f'done, {time.time() - started:.0f}s')

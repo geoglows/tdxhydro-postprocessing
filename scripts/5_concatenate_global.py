@@ -1,53 +1,5 @@
 #!/usr/bin/env python
-"""
-Assemble the release: the global ordering, the published group files, and the global products,
-in one pass over the region files.
-
-This step absorbed three older ones - the global attribute stamp, the group split, and the global
-concatenation - because run separately they read and rewrote the same bytes repeatedly: the
-ordering step read every region's metadata, ran a 5.5M-node traversal, and rewrote every region's
-metadata AND streams just to stamp three columns; the group split read all of it again to write
-the published copies; the concatenation read all the metadata a third time. Merged, every region
-file is read exactly once, nothing under regions/ is ever rewritten, and every published file is
-written exactly once.
-
-**There is no global traversal.** Step 3's region-local ordering is group-major with the same sort
-keys the global ordering would use, so a group is one contiguous run of a region's rows in exactly
-its final internal order, and the global ordering is nothing but the groups concatenated in
-ascending groupId. The globally unique riverIndex is therefore pure arithmetic - the group's
-global offset plus the row's position within the group - applied to each table as it streams past
-on its way into the group files. The nested-set property that ordering exists to provide is then
-*checked* globally (the vectorized validator, O(n) numpy) rather than re-derived, which is a
-stronger guarantee at a vanishing fraction of the cost.
-
-The scope rule for riverIndex: region files carry the region-local position step 3 stamped;
-everything written here - the group-partitioned files and the group=0 products - carries the
-globally unique one. See docs/river-index.md.
-
-    reads   regions/<region>/{metadata,streams,confluences,catchments}_<region>[.geo].parquet
-    writes  group=<id>/{metadata,streams,confluences,catchments}_<id>[.geo].parquet
-            group=0/metadata.parquet and metadata.zarr, the global network
-            regions/<region>/catchments_tile_<region>.fgb (+ .lines.fgb), the leaf tile band
-
-The leaf band is cut here because this is the one place that holds a region's catchments in
-memory *and* knows their global riverIndex: the band is the published catchments thinned to what
-the leaf zooms resolve (hydrography/basins.py owns the banding), carrying the same id and index
-every other product does. Cutting it anywhere else would mean a second read of the largest
-geometry in the dataset or a band without its index.
-
-Group boundaries are NOT dissolved here any more: unioning a group's full-resolution catchments
-was this step's most expensive geometry, and the frozen level-8 basins already contain the same
-outline at band resolution - a basin never crosses a group divide except 24 measured coastal
-stragglers - so step 6, which holds the stamped basins, derives the boundaries and the
-groups.geo.parquet stack from them at a fraction of the cost.
-
-A region whose group outputs and leaf band all exist is skipped without reading any geometry, but
-only after a footer-statistics probe confirms its stamped offsets still match this run's group
-table - if the region set changed, every offset after the change is different, and an existence
-check alone would ship stale indices.
-
-    RFS_DATA_ROOT=... TDXHYDRO_ROOT=... python 5_concatenate_global.py [workers]
-"""
+"""Assemble the release: global ordering, published group files, global products, leaf tile band."""
 import logging
 import os
 import sys
@@ -72,22 +24,13 @@ group_root = hy.paths.group_root
 global_root = hy.paths.global_root
 logs_root = hy.paths.logs_root
 
-# Regions processed concurrently. The heavy work in a worker - pyogrio reads, GEOS coverage
-# simplification, arrow writes - all releases the GIL, so threads scale, and the ceiling is
-# memory: a worker holds one region's streams and catchments at once.
 WORKERS = max(1, int(os.environ.get('CONCAT_WORKERS', 8)))
 
-# how the published splits are written - see hydrography/parquet.py. Only the tables whose rows
-# carry a whole reach's geometry need the small row groups; confluences are a point per row and
-# metadata is light, so both stay on the default.
 LARGE_GEOMETRY_KINDS = {'streams', 'catchments'}
 GEOMETRY_KINDS = LARGE_GEOMETRY_KINDS | {'confluences'}
 SUFFIXES = {'metadata': '.parquet'}
+REGION_KINDS = ['metadata', 'streams', 'confluences']
 
-# the leaf band's cut tolerance - a quarter pixel at the finest zoom the band is drawn at - and
-# the chunking that keeps a whole-region coverage_simplify inside memory. Chunking is safe because
-# the pinned chunk outlines make the seams exact, and cheap only because the rows are in the
-# published order, where a contiguous run is a compact clump.
 LEAF_TOLERANCE = max(hy.basins.zoom_tolerance(hy.basins.LEAF_ZOOMS[1]), 1.0)
 LEAF_CHUNK = 20_000
 
@@ -100,14 +43,7 @@ def lines_path(path: Path) -> Path:
     return path.with_name(path.name.replace('.fgb', '.lines.fgb'))
 
 
-# ---------------------------------------------------------------------------
-# the leaf tile band (ported from the retired basins step, global index attached)
-# ---------------------------------------------------------------------------
 def write_band(gdf: gpd.GeoDataFrame, path: Path) -> None:
-    """One band as the polygon + boundary-line FlatGeobuf pair tippecanoe reads. Integer columns
-    go out as float64 because tippecanoe's fgb reader fails -j comparisons on integers and
-    silently drops the features. The aside name keeps the .fgb extension - handed anything else,
-    GDAL writes a directory dataset tippecanoe cannot mmap."""
     frame = gdf.copy()
     for column in frame.columns:
         if pd.api.types.is_integer_dtype(frame[column]):
@@ -121,9 +57,6 @@ def write_band(gdf: gpd.GeoDataFrame, path: Path) -> None:
 
 
 def cut_leaf_band(catchments: gpd.GeoDataFrame, path: Path) -> None:
-    """The published catchments thinned to the leaf band's tolerance, in place - the group files
-    are already written from the full-resolution geometry by the time this runs, and the cut copy
-    is the last thing the region needs, so mutating saves holding both."""
     started = time.time()
     parts = catchments.geometry.to_numpy()
     before = after = held = 0
@@ -148,13 +81,7 @@ def cut_leaf_band(catchments: gpd.GeoDataFrame, path: Path) -> None:
                  f'{time.time() - started:.0f}s -> {path.name}')
 
 
-# ---------------------------------------------------------------------------
-# phase 1: the group table and the global products, from the metadata alone
-# ---------------------------------------------------------------------------
 def region_group_runs(meta: pd.DataFrame, region: str) -> pd.DataFrame:
-    """One row per group in this region: (group, local start, size). Also where the two
-    region-local invariants everything downstream leans on are checked: the stamped riverIndex is
-    the row position, and every group is one contiguous run of it."""
     local = meta[hy.schema.river_index].to_numpy()
     if not np.array_equal(local, np.arange(len(meta), dtype=local.dtype)):
         raise ValueError(f'{region}: the region-local riverIndex is not the row position; '
@@ -170,26 +97,19 @@ def region_group_runs(meta: pd.DataFrame, region: str) -> pd.DataFrame:
                          'local_start': starts, 'size': sizes})
 
 
-def stamped_start(path: Path) -> int:
-    """The first riverIndex a written group part carries, from the parquet footer statistics -
-    the cheap probe that tells a skipped region its offsets are still current."""
-    metadata = pq.ParquetFile(path).metadata
-    index = metadata.schema.names.index(hy.schema.river_index)
-    statistics = metadata.row_group(0).column(index).statistics
-    return int(statistics.min) if statistics is not None else -1
+def region_outputs(region: str, runs: pd.DataFrame, has_catchments: bool) -> list:
+    kinds = REGION_KINDS + (['catchments'] if has_catchments else [])
+    paths = []
+    for run in runs.itertuples():
+        group_id = int(getattr(run, hy.schema.group_id))
+        paths += [hy.paths.group_dir(group_id) / out_name(kind, group_id) for kind in kinds]
+    if has_catchments:
+        leaf = region_root / region / f'catchments_tile_{region}.fgb'
+        paths += [leaf, lines_path(leaf)]
+    return paths
 
 
-# ---------------------------------------------------------------------------
-# phase 2: one region, read once, split into its groups, leaf band cut
-# ---------------------------------------------------------------------------
 def split_region(region: str, meta: pd.DataFrame, runs: pd.DataFrame) -> bool:
-    """Write every published file this region contributes.
-
-    ``meta`` arrives already stamped with the global riverIndex. The geometry tables never join
-    anything: streams and catchments are asserted to be row-for-row the same reaches as the
-    metadata and take their columns positionally; confluences map each junction to its reach's
-    position once and sort. Group parts are contiguous row slices after that - no hashing.
-    """
     region_dir = region_root / region
     streams = gpd.read_parquet(region_dir / f'streams_{region}.geo.parquet')
     if not np.array_equal(streams[hy.schema.river_id].to_numpy(),
@@ -261,41 +181,10 @@ def split_region(region: str, meta: pd.DataFrame, runs: pd.DataFrame) -> bool:
     return True
 
 
-def region_is_current(region: str, runs: pd.DataFrame, has_catchments: bool) -> bool:
-    """True when every file this region contributes exists and its stamped offsets match this
-    run's group table - checked from parquet footers, no geometry read."""
-    kinds = ['metadata', 'streams', 'confluences'] + (['catchments'] if has_catchments else [])
-    leaf = region_root / region / f'catchments_tile_{region}.fgb'
-    if has_catchments and not (leaf.exists() and lines_path(leaf).exists()):
-        return False
-    for run in runs.itertuples():
-        group_id = int(getattr(run, hy.schema.group_id))
-        for kind in kinds:
-            path = hy.paths.group_dir(group_id) / out_name(kind, group_id)
-            if not path.exists():
-                return False
-        probe = hy.paths.group_dir(group_id) / out_name('metadata', group_id)
-        if stamped_start(probe) != int(run.global_start):
-            logging.info(f'{region}: group {group_id} is stamped from a different group table, '
-                         f'rebuilding the region')
-            return False
-    return True
-
-
-# ---------------------------------------------------------------------------
-# what the release came out to
-# ---------------------------------------------------------------------------
 SUMMARY_KINDS = ['metadata', 'streams', 'confluences', 'catchments']
 
 
 def dataset_summary(runs: pd.DataFrame, metadata: pd.DataFrame) -> None:
-    """Print the release's headline numbers, counted off the files this step just wrote.
-
-    Every row count comes from a parquet footer - a seek and a few KB, no row group decoded - so
-    the whole dataset is counted for the price of opening the files. Counting from the footers
-    rather than from the frames still in memory is the point: it is the written bytes that ship,
-    and a group total that disagrees with the global one is a real defect this surfaces for free.
-    """
     group_ids = [int(g) for g in runs[hy.schema.group_id]]
     counts = dict.fromkeys(SUMMARY_KINDS, 0)
     sizes = dict.fromkeys(SUMMARY_KINDS, 0)
@@ -304,7 +193,7 @@ def dataset_summary(runs: pd.DataFrame, metadata: pd.DataFrame) -> None:
         for kind in SUMMARY_KINDS:
             path = hy.paths.group_dir(group_id) / out_name(kind, group_id)
             if not path.exists():
-                absent[kind] += 1  # catchments are absent whenever step 4 has not run
+                absent[kind] += 1
                 continue
             counts[kind] += pq.read_metadata(path).num_rows
             sizes[kind] += path.stat().st_size
@@ -339,7 +228,6 @@ def dataset_summary(runs: pd.DataFrame, metadata: pd.DataFrame) -> None:
     ]
 
     notes = []
-    # the group parts are the global table, partitioned - anything else means a stale group file
     if counts['metadata'] != streams and not absent['metadata']:
         notes.append(f'WARNING: group metadata totals {counts["metadata"]:,} rows against '
                      f'{streams:,} in metadata.parquet')
@@ -364,12 +252,6 @@ if __name__ == '__main__':
     started = time.time()
 
     metadata_paths = natsorted(region_root.glob('*/metadata_*.parquet'), key=str)
-    # todo pull this from a file or config? env-overridable so a partial tree can be assembled
-    # deliberately (and tested) without editing the script
-    n_regions_expected = int(os.environ.get('EXPECT_REGIONS', 50))
-    if len(metadata_paths) != n_regions_expected:
-        raise RuntimeError(f'Expected {n_regions_expected} region metadata files, '
-                           f'found {len(metadata_paths)}')
     regions = [p.parent.name for p in metadata_paths]
 
     with ThreadPoolExecutor(max_workers=WORKERS) as pool:
@@ -383,17 +265,26 @@ if __name__ == '__main__':
     logging.info(f'{len(runs)} groups over {len(regions)} regions, '
                  f'{int(runs["size"].sum()):,} reaches; global riverIndex is offset arithmetic')
 
-    # stamp the global riverIndex into each region's metadata frame, in place, no traversal
+    metadata_out = global_root / 'metadata.parquet'
+    zarr_out = global_root / 'metadata.zarr'
+    runs_by_region = {r: g for r, g in runs.groupby('region', sort=False)}
+    catchments_present = {r: (region_root / r / f'catchments_{r}.geo.parquet').exists()
+                          for r in regions}
+    outputs = [metadata_out, zarr_out]
+    for region in regions:
+        outputs += region_outputs(region, runs_by_region[region], catchments_present[region])
+    if all(path.exists() for path in outputs):
+        # exit 0, not 1: pipeline.sh runs under `set -e`, so a step with nothing to do must report
+        # success or it aborts the whole run. sys.exit(<string>) prints to stderr and exits 1.
+        print(f'all {len(outputs)} outputs exist, nothing to do')
+        sys.exit(0)
+
     for row in runs.itertuples():
         frame = frames[row.region]
         block = slice(int(row.local_start), int(row.local_start + row.size))
         frame.loc[frame.index[block], hy.schema.river_index] = np.arange(
             int(row.global_start), int(row.global_start + row.size), dtype=np.int32)
 
-    # the global frame: group slices concatenated in groupId order. riverIndex == row position by
-    # construction; everything else about the ordering is CHECKED here, vectorized, rather than
-    # re-derived - the nested-set validator proves parent-after-child, the upstreamCount blocks,
-    # and seamless watershed tiling in one pass, which also cross-checks step 3's upstreamCount
     metadata = pd.concat(
         [frames[row.region].iloc[int(row.local_start):int(row.local_start + row.size)]
          for row in runs.itertuples()], ignore_index=True)
@@ -417,16 +308,10 @@ if __name__ == '__main__':
     logging.info(f'global ordering validated: {len(metadata):,} reaches, 0 cross-group edges, '
                  f'nested-set property holds')
 
-    # the global products, written only when a region file is newer than they are
     global_root.mkdir(parents=True, exist_ok=True)
-    metadata_out = global_root / 'metadata.parquet'
-    zarr_out = global_root / 'metadata.zarr'
-    newest_region = max(p.stat().st_mtime for p in metadata_paths)
-    if not (metadata_out.exists() and zarr_out.exists()
-            and metadata_out.stat().st_mtime >= newest_region):
+    if not (metadata_out.exists() and zarr_out.exists()):
         hy.parquet.write_parquet(metadata, metadata_out)
         logging.info(f'wrote {len(metadata):,} rows -> {metadata_out.name}')
-        # the projection a client walking the network needs, chunked for range reads
         zarr_int_vars = [hy.schema.river_id, hy.schema.river_index, hy.schema.upstream_count,
                          hy.schema.next_river_id, hy.schema.last_river_id]
         zarr_float_vars = [hy.schema.lat_field, hy.schema.lon_field]
@@ -446,16 +331,11 @@ if __name__ == '__main__':
         )
         logging.info('wrote metadata.zarr')
 
-    # phase 2: regions in parallel, each read once, skipped without any geometry read when its
-    # outputs exist and their stamped offsets still match this run's group table
-    runs_by_region = {r: g for r, g in runs.groupby('region', sort=False)}
-    catchments_present = {r: (region_root / r / f'catchments_{r}.geo.parquet').exists()
-                          for r in regions}
-
     def process(region: str) -> tuple:
         region_runs = runs_by_region[region]
-        if region_is_current(region, region_runs, catchments_present[region]):
-            print(f'region {region}: outputs current, skipped')
+        if all(p.exists() for p in region_outputs(region, region_runs,
+                                                  catchments_present[region])):
+            print(f'region {region}: outputs exist, skipped')
             return region, False
         return region, split_region(region, frames[region], region_runs)
 
