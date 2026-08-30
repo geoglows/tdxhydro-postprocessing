@@ -9,9 +9,17 @@ segment you clicked, or you are in an unnamed tributary of that name". Nothing h
 reads the row order - the span sizes decide it - so the CSV's own sort is for the
 person editing it, not for this script.
 
-The CSV carries names and ids and nothing else that this file would republish: no
-drainage areas, no countries. Anything measurable about a reach already lives in the
-tiles the app draws from, and a second copy here could only go stale against them.
+The CSV is the source of truth and this script primarily restructures it. Everything
+descriptive - the name, the watershed, the country, the parent river, the bounding box -
+is read from the CSV and republished verbatim; see extras_river_name_enrich.py, which is
+what computes those columns into it. Only two things are worked out here, and both are
+properties of the published network rather than of the river: the riverIndex spans, and
+the colours.
+
+Those descriptive columns are here because a name plus a watershed does not identify a
+river. Ten names in the table are duplicated and three collide on the watershed name as
+well, so a client listing search results has nothing to tell two rows apart with. A
+country, the river it flows into, and an extent to frame are the smallest set that does.
 
 Everything upstream of a reach is one contiguous run of riverIndex, and riverIndex
 is unique across the whole published network, so a name is just an interval
@@ -48,6 +56,7 @@ import argparse
 import json
 import sys
 from collections import Counter
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -79,14 +88,18 @@ CONFLICTS = [('#34D399', '#FCA5A5')]
 def load_spans() -> pd.DataFrame:
     """Each named river as a half-open span on the global riverIndex axis."""
     names = pd.read_csv(NAMES_CSV)
-    meta = pd.concat(
-        [pd.read_parquet(hy.paths.group_dir(g) / f'metadata_{g}.parquet',
-                         columns=[hy.schema.river_id, hy.schema.river_index, hy.schema.upstream_count])
-         for g in sorted(p.name.split('=')[1] for p in hy.paths.group_root.glob('group=*')
-                         if p.name != 'group=0')],
-        ignore_index=True,
+    # The global concatenation rather than the 127 per-group files it is made of: this script
+    # already has to run after 5_concatenate_global.py, and reading one file is both the same
+    # rows and the same order that extras_river_name_enrich.py measured the bounding boxes on.
+    meta = pd.read_parquet(
+        hy.paths.global_root / 'metadata.parquet',
+        columns=[hy.schema.river_id, hy.schema.river_index, hy.schema.upstream_count],
     ).set_index(hy.schema.river_id)
 
+    for column in ('country', 'parentRiverId', 'bboxWest', 'bboxSouth', 'bboxEast', 'bboxNorth'):
+        if column not in names.columns:
+            raise SystemExit(f'{NAMES_CSV.name} has no {column} column; '
+                             f'run extras_river_name_enrich.py to compute it')
     df = names.join(meta, on='riverId')
     missing = df[df[hy.schema.river_index].isna()]
     if len(missing):
@@ -171,12 +184,44 @@ def colorize(spans: list[dict], flat: list[tuple[int, int, int | None]]) -> list
     return [color[i] for i in range(len(spans))]
 
 
+def resolve_parents(spans: list[dict], parent_ids: list) -> list[int | None]:
+    """The CSV's parentRiverId as a position in `rivers`, checked against the spans.
+
+    The parent is in the CSV because it is descriptive - it is what turns one of three
+    rivers called Verde into "the Verde that flows into the Salt" - but it is also a fact
+    about the network, so a rebuild can move a confluence and leave the column behind. The
+    containment it claims is checkable here for nothing, so it is checked: a parent that no
+    longer contains its child is a stale CSV, and shipping it would put a river under the
+    wrong one silently.
+    """
+    position = {s['riverId']: i for i, s in enumerate(spans)}
+    out: list[int | None] = []
+    for i, (span, parent_id) in enumerate(zip(spans, parent_ids)):
+        if pd.isna(parent_id):
+            out.append(None)
+            continue
+        j = position.get(int(parent_id))
+        if j is None:
+            raise SystemExit(f'{span["name"]} names parent riverId {int(parent_id)}, '
+                             f'which is not a named river')
+        parent = spans[j]
+        if not (parent['lo'] <= span['lo'] and span['hi'] <= parent['hi']):
+            raise SystemExit(f'{span["name"]} [{span["lo"]},{span["hi"]}] is not inside its stated '
+                             f'parent {parent["name"]} [{parent["lo"]},{parent["hi"]}]; rerun '
+                             f'extras_river_name_enrich.py --overwrite against this network')
+        out.append(j)
+    return out
+
+
 def main(out_path: Path) -> None:
     df = load_spans()
     spans = [dict(name=r.riverName, riverId=int(r.riverId), outletRiverId=int(r.outletRiverId),
-                  watershed=r.watershedName, lo=int(r.lo), hi=int(r.hi))
+                  watershed=r.watershedName, country=None if pd.isna(r.country) else r.country,
+                  bbox=[round(float(v), 5) for v in (r.bboxWest, r.bboxSouth, r.bboxEast, r.bboxNorth)],
+                  lo=int(r.lo), hi=int(r.hi))
              for r in df.itertuples()]
     check_nesting(spans)
+    parents = resolve_parents(spans, list(df.parentRiverId))
     flat = flatten(spans)
     colors = colorize(spans, flat)
 
@@ -188,10 +233,15 @@ def main(out_path: Path) -> None:
 
     named_reaches = sum(hi - lo + 1 for lo, hi, win in flat if win is not None)
     payload = {
+        # Stamped so a client holding a cached copy can tell one release from another without
+        # refetching the body. There is no schedule behind this file - names are added and
+        # corrected as edits accumulate - so a consumer revalidates on a clock of its own and
+        # compares this, rather than knowing when to expect a change.
+        'generatedAt': datetime.now(timezone.utc).isoformat(timespec='seconds').replace('+00:00', 'Z'),
         'palette': PALETTE,
         'unnamed': UNNAMED,
         'namedReaches': named_reaches,
-        'rivers': [dict(s, color=c) for s, c in zip(spans, colors)],
+        'rivers': [dict(s, parent=p, color=c) for s, p, c in zip(spans, parents, colors)],
         'first': stops[0],
         'bounds': bounds,
         'stops': stops[1:],
@@ -200,7 +250,9 @@ def main(out_path: Path) -> None:
     out_path.write_text(json.dumps(payload, separators=(',', ':')))
 
     total = sum(hi - lo + 1 for lo, hi, _ in flat)
-    print(f'{len(spans)} rivers in {df.outletRiverId.nunique()} watersheds')
+    print(f'{len(spans)} rivers in {df.outletRiverId.nunique()} watersheds, '
+          f'{sum(p is not None for p in parents)} of them named tributaries of another')
+    print(f'{df.country.nunique()} countries')
     print(f'{len(flat)} disjoint intervals, {len(bounds)} step boundaries')
     print(f'{named_reaches:,} named reaches of {total:,} spanned '
           f'({100 * named_reaches / total:.1f}% of the range the names cover)')
