@@ -25,4 +25,4 @@ printf '%s\n' "${REGIONS[@]}" | xargs -P "$CATCHMENT_JOBS" -I{} "$PYTHON" 4_crea
 
 ################## Optional extra things to generate
 #"$PYTHON" extras_identify_id_map.py
-#"$PYTHON" extras_river_name_ranges.py
+"$PYTHON" extras_river_name_ranges.py
