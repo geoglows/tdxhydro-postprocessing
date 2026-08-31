@@ -1,15 +1,18 @@
-name: tdxhydrorapid
+name: hydrography
 channels:
 - conda-forge
 - defaults
 dependencies:
-  - python=3.11
-  - geopandas
+  - geopandas>=1.0
+  - natsort
   - netcdf4
+  - networkx
   - numpy
+  - openpyxl
   - pandas
   - shapely>=2
+  - pyarrow
   - pyproj
+  - python>=3.14
   - dask
   - xarray
-  - scikit-learn
