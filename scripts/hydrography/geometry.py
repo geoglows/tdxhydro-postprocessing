@@ -2,7 +2,7 @@
 Geometry reductions that are too slow done the obvious way, and the repair every one of them needs.
 
 The reduction is unioning a very large set of adjacent polygons into their outline, which is what
-turns a group's catchments into the group's boundary.
+turns a region's catchments into the region's boundary.
 
 The repair is ``repair``: the polygons these steps produce are routinely self-intersecting, because
 both ways of cheapening a coverage - simplifying its shared edges, rounding its vertices onto a
@@ -26,7 +26,7 @@ __all__ = [
     'snap',
 ]
 
-# How many polygons one parallel union task takes. Measured on a 6,771-catchment group: 64/256/1024
+# How many polygons one parallel union task takes. Measured on a 6,771-catchment dissolve: 64/256/1024
 # ran in 13.5/10.9/11.8 s, so the curve is flat and the only thing that matters is that it is
 # neither 1 nor everything.
 union_chunk_size = 256
@@ -68,16 +68,15 @@ def hierarchical_union(geometries, workers: int = None, chunk: int = union_chunk
 
     Two reasons this beats a single ``shapely.union_all`` over the whole set. Each chunk cancels the
     interior edges of its own neighbourhood, so every round hands the next one far fewer edges than
-    it received - on one group, 12.3M input vertices collapse to 931k. And ``union_all`` releases the
-    GIL inside GEOS, so the chunks genuinely run in parallel rather than taking turns.
+    it received - on one dissolve, 12.3M input vertices collapse to 931k. And ``union_all`` releases
+    the GIL inside GEOS, so the chunks genuinely run in parallel rather than taking turns.
 
-    Measured on group 719 (718 when this was measured - see network_data/group_renumbering.csv;
-    6,771 catchments, 12.3M vertices): 36.5 s for the single call against
+    Measured on a 6,771-catchment dissolve (12.3M vertices): 36.5 s for the single call against
     10.9 s for chunks of 256 across 16 threads, and the results are identical - same vertex count,
     same area to the last bit. It is a scheduling change, not an approximation.
 
     ``shapely.coverage_union_all`` is faster still, and whether it is usable depends entirely on
-    which catchments these are. On the *raw* ones it is not: measured on the same group, 6,769 of
+    which catchments these are. On the *raw* ones it is not: measured on the same set, 6,769 of
     the 6,771 have invalid coverage edges, and GEOS raises a side-location conflict at every
     precision tried, including the 1 m grid the geometry is already snapped to.
 
@@ -114,11 +113,11 @@ def hierarchical_union(geometries, workers: int = None, chunk: int = union_chunk
 # thrown away. A coverage is a partition, so the two are the same number, and every way the fast
 # path goes wrong - a sliver counted twice, a sliver lost - moves it. Measured, as a relative gap:
 #
-#     cleaned group 122 catchments   0          (13,535 polygons)
-#     cleaned group 108 catchments   0          (153,602 polygons)
+#     cleaned, 13,535 catchments     0
+#     cleaned, 153,602 catchments    0
 #     cleaned source basins, deg2    5.2e-14    (float cancellation on numbers this small)
-#     un-noded group 122, fast path  1.0e-09    <- the answer this exists to reject
-#     un-noded group 122, exact      3.4e-11    (the parts really do overlap: it is not a coverage)
+#     un-noded 13,535, fast path     1.0e-09    <- the answer this exists to reject
+#     un-noded 13,535, exact         3.4e-11    (the parts really do overlap: it is not a coverage)
 #
 # On a coverage the two agree bit for bit, so this is set four orders above the worst clean
 # measurement and three below the defect, rather than anywhere near the middle of them.
@@ -129,21 +128,34 @@ def union_coverage(geometries, workers: int = None, chunk: int = union_chunk_siz
     """Dissolve a coverage, by edge cancellation if the input really is one and the long way if not.
 
     ``coverage_union_all`` is the right operation for these inputs and cannot be trusted blind.
-    Handed an un-noded coverage it raises a side-location conflict on some inputs - group 108's
-    153,602 catchments - and on others it *returns*, with slivers in it: on group 122 its answer is
-    390 m2 from the exact union and ``symmetric_difference`` against that union throws
+    Handed an un-noded coverage it raises a side-location conflict on some inputs - a 153,602
+    catchment dissolve - and on others it *returns*, with slivers in it: on a 13,535 catchment one
+    its answer is 390 m2 from the exact union and ``symmetric_difference`` against that union throws
     ``unable to assign free hole to a shell``. A silently wrong dissolve is the one outcome worth
     spending something to avoid.
 
     What it is not worth spending is ``coverage_is_valid``, which is the obvious gate and costs
-    more than it saves: 37.7 s on group 108 against the 40.5 s ``hierarchical_union`` it would be
-    avoiding. So the check is on the *answer* rather than the input - a coverage is a partition, so
+    more than it saves: 37.7 s on those 153,602 catchments against the 40.5 s
+    ``hierarchical_union`` it would be avoiding. So the check is on the *answer* rather than the input - a coverage is a partition, so
     its union's area is the sum of its parts' areas, and ``shapely.area`` over the array is an
     elementwise call that threads (see ``_elementwise``). Anything the fast path gets wrong shows
     up there.
 
+    The area gate is necessary and not sufficient: the fast path also returns answers whose area
+    is exact to the bit and whose rings are pinched - a ring that touches itself has the area it
+    should - and it does it often. Measured on step 6's outlines, every catchment valid going in:
+    three of them came back with the right area and ``Self-intersection``. So validity is part of
+    the same check on the answer, at 0.24 s on a 238,509-catchment outline against the 12.4 s
+    union itself.
+
+    A pinched ring is repaired rather than thrown away, because the answer is otherwise the one
+    wanted: on one of those three ``make_valid`` costs 12.0 s against the 16.9 s
+    ``hierarchical_union`` that would replace it, and the two land 0.2 parts per billion apart. Only an answer repair
+    empties - which would mean it was never the union - falls through to the long way.
+
     Measured on the cleaned files, against ``hierarchical_union`` on the same input:
-    group 122 0.47 s against 4.3 s, group 108 8.0 s against 40.5 s, both to the same area.
+    13,535 catchments 0.47 s against 4.3 s, 153,602 catchments 8.0 s against 40.5 s, both to the
+    same area.
     """
     geometries = np.asarray(geometries, dtype=object)
     if not len(geometries):
@@ -153,9 +165,13 @@ def union_coverage(geometries, workers: int = None, chunk: int = union_chunk_siz
         geometry = shapely.coverage_union_all(geometries)
     except shapely.errors.GEOSException:
         geometry = None
-    if geometry is not None and not geometry.is_empty:
-        if abs(geometry.area - expected) <= coverage_area_tolerance * max(expected, 1.0):
+    if geometry is not None and not geometry.is_empty \
+            and abs(geometry.area - expected) <= coverage_area_tolerance * max(expected, 1.0):
+        if shapely.is_valid(geometry):
             return geometry
+        repaired = polygonal(_make_valid(np.array([geometry], dtype=object)))[0]
+        if repaired is not None and not repaired.is_empty:
+            return repaired
     return hierarchical_union(geometries, workers=workers, chunk=chunk)
 
 
@@ -187,8 +203,8 @@ def fill_holes(geometry, occupied=None, skip: int = None):
     A dissolve of a coverage keeps a hole wherever the coverage has one, and the holes are of two
     kinds. Most are ground the coverage never claimed - a watershed this release dropped, a
     no-runoff basin, an endorheic sink - and an outline drawn with those punched out of it reads as
-    shrapnel rather than as the region it is meant to bound. The rest are real: another group, or
-    another part of this one, that this outline happens to enclose. Filling that kind is how an
+    shrapnel rather than as the region it is meant to bound. The rest are real: another outline,
+    or another part of this one, that this outline happens to enclose. Filling that kind is how an
     outline comes to claim ground another already claims, which is the overlap the caller reports.
 
     **The unit is the occupant, not the ring.** Deciding per ring - keep the whole hole if anything
@@ -285,8 +301,8 @@ def _union_parts(merged: list):
 
     A shell and the piece put back inside it were cut from the same ring, so they share linework
     that is coincident and not necessarily noded, and GEOS raises a side-location conflict on it.
-    Step 6 never saw this because a group outline is a small, already-snapped thing; a region's
-    level-2 footprint is not - measured on 2020024230, whose footprint carries over a thousand
+    Step 6 never saw this because the outline it dissolves is built from published catchments that
+    are already snapped to the 1 m grid; a region's level-2 footprint out of the raw basins is not - measured on 2020024230, whose footprint carries over a thousand
     rings, the plain call raises at 4115114.667 8880128.
 
     The escalation is the same one ``dissolve_by`` uses and in the same order: repair the members,

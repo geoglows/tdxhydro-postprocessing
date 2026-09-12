@@ -160,20 +160,21 @@ def nested_set_order(gdf: gpd.GeoDataFrame, bits: int = 16) -> gpd.GeoDataFrame:
     entirely and would violate about half the edges; that is not what this does.
 
     A topological sort is not unique, and which valid linearization is chosen decides how the whole
-    published dataset behaves. Three nested levels of blocking are imposed, each on a different axis:
+    published dataset behaves. Two nested levels of blocking are imposed, each on a different axis:
 
-    1. **groups, by groupId.** No reach drains across a group boundary, so whole groups can be
-       ordered freely. Doing it this way gives every group one contiguous riverIndex range, which is
-       what lets a routing engine treat a group file as a dense array whose local index is
-       ``riverIndex - riverIndexStart``. Ordering by anything else fragments them: measured on the
-       published network before this change, the groups (125 of them at the time, 127 now) occupied
-       625 separate runs.
-    2. **terminal watersheds within a group, by the Hilbert index of the outlet.** Watersheds are
-       disjoint components, so this too is unconstrained, and putting neighbouring basins next to
-       each other in the file is what keeps the geometry compressible and the tiles coherent.
-    3. **reaches within a watershed, depth-first post-order, descending the largest subtree first.**
+    1. **terminal watersheds, by the Hilbert index of the outlet.** Watersheds are disjoint
+       components, so their order among themselves is unconstrained, and putting neighbouring
+       basins next to each other in the file is what keeps the geometry compressible and the tiles
+       coherent.
+    2. **reaches within a watershed, depth-first post-order, descending the largest subtree first.**
 
-    Level 3 is the one that decides routing performance, and it is not a heuristic. In post-order a
+    This runs per level-2 region, and the region is the only partition the release has, so there is
+    no third, coarser key to block on: step 5 concatenates the regions in ascending region number
+    and every region therefore lands as one contiguous riverIndex range, which is what lets a
+    routing engine treat a region file as a dense array whose local index is
+    ``riverIndex - riverIndexStart``.
+
+    Level 2 is the one that decides routing performance, and it is not a heuristic. In post-order a
     parent is emitted immediately after its last child, so a child sits ``1 + (total size of every
     sibling subtree emitted after it)`` slots ahead of the parent it feeds. Summing that over one
     junction gives ``k + sum_j size_j * (j - 1)``, which is minimised by giving the largest subtree
@@ -196,7 +197,7 @@ def nested_set_order(gdf: gpd.GeoDataFrame, bits: int = 16) -> gpd.GeoDataFrame:
       contiguous interval. Because post-order puts the root last, that interval is precisely
       ``[position - upstreamCount, position]``.
 
-    Caller must have lon/lat and groupId populated; the geometry is not consulted.
+    Caller must have lon/lat populated; the geometry is not consulted.
     """
     n = len(gdf)
     if n == 0:
@@ -214,7 +215,7 @@ def nested_set_order(gdf: gpd.GeoDataFrame, bits: int = 16) -> gpd.GeoDataFrame:
     hilbert = hilbert_index(gdf[schema.lon_field].to_numpy(), gdf[schema.lat_field].to_numpy(), bits)
     # riverId last in both lists so the ordering is fully determined and a rebuild is reproducible
     kids, offsets = _child_lists(parent_row, [-subtree, -gdf[schema.tdx_ds_area_field].to_numpy(), river])
-    roots = roots[np.lexsort((river[roots], hilbert[roots], gdf[schema.group_id].to_numpy()[roots]))]
+    roots = roots[np.lexsort((river[roots], hilbert[roots]))]
     out = _depth_first_postorder(kids, offsets, roots, n)
 
     gdf = gdf.iloc[out].reset_index(drop=True)
@@ -261,8 +262,8 @@ def recompute_outlets(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     riverId/nextRiverId topology, without re-sorting or renumbering
     topologySortedOrder. Use this after edits that create new outlets (e.g. a
     zero-length outlet being removed repoints its upstreams to -1) so the stale
-    outlet ids left behind are corrected. Only outletRiverId is written; groupId and
-    every other column are untouched.
+    outlet ids left behind are corrected. Only outletRiverId is written; every other
+    column is untouched.
     """
     G = networkx.DiGraph()
     G.add_edges_from(gdf[[schema.river_id, schema.next_river_id]].values)

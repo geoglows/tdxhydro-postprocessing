@@ -9,7 +9,6 @@ river_index = 'riverIndex'
 upstream_count = 'upstreamCount'
 next_river_id = 'nextRiverId'
 last_river_id = 'outletRiverId'
-group_id = 'groupId'
 topo_sort = 'topologySortedOrder'
 strahler_order = 'strahlerOrder'
 shreve_order = 'shreveOrder'
@@ -89,11 +88,10 @@ final_columns_to_keep = [
     # riverIndex and upstreamCount sit here, directly after the ids, so "the columns needed to
     # walk the network" read as one contiguous run of column chunks. Both come out of step 3's
     # own traversal. upstreamCount is region-local physics and identical everywhere. riverIndex
-    # is SCOPED: region files carry the region-local position (0..n-1 within the region), and the
-    # group-partitioned published files carry the globally unique position - step 5 re-values the
-    # column with pure offset arithmetic while splitting, because a group is one contiguous run
-    # of the region-local ordering and the global ordering is just the groups concatenated in
-    # ascending groupId. See docs/river-index.md.
+    # is SCOPED: the scratch region files carry the region-local position (0..n-1 within the
+    # region), and the published files carry the globally unique position - step 5 re-values the
+    # column with pure offset arithmetic while publishing, because the global ordering is just
+    # the regions concatenated in ascending level-2 region number. See docs/river-index.md.
     river_index,
     upstream_count,
     strahler_order,
@@ -103,7 +101,6 @@ final_columns_to_keep = [
     area,
     tdx_length_field,
     tdx_region_field,
-    group_id,
     static_musk_k,
     static_musk_x,
     static_velocity_factor,
@@ -135,23 +132,23 @@ trace_inlet_field = 'trace_inlet'
 #  - It is what the v3 zarr stores already use for `riverId`, so the two agree.
 #
 # Every value fits with room to spare: the largest riverId is 820,422,448 against int32's
-# 2,147,483,647, riverIndex tops out at the reach count, and groupId is three digits. enforce_int32
-# checks rather than assumes, so a future id scheme that outgrows the range fails the build instead
-# of silently wrapping into negative ids.
+# 2,147,483,647 and riverIndex tops out at the reach count. enforce_int32 checks rather than
+# assumes, so a future id scheme that outgrows the range fails the build instead of silently
+# wrapping into negative ids. The level-2 region number is deliberately NOT in this list: at ten
+# digits it does not fit, which is why TDXHydroRegion stays the string the source gives it as.
 int32_columns = (
     river_id,
     next_river_id,
     last_river_id,
     river_index,
     upstream_count,
-    group_id,
     strahler_order,
     shreve_order,
 )
 
 
 def enforce_int32(df: pd.DataFrame) -> pd.DataFrame:
-    """Downcast the id, index, group and order columns to int32 in place, refusing to wrap."""
+    """Downcast the id, index and order columns to int32 in place, refusing to wrap."""
     limits = np.iinfo(np.int32)
     for column in int32_columns:
         if column not in df.columns:

@@ -20,6 +20,10 @@ dependencies = [
     "xarray",
     "zarr>=3.2.1",
     "s3fs>=2026.6.0",
+    # the lake revision app: a shared review server behind a Cloudflare tunnel
+    "fastapi",
+    "uvicorn",
+    "websockets",
 ]
 
 [tool.uv]

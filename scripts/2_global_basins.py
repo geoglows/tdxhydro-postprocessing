@@ -62,7 +62,7 @@ def write_codes_parts(region: str, raw: pd.DataFrame, codes: pd.Series,
     for frame, path in frames:
         path.parent.mkdir(parents=True, exist_ok=True)
         partial = path.with_name(f'{path.name}.partial')
-        hy.parquet.write_parquet(frame, partial, index=False)
+        hy.parquet.write_parquet(frame, partial, index=False, row_group_size=None)
         partial.replace(path)
 
 
@@ -192,7 +192,7 @@ def close_holes(geometries: np.ndarray) -> tuple:
     km2 at every level, and the whole defect was here. ``hy.geometry.fill_holes`` is the same
     decision made per occupant rather than per ring - a ring with something in it closes *around*
     what stands in it, so what is added back is the hole minus that basin - and step 6 already
-    dissolves the group outlines with it. Re-measured on the same region's level-4 band, it adds
+    dissolves the region outlines with it. Re-measured on the same region's level-4 band, it adds
     1.4 km2 rather than 11,425 km2 and still closes 34 of the 46 rings.
 
     The tree is this band only, so a hole occupied by a basin in the *neighbouring region* is still
@@ -431,7 +431,7 @@ if __name__ == '__main__':
         out_dir.mkdir(parents=True, exist_ok=True)
         for frame, output in ((codes, codes_output), (outlets, outlets_output)):
             partial = output.with_name(f'{output.name}.partial')
-            hy.parquet.write_parquet(frame, partial, index=False)
+            hy.parquet.write_parquet(frame, partial, index=False, row_group_size=None)
             partial.replace(output)
         print(f'{len(codes):,} reaches coded, {len(outlets):,} outlet reaches '
               f'-> {codes_output.name}, {outlets_output.name}')

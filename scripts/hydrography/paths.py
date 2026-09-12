@@ -14,11 +14,18 @@ matter of changing the one export in that script.
 
 Under the data root, the published dataset and the working files are kept apart:
 
-    hydrography/group=<id>/     the deliverable - one directory per group, in the
-                                hive-style naming the published dataset uses
+    hydrography/region=<id>/    the deliverable - one directory per HydroBASINS level-2
+                                region, in the hive-style naming the published dataset uses
+    hydrography/global/         the products that span every region - metadata.parquet,
+                                metadata.zarr, the joined pmtiles
     hydrography-scratchfiles/   per-region intermediates, per-region pmtiles and
-                                logs - everything the group files are built from,
+                                logs - everything the published files are built from,
                                 which no consumer of the dataset needs
+
+The level-2 region is the only partition the dataset has. It is the unit the raw TDX-Hydro
+comes in, the unit every step processes, and the unit the release publishes, so a reach's
+region can be read off its directory, its filename and its TDXHydroRegion column alike, and
+no reach ever drains out of the region it is filed under.
 
 There are deliberately no defaults here: the orchestrator owns the values, and a
 step run without them should say so rather than quietly build a second copy of
@@ -34,7 +41,7 @@ from pathlib import Path
 DATA_ROOT_VAR = 'RFS_DATA_ROOT'
 TDX_ROOT_VAR = 'TDXHYDRO_ROOT'
 
-# version controlled inputs: groupIds_table.csv, lake_table.csv, dropped_watersheds/, tdxhydro_splits/
+# version controlled inputs: lake_table.csv, dropped_watersheds/, tdxhydro_splits/
 repo_root = Path(__file__).resolve().parents[2]
 network_data_root = repo_root / 'network_data'
 
@@ -57,18 +64,18 @@ data_root = _root_from_env(DATA_ROOT_VAR)
 # outside the data root and moves independently of it
 tdx_root = _root_from_env(TDX_ROOT_VAR)
 
-# the published dataset: one hive-style directory per group
-group_root = data_root / 'hydrography'
-global_root = group_root / 'group=0'  # global files are published as the group 0 dataset
+# the published dataset: one hive-style directory per level-2 region, plus the global products
+publish_root = data_root / 'hydrography'
+global_root = publish_root / 'global'
 
 
-def group_dir(group_id) -> Path:
-    """The directory a group's files are published in. Hive-style so a reader can
-    partition on groupId without the column being written into the files."""
-    return group_root / f'group={group_id}'
+def publish_dir(region) -> Path:
+    """The directory a region's published files go in. Hive-style so a reader can partition
+    on the level-2 region without reading a column to do it."""
+    return publish_root / f'region={region}'
 
 
-# working files: everything the group files are built from, kept out of the deliverable
+# working files: everything the published files are built from, kept out of the deliverable
 scratch_root = data_root / 'hydrography-scratchfiles'
 region_root = scratch_root / 'regions'
 pmtiles_root = scratch_root / 'pmtiles'

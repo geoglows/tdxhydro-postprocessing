@@ -41,7 +41,7 @@ things: the pairs the palette cannot separate never land on rivers that touch, a
 each name takes the least-used colour still open to it, so the map does not come out
 lopsided.
 
-Publishes one JSON beside the global pmtiles, in group=0, because that is where the
+Publishes one JSON beside the global pmtiles, in global/, because that is where the
 explorer reads it from - the same origin and the same release as the tiles whose
 riverIndex values it is written against. Bundling it into the app instead would let
 the two drift apart silently: the spans would keep pointing at reach numbers the
@@ -50,7 +50,7 @@ published network no longer uses.
 Cheap enough to rerun whenever a name is added or the network is rebuilt, and it
 always overwrites - unlike the numbered pipeline steps, there is no output check
 here, because being out of date is the only way this file can be wrong. Reads the
-published group metadata, so run it after 5_concatenate_global.py.
+published region metadata, so run it after 5_concatenate_global.py.
 """
 import argparse
 import itertools
@@ -88,10 +88,57 @@ LAST_RESORT_SLOT = None
 CONFLICTS = [(1, 2)]
 
 
+# every column of river_names.csv that names a reach by id, and so has to be resolved together
+ID_COLUMNS = ('riverId', 'outletRiverId', 'parentRiverId')
+
+
+def resolve_ids(names: pd.DataFrame, published) -> pd.DataFrame:
+    """Point every id in the CSV at the reach that carries its water in *this* network.
+
+    The CSV names reaches by their source id, and simplification moves which reach survives: a
+    named reach short enough for step 3 to consolidate is folded into its downstream keeper and
+    its id stops existing. Writing the keeper's id back into the CSV would be wrong - it is a
+    fact about one run of step 3, not about the river - so the id stays as the source gives it
+    and is resolved here instead, against the record step 3 leaves in the scratch tree.
+
+    Every id column moves together. ``parentRiverId`` names another row by its riverId, so
+    resolving one without the other would break the parent lookup in ``resolve_parents``.
+    ``outletRiverId`` is included for completeness rather than because it has ever drifted: an
+    outlet has nothing downstream to be folded into, so it should be stable, and resolving it
+    costs nothing if it is.
+    """
+    ids = set(published)
+    unresolved = sorted({int(i) for column in ID_COLUMNS for i in names[column].dropna()
+                         if int(i) not in ids})
+    if not unresolved:
+        return names
+    if not hy.edits.mods_dirs():
+        raise SystemExit(
+            f'{len(unresolved)} row(s) in {NAMES_CSV.name} name a reach that is not in the '
+            f'published network, and {hy.paths.region_root} is empty so the edits that would say '
+            f'what replaced them cannot be read. The scratch tree from the build that produced '
+            f'this network has to be present.')
+    survivor = hy.edits.survivors()
+    moved = {i: survivor[i] for i in unresolved if survivor.get(i) in ids}
+    for column in ID_COLUMNS:
+        keep = names[column].notna()
+        names.loc[keep, column] = names.loc[keep, column].astype('int64').map(
+            lambda i: moved.get(i, i))
+    if moved:
+        print(f'  {len(moved)} reach(es) named by {NAMES_CSV.name} were consolidated away; '
+              f'resolved to the reach that '
+              f'absorbed them:', file=sys.stderr)
+        for old_id, new_id in moved.items():
+            who = names.loc[names['riverId'] == new_id, 'riverName']
+            label = who.iloc[0] if len(who) else '?'
+            print(f'    {label}: {old_id} -> {new_id}', file=sys.stderr)
+    return names
+
+
 def load_spans() -> pd.DataFrame:
     """Each named river as a half-open span on the global riverIndex axis."""
     names = pd.read_csv(NAMES_CSV)
-    # The global concatenation rather than the 127 per-group files it is made of: this script
+    # The global concatenation rather than the per-region files it is made of: this script
     # already has to run after 5_concatenate_global.py, and reading one file is both the same
     # rows and the same order that extras_river_name_enrich.py measured the bounding boxes on.
     meta = pd.read_parquet(
@@ -106,12 +153,16 @@ def load_spans() -> pd.DataFrame:
                              f'run extras_river_name_enrich.py to compute it')
     # Only the span columns are joined: meta also carries lat/lon, which the CSV has under the
     # same names, and those are read separately below rather than renamed around each other.
+    names = resolve_ids(names, meta.index)
     df = names.join(meta[[hy.schema.river_index, hy.schema.upstream_count,
                           hy.schema.next_river_id]], on='riverId')
     missing = df[df[hy.schema.river_index].isna()]
     if len(missing):
-        raise SystemExit(f'{len(missing)} rows in {NAMES_CSV.name} are not in the published network:\n'
-                         f'{missing[["riverName", "riverId"]].to_string(index=False)}')
+        raise SystemExit(
+            f'{len(missing)} row(s) in {NAMES_CSV.name} name a reach that is not in the published '
+            f'network and was not folded into one - it was removed outright, so no reach carries '
+            f'its water. Drop the row, or stop dropping the watershed:\n'
+            f'{missing[["riverName", "riverId"]].to_string(index=False)}')
     df['lo'] = (df[hy.schema.river_index] - df[hy.schema.upstream_count]).astype(int)
     df['hi'] = df[hy.schema.river_index].astype(int)
     # Where each named river's water goes when it leaves its own span. A span is everything upstream

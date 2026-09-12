@@ -6,10 +6,10 @@ PYTHON="$SCRIPT_DIR/../.venv/bin/python"
 export RFS_DATA_ROOT="/Users/rchales/data/rfsv3"
 export TDXHYDRO_ROOT="/Users/rchales/data/TDXHydroGeoParquet"
 export TDXHYDRO_GPKG_DIR="/Users/rchales/data/tdxhydrogeopackages/gpkgs"
-export GROUP_ROOT="$RFS_DATA_ROOT/hydrography"
+export PUBLISH_ROOT="$RFS_DATA_ROOT/hydrography"
 export SCRATCH_ROOT="$RFS_DATA_ROOT/hydrography-scratchfiles"
 
-mkdir -p "$GROUP_ROOT/group=0"
+mkdir -p "$PUBLISH_ROOT/global"
 mkdir -p "$SCRATCH_ROOT/pmtiles"
 mkdir -p "$SCRATCH_ROOT/regions"
 
@@ -20,6 +20,7 @@ export SIMPLIFY_JOBS="${SIMPLIFY_JOBS:-24}"
 export CATCHMENT_JOBS="${CATCHMENT_JOBS:-8}"
 export CATCHMENT_CHUNK_THREADS="${CATCHMENT_CHUNK_THREADS:-4}"
 export CONCAT_WORKERS="${CONCAT_WORKERS:-8}"
+export BOUNDARY_JOBS="${BOUNDARY_JOBS:-8}"
 export STREAM_JOBS="${STREAM_JOBS:-10}"
 export TILE_JOBS="${TILE_JOBS:-10}"
 
@@ -28,6 +29,7 @@ REGIONS=(
     1020011530
     1020018110
     1020021940
+    1020027430
     1020034170
     1020035180
     1020040190

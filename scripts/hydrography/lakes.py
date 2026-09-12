@@ -24,11 +24,16 @@ from . import schema
 
 __all__ = [
     'lake_outlets',
+    'outlet_links',
+    'apply_outlet_links',
     'find_lake_edits',
     'apply_lake_edits',
 ]
 
 lake_table_path = paths.network_data_root / 'lake_table.csv'
+
+# Hand-written links across a lake's own water surface. See :func:`apply_outlet_links`.
+outlet_links_path = paths.network_data_root / 'lake_outlet_links.csv'
 
 # An inlet whose drainage area (DSContArea, the contributing area at its downstream
 # end where it meets the lake) is below this is too small to keep as its own routed
@@ -104,6 +109,66 @@ def lake_outlets(gdf: gpd.GeoDataFrame) -> set:
     """
     lake_table = pd.read_csv(lake_table_path)
     return set(lake_table[schema.outlet_field]) & set(gdf[schema.river_id])
+
+
+def outlet_links(gdf: gpd.GeoDataFrame) -> pd.DataFrame:
+    """The rows of ``lake_outlet_links.csv`` that apply to this gdf, both ends present."""
+    if not outlet_links_path.exists():
+        return pd.DataFrame(columns=[schema.river_id, schema.next_river_id])
+    links = pd.read_csv(outlet_links_path)
+    here = set(gdf[schema.river_id])
+    return links[links[schema.river_id].isin(here) & links[schema.next_river_id].isin(here)]
+
+
+def apply_outlet_links(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    """Join the separate terminal arms of one lake into a single drainage, by hand.
+
+    A lake sitting in a closed basin often reaches the network as several terminal reaches
+    rather than one. Lake Van arrives as four, within sixty metres of each other; Uvs Nuur as
+    three. Each is a river ending at the shore, and the DEM cannot route between them because
+    the surface they would route across is flat water, so each is marked DSLINKNO -1 and the
+    collapse builds a separate lake on each one. One lake becomes four.
+
+    Nothing in the source data is wrong, and nothing here corrects it: the arms really do end
+    where TDX says they end. What the source cannot know is that they end in the *same water*,
+    which is a judgement about a lake polygon rather than about a flow path, and so it is
+    recorded by hand in ``lake_outlet_links.csv`` and applied to the working copy only. The
+    parquet under ``$TDXHYDRO_ROOT`` is a faithful translation of the source and stays that way.
+
+    Each row repoints one terminal reach at another reach of the same lake - by convention the
+    arm with the largest contributing area, which is the one the lake would drain through if it
+    drained at all. Applied before the topology is computed, so accumulation, the sub-250 km²
+    terminal drop and the lake collapse all see one lake.
+
+    Refuses to touch a reach that already flows somewhere. A row that redirects live drainage
+    is not this file's business and is far more likely to be a mistake than an intention; the
+    check is what makes an override table safe to hand-edit.
+    """
+    links = outlet_links(gdf)
+    if links.empty:
+        return gdf
+
+    next_river = gdf.set_index(schema.river_id)[schema.next_river_id]
+    live = links[next_river.reindex(links[schema.river_id]).to_numpy() != -1]
+    if not live.empty:
+        raise RuntimeError(
+            f'{outlet_links_path.name} repoints {len(live)} reach(es) that already flow '
+            f'somewhere: {live[schema.river_id].tolist()[:5]}. Only a terminal reach '
+            f'(DSLINKNO -1) may be linked across a lake.')
+
+    targets = dict(zip(links[schema.river_id], links[schema.next_river_id]))
+    # A target that is itself linked onward would make the order of application matter, and a
+    # cycle would hang the topology walk rather than fail it.
+    chained = [source for source in targets if source in set(targets.values())]
+    if chained:
+        raise RuntimeError(f'{outlet_links_path.name}: {chained[:5]} are both a source and a '
+                           f'target. Point every arm of a lake at one reach, not at each other.')
+
+    gdf = gdf.copy()
+    column = gdf[schema.next_river_id]
+    gdf[schema.next_river_id] = (
+        gdf[schema.river_id].map(targets).fillna(column).astype(column.dtype))
+    return gdf
 
 
 def find_lake_edits(gdf: gpd.GeoDataFrame, min_inlet_area: float = min_lake_inlet_area) -> dict:

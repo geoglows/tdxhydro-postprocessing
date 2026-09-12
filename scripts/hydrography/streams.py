@@ -20,7 +20,6 @@ _agg_rules = {
     schema.river_id: 'last',
     schema.next_river_id: 'last',
     schema.last_river_id: 'last',  # constant within a connected group
-    schema.group_id: 'last',  # constant within a connected group
     schema.topo_sort: 'last',
     schema.strahler_order: 'max',
     schema.tdx_magnitude_field: 'max',  # Shreve magnitude; the downstream-most reach already counts its upstreams

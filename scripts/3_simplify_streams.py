@@ -66,13 +66,30 @@ if __name__ == '__main__':
         .rename(columns=hy.schema.rename_map)
     )
 
+    # Before the topology, not after: repointing a terminal arm at the rest of its own lake
+    # changes what accumulates where, which tree a reach belongs to, and whether the sub-250 km²
+    # terminal drop below takes it. All of those read the topology this line builds.
+    linked = len(hy.lakes.outlet_links(gdf))
+    if linked:
+        gdf = hy.lakes.apply_outlet_links(gdf)
+        logging.info(f'{linked} lake arm(s) linked across their own water surface by hand')
+
     gdf = hy.topology.compute_topology(gdf)
 
-    drop_lists = natsorted((network_data_root / 'dropped_watersheds').glob('*.csv'), key=str)
+    # The drop lists are partitioned by region, one directory each, because an outletRiverId can
+    # only ever name a watershed in one of them: the raw id is LINKNO + header * 1e7 and each TDX
+    # header belongs to exactly one HydroBASINS level-2 region. A region reading the whole
+    # directory was therefore testing 204k ids to use a few thousand, and, worse, gave no way to
+    # see what had been decided for a given region without filtering every file by id prefix.
+    # A region with nothing dropped has no directory, which is why this does not require one.
+    drop_dir = network_data_root / 'dropped_watersheds' / f'{region}'
+    drop_lists = natsorted(drop_dir.glob('*.csv'), key=str)
+    logging.info(f'{len(drop_lists)} drop list(s) for region {region}: '
+                 f'{[p.stem for p in drop_lists]}')
     for drop_list in drop_lists:
         drop_ids = pd.read_csv(drop_list).values.flatten()
         gdf = gdf[~gdf[hy.schema.last_river_id].isin(drop_ids)]
-        logging.info(f'After dropping {drop_list}, shape is {gdf.shape}')
+        logging.info(f'After dropping {drop_list.stem}, shape is {gdf.shape}')
 
     to_drop = (
         gdf
@@ -81,14 +98,6 @@ if __name__ == '__main__':
         .tolist()
     )
     gdf = gdf[~gdf[hy.schema.last_river_id].isin(to_drop)]
-
-    groups_df = pd.read_csv(network_data_root / 'groupIds_table.csv')
-    group_id_map = groups_df.set_index(hy.schema.last_river_id)[hy.schema.group_id].to_dict()
-    gdf[hy.schema.group_id] = gdf[hy.schema.last_river_id].map(group_id_map)
-    missing_group = gdf.loc[gdf[hy.schema.group_id].isna(), hy.schema.last_river_id].unique()
-    if len(missing_group):
-        gdf.to_parquet(outputs_dir / 'mods' / 'missing_group_debug.parquet')
-        raise RuntimeError(f'{len(missing_group)} reaches have no groupId; e.g. {missing_group[:10]}')
 
     protected = hy.lakes.lake_outlets(gdf)
     logging.info(f'{len(protected):,} lake outlets are protected from simplification')
@@ -161,7 +170,9 @@ if __name__ == '__main__':
     logging.info(f'Stream geometry kept at source resolution: {vertices:,} vertices')
     hy.parquet.write_geoparquet(streams, final_geoparquet_output)
     logging.info(f'Final streams written to {final_geoparquet_output}')
-    hy.parquet.write_parquet(gdf[hy.schema.metadata_columns_to_keep], final_metadata_output)
+    # scratch, not published: step 5 reads this whole, so it takes the one-row-group default
+    hy.parquet.write_parquet(gdf[hy.schema.metadata_columns_to_keep], final_metadata_output,
+                             row_group_size=None)
     logging.info(f'Metadata written to {final_metadata_output}')
 
     confluences = (

@@ -19,16 +19,12 @@ An original reach lands in one of three buckets:
     region
 
 The keeper mapping is reconstructed by replaying the edits recorded in each
-processed region's `mods/` directory (see 3_simplify_streams.py):
-  - lake_edits.json         interior `delete` reaches fold into the lake `outlet`
-  - coastal_orphans.json    {keeper: [members]}
-  - headwater_dissolves.json{keeper: [members]}
-  - branches_to_prune.json  {keeper: [members]}
-  - short_consolidations.json {keeper: [members]}
-Reaches removed outright (dropped watersheds, sub-250 km^2 outlets, zero-length
-reaches) are recorded nowhere as a keeper, so they correctly fall through to <NA>.
+processed region's `mods/` directory - see hydrography/edits.py, which owns that
+replay and is also what resolves the ids in network_data/river_names.csv. Reaches
+removed outright (dropped watersheds, sub-250 km^2 outlets, zero-length reaches)
+are recorded nowhere as a keeper, so they correctly fall through to <NA>.
 
-Run after 5_concatenate_global.py (needs groups/group=0/metadata.parquet under the data root).
+Run after 5_concatenate_global.py (needs hydrography/global/metadata.parquet under the data root).
 """
 import json
 import logging
@@ -54,60 +50,6 @@ logs_root = hy.paths.logs_root
 # canonical globally-unique original id column in the raw region parquet
 orig_id_col = hy.schema.tdx_link_no_field  # 'TDXHydroLinkNo'
 v3_id_col = 'v3RiverId'
-
-# mod files shaped {keeper: [members_folded_into_keeper, ...]}
-merge_mod_files = (
-    'coastal_orphans.json',
-    'headwater_dissolves.json',
-    'branches_to_prune.json',
-    'short_consolidations.json',
-)
-
-
-def build_member_to_keeper(mods_dirs: list[Path]) -> dict:
-    """
-    Combine every processed region's edit files into one {member_id: keeper_id}
-    map. A member is a reach that was removed and whose drainage now belongs to
-    the keeper. Each reach is removed at most once across all edits, so no member
-    id collides. Keepers are followed transitively later (a keeper of one edit may
-    itself be a member of a later edit).
-    """
-    member_to_keeper: dict[int, int] = {}
-    for mods_dir in mods_dirs:
-        # lake interior reaches fold into their lake outlet
-        with open(mods_dir / 'lake_edits.json') as f:
-            for outlet, edit in json.load(f).items():
-                outlet = int(outlet)
-                for deleted in edit.get('delete', []):
-                    member_to_keeper[int(deleted)] = outlet
-        # every {keeper: [members]} edit file
-        for fname in merge_mod_files:
-            with open(mods_dir / fname) as f:
-                for keeper, members in json.load(f).items():
-                    keeper = int(keeper)
-                    for member in members:
-                        member_to_keeper[int(member)] = keeper
-    return member_to_keeper
-
-
-def resolve_terminals(member_to_keeper: dict) -> dict:
-    """
-    Follow each member's keeper chain to the terminal surviving reach. Edits form
-    a DAG (reaches only ever fold downstream), so the walk always terminates. Uses
-    memoization so the whole map resolves in one pass over the edges.
-    """
-    terminal_of: dict[int, int] = {}
-    for start in member_to_keeper:
-        node = start
-        path = []
-        while node in member_to_keeper and node not in terminal_of:
-            path.append(node)
-            node = member_to_keeper[node]
-        terminal = terminal_of.get(node, node)
-        for reach in path:
-            terminal_of[reach] = terminal
-    return terminal_of
-
 
 def read_original_ids(region_file: Path) -> np.ndarray:
     """All original reach ids in a raw region parquet, as canonical global ids: TDXHydroLinkNo on
@@ -141,10 +83,9 @@ if __name__ == '__main__':
     logging.info(f'{len(survivors):,} surviving v3 reaches')
 
     # reconstruct the original -> keeper mapping from every processed region's edits
-    mods_dirs = natsorted([p / 'mods' for p in region_root.glob('*') if (p / 'mods').is_dir()], key=str)
+    mods_dirs = hy.edits.mods_dirs(region_root)
     logging.info(f'Replaying edits from {len(mods_dirs)} processed regions')
-    member_to_keeper = build_member_to_keeper(mods_dirs)
-    terminal_of = resolve_terminals(member_to_keeper)
+    terminal_of = hy.edits.resolve_terminals(hy.edits.member_to_keeper(mods_dirs))
 
     # a member is only usable if its terminal keeper actually survives in v3; a
     # terminal that is missing means the keeper was itself dropped downstream, so

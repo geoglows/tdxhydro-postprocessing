@@ -21,14 +21,20 @@ Geometry is 92-96% of every file that has any, so it is the only part worth tuni
                 was already exploiting. projection.to_web_mercator is what zeroes them,
                 by snapping every published geometry to a 1 m grid.
 
-Measured: streams for group 101 (103 when this was measured - see group_renumbering.csv)
-fall from 71.8 MB to 29.1 MB and the catchments of a test
+Measured on one published streams file: 71.8 MB to 29.1 MB, and the catchments of a test
 region from 95.2 MB to 33.2 MB, both about 60%. Roughly two thirds of that is the snap and
 one third the encoding — neither is worth much without the other.
 
 Points are a separate case: geoarrow wins on confluences (~25%) no matter how precise the
 coordinates are, because a WKB point spends 5 of its 21 bytes on a type header that the
 native encoding does not repeat per row.
+
+Row grouping is the other half, and it is not a compression question at all. A row group is
+the smallest thing a reader can fetch, so its size decides the granularity of an HTTP range
+request: small row groups exist to let a client pull a few hundred reaches out of a published
+file instead of the whole thing. The published per-region files are what serve that subsetting
+case; ``global/metadata.parquet`` is the whole world in one piece, taken as a bulk download,
+and chunking it would only add footer. See the two size constants below.
 
 Two things about the pyarrow API are worth knowing before touching this:
 ``use_byte_stream_split=True`` is silently ignored on the nested child arrays geoarrow
@@ -44,6 +50,7 @@ import shapely
 
 __all__ = [
     'WRITE_OPTS',
+    'ATTRIBUTE_ROW_GROUP_SIZE',
     'GEOMETRY_ROW_GROUP_SIZE',
     'SOURCE_WRITE_OPTS',
     'SOURCE_ROW_GROUP_SIZE',
@@ -57,16 +64,40 @@ COMPRESSION = 'zstd'
 COMPRESSION_LEVEL = 3
 WRITE_OPTS = {'compression': COMPRESSION, 'compression_level': COMPRESSION_LEVEL}
 
+# Rows per row group in a published file carrying geometry. At ~412 bytes a reach this is a
+# ~200 KB fetch, which is the granularity a client subsetting streams or catchments over HTTP gets.
 GEOMETRY_ROW_GROUP_SIZE = 500
+
+# Rows per row group in a published file that carries no geometry - metadata, watersheds - and in
+# the point tables, whose rows are far smaller than a reach of linework. Deliberately a multiple of
+# GEOMETRY_ROW_GROUP_SIZE, so an attribute row group ends exactly where a geometry row group does
+# and one riverIndex range maps onto whole row groups of every file in a region at once.
+#
+# Chunking an attribute table is not free the way chunking geometry is: the id columns are
+# dictionary encoded, and a smaller row group rebuilds the dictionary more often. Measured on the
+# largest region's metadata (6020006540, 303,097 rows, 14.44 MB in one row group):
+#
+#     rows/row group   row groups   file MB   vs one row group   avg row group
+#     1,000                   304     16.75            +16.0%          53.1 KB
+#     2,000                   152     16.24            +12.4%         104.8 KB   <- chosen
+#     2,500                   122     16.28            +12.7%         131.4 KB
+#     5,000                    61     16.60            +14.9%         270.0 KB
+#     20,000                   16     16.94            +17.3%       1,056.2 KB
+#
+# The curve has a floor rather than sloping one way: too small rebuilds dictionaries, too large
+# overruns the dictionary page and falls back to plain encoding. 2,000 sits at the bottom of it and
+# is also the right fetch size, so nothing is being traded here. On the point tables the same
+# setting costs +0.9%, because those columns barely dictionary-encode to begin with.
+ATTRIBUTE_ROW_GROUP_SIZE = 2_000
 
 # The raw TDX-Hydro geoparquet step 1 writes is the one file this pipeline does not snap, so it
 # wants a different profile from everything above - see write_source_geoparquet.
 SOURCE_COMPRESSION_LEVEL = 9
 SOURCE_WRITE_OPTS = {'compression': COMPRESSION, 'compression_level': SOURCE_COMPRESSION_LEVEL}
 
-# Large enough that the per-group overhead is nothing, small enough that a reader can take one
-# group without taking the region. The size on disk does not move across 1, 2 and 12 groups of the
-# same file, so this is chosen entirely for what it lets a reader do.
+# Large enough that the per-row-group overhead is nothing, small enough that a reader can take a
+# slice of a region without taking the whole file. The size on disk does not move across 1, 2 and
+# 12 row groups of the same file, so this is chosen entirely for what it lets a reader do.
 SOURCE_ROW_GROUP_SIZE = 20_000
 
 # geoarrow nests coordinates one list level per geometry dimension: a point is a bare
@@ -104,12 +135,13 @@ def write_geoparquet(gdf: gpd.GeoDataFrame, path, row_group_size=GEOMETRY_ROW_GR
                      **kwargs) -> None:
     """Write a GeoDataFrame as GeoParquet 1.1 with byte-split geoarrow coordinates.
 
-    ``row_group_size=None`` takes pyarrow's default, which is what the tables whose rows
-    are a single point rather than a whole reach want - see GEOMETRY_ROW_GROUP_SIZE.
+    ``row_group_size=None`` takes pyarrow's default. The tables whose rows are a single point
+    rather than a whole reach want ATTRIBUTE_ROW_GROUP_SIZE instead of the geometry default -
+    see the two constants above.
 
     Empty frames fall back to WKB: geopandas cannot build a geoarrow array without at
     least one geometry to take the type from, and the steps here deliberately write empty
-    files so that every group has the same set of products."""
+    files so that every region has the same set of products."""
     opts = {**WRITE_OPTS, 'row_group_size': row_group_size, **kwargs}
     if len(gdf) == 0 or gdf.geometry.isna().all():
         gdf.to_parquet(path, **opts)
@@ -207,8 +239,18 @@ def write_source_geoparquet(gdf: gpd.GeoDataFrame, path,
     gdf.to_parquet(path, geometry_encoding='geoarrow', **opts)
 
 
-def write_parquet(df: pd.DataFrame, path, **kwargs) -> None:
-    """Write a table with no geometry. Nothing to tune: without a geometry column there is
-    no float payload big enough for the encoding above to matter, and the default
-    dictionary encoding is the right one for the id and attribute columns."""
-    df.to_parquet(path, **{**WRITE_OPTS, **kwargs})
+def write_parquet(df: pd.DataFrame, path, row_group_size=ATTRIBUTE_ROW_GROUP_SIZE,
+                  **kwargs) -> None:
+    """Write a table with no geometry. Nothing to tune about the encoding: without a geometry
+    column there is no float payload big enough for the one above to matter, and the default
+    dictionary encoding is the right one for the id and attribute columns.
+
+    The row grouping is the part worth passing. It defaults to the subsettable size because a
+    published table that cannot be range-fetched is the failure worth defaulting away from;
+    ``row_group_size=None`` takes pyarrow's default - one row group up to a million rows - and is
+    for the files read whole either way: the global bulk download and the scratch intermediates.
+    """
+    opts = {**WRITE_OPTS, **kwargs}
+    if row_group_size is not None:
+        opts['row_group_size'] = row_group_size
+    df.to_parquet(path, **opts)

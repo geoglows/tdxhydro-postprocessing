@@ -13,12 +13,13 @@ Everything downstream pays for it, and the whole pipeline is built around not be
   bisection escape in ``geometry.simplify_coverage`` and why its output is routinely
   self-intersecting.
 * ``coverage_union_all`` is unusable on the result - it raises a side-location conflict on the big
-  groups, and worse, on the small ones it *returns*, with slivers in it: on group 122 its answer
-  differs from the exact union by 390 m2 and ``symmetric_difference`` against that union throws
-  ``unable to assign free hole to a shell``. So step 6 dissolved with ``hierarchical_union``, at
-  5-9x the cost of the coverage operation it should be using.
-* The unmatched vertex pairs leave gap slivers, and a dissolve turns a gap into a *hole*. Of group
-  108's 180 outline holes, 42 are that and not a watershed; of group 122's 73, nine are.
+  dissolves, and worse, on the small ones it *returns*, with slivers in it: on a 13,535-catchment
+  one its answer differs from the exact union by 390 m2 and ``symmetric_difference`` against that
+  union throws ``unable to assign free hole to a shell``. So step 6 dissolved with
+  ``hierarchical_union``, at 5-9x the cost of the coverage operation it should be using.
+* The unmatched vertex pairs leave gap slivers, and a dissolve turns a gap into a *hole*. Of one
+  153,602-catchment outline's 180 holes, 42 are that and not a watershed; of the 13,535-catchment
+  one's 73, nine are.
 
 GEOS 3.14 added ``GEOSCoverageClean``, which nodes the whole coverage at once and assigns any
 overlap to one side. Shapely exposes it as ``coverage_clean`` from 2.2, which is **not released**
@@ -37,8 +38,8 @@ Measured on 5020055870 (4,554 basins, 4.6M vertices, 9.6 s):
     outline area change                  1.5e-13 deg2
     holes in the dissolved outline       54 -> 24
 
-The outline is the line to watch. Cleaning a *sub*-coverage moves its outer edge - on group 122's
-catchments, the clean added 29 vertices to the outline and shifted it by 2,121 m2 - because that
+The outline is the line to watch. Cleaning a *sub*-coverage moves its outer edge - on that
+13,535-catchment set, the clean added 29 vertices to the outline and shifted it by 2,121 m2 - because that
 edge is an interior line of the real coverage, cut through ground the clean is entitled to renode.
 On a whole source region it is the level-2 divide, nothing inside the file abuts it, and it comes
 back untouched. **That is why this runs on the source region files and nothing smaller.**
@@ -78,7 +79,7 @@ has no halo there, which is right - that edge is the level-2 divide and nothing 
 **The defaults are the point.** ``--snapping-distance`` and ``--maximum-gap-width`` are left alone
 because the defect here is a missing vertex on a line both sides already agree on - a zero-width
 gap, which noding closes without moving anything. A nonzero gap width would start swallowing real
-holes, and the real holes are the endorheic sinks and dropped watersheds that 6_publish_basins.py
+holes, and the real holes are the endorheic sinks and dropped watersheds that 6_publish_regions.py
 goes to some trouble to tell apart from slivers. The tiled path is the one exception, and only
 because it has to be: GEOS derives the default snapping distance from the input extent, so it is
 the one parameter that differs between a tile and the region it came from. See

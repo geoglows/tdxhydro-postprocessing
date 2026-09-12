@@ -11,7 +11,7 @@ BANDS_RAW="$("$PYTHON" 2_global_basins.py --bands)"
 export BANDS_RAW
 LEAF_MAXZOOM="$(printf '%s\n' "$BANDS_RAW" | awk -F: '$1 == "leaf" {print $3}')"
 export LEAF_MAXZOOM
-GLOBAL_CATCHMENT_TILE="$GROUP_ROOT/group=0/catchments.pmtiles"
+GLOBAL_CATCHMENT_TILE="$PUBLISH_ROOT/global/catchments.pmtiles"
 
 band_paths() {
     local region="$1" level="$2" minzoom="$3" maxzoom="$4"
@@ -20,13 +20,16 @@ band_paths() {
         BAND_SRC="$SCRATCH_ROOT/regions/$region/catchments_tile_${region}.fgb"
         BAND_POLY="$work/leaf_${region}.z$minzoom-$maxzoom.pmtiles"
         BAND_LINE="$work/leaf_${region}.z$minzoom-$maxzoom.lines.pmtiles"
-        BAND_MAKER="5_concatenate_global.py"
+        BAND_MAKER="run 5_concatenate_global.py"
     else
         local work="$SCRATCH_ROOT/pmtiles/catchment_bands"
         BAND_SRC="$SCRATCH_ROOT/pmtiles/basin_bands/basin_level${level}.fgb"
         BAND_POLY="$work/level${level}.z$minzoom-$maxzoom.pmtiles"
         BAND_LINE="$work/level${level}.z$minzoom-$maxzoom.lines.pmtiles"
-        BAND_MAKER="6_publish_basins.py"
+        # the basin bands have no producer: step 6 published them until the basin product was
+        # dropped from the per-release pipeline, and nothing has replaced it. The band tiles
+        # already on disk still join; a release that needs them rebuilt needs a producer first.
+        BAND_MAKER="no producer since the basin bands left step 6"
     fi
     BAND_SRC_LINE="${BAND_SRC%.fgb}.lines.fgb"
 }
@@ -60,7 +63,7 @@ while IFS='|' read -r region level minzoom maxzoom geom; do
     if [ "$geom" = lines ]; then src="$BAND_SRC_LINE"; out="$BAND_LINE"; else src="$BAND_SRC"; out="$BAND_POLY"; fi
     [ -f "$out" ] && continue
     if [ ! -f "$src" ]; then
-        MISSING_SOURCES+=("$src (run $BAND_MAKER)")
+        MISSING_SOURCES+=("$src ($BAND_MAKER)")
         continue
     fi
     size="$(stat -f%z "$src" 2>/dev/null || stat -c%s "$src")"
