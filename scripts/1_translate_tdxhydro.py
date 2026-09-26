@@ -125,11 +125,19 @@ if __name__ == '__main__':
     gpq_dir.mkdir(parents=True, exist_ok=True)
 
     gpkgs = sorted(gpkg_dir.glob('TDX*.gpkg'), key=lambda p: p.stat().st_size, reverse=True)
-    if not gpkgs:
-        sys.exit(f'no TDX*.gpkg under {gpkg_dir}')
     wanted = set(sys.argv[1:])
 
-    expected_outputs = [gpq_dir / gpkg.name.replace('.gpkg', '.parquet') for gpkg in gpkgs]
+    with open(paths.network_data_root / 'tdxhydro_splits' / 'tdx_header_numbers.json') as f:
+        tdx_header_numbers = json.load(f)
+
+    # the gpkgs are only read to translate, so once the parquet exists they may be gone. Without
+    # them, the outputs expected are named from the requested regions, or every TDX-Hydro region
+    if gpkgs:
+        expected_outputs = [gpq_dir / gpkg.name.replace('.gpkg', '.parquet') for gpkg in gpkgs]
+    else:
+        expected_outputs = [gpq_dir / f'TDX_{kind}_{region}_01.parquet'
+                            for region in sorted(wanted or tdx_header_numbers)
+                            for kind in ('streamnet', 'streamreach_basins')]
     expected_markers = [coverage.marker_for(p) for p in expected_outputs
                         if 'streamreach_basins' in p.name
                         and (not wanted or p.name.split('_')[-2] in wanted)]
@@ -139,11 +147,12 @@ if __name__ == '__main__':
         print('all outputs exist, nothing to do')
         sys.exit(0)
 
-    with open(paths.network_data_root / 'tdxhydro_splits' / 'tdx_header_numbers.json') as f:
-        tdx_header_numbers = json.load(f)
-
-    if all(out.exists() for out in expected_outputs):
+    missing = [out.name for out in expected_outputs if not out.exists()]
+    if not missing:
         print(f'all {len(expected_outputs)} converted files exist, nothing to translate')
+    elif not gpkgs:
+        sys.exit(f'no TDX*.gpkg under {gpkg_dir} to translate {len(missing)} missing parquet '
+                 f'from: {", ".join(missing[:4])}{", ..." if len(missing) > 4 else ""}')
     else:
         workers = max(1, int(os.environ.get('TRANSLATE_JOBS', 6)))
         jobs = [(g, int(tdx_header_numbers[str(g.name.split('_')[-2])]), g.name.split('_')[-2])

@@ -68,10 +68,34 @@ def _build_aggfunc(gdf: gpd.GeoDataFrame, length_rule: str) -> dict:
 
 
 __all__ = [
+    'local_area',
     'add_outlet_coordinates',
     'find_zero_length',
     'remove_zero_length',
 ]
+
+
+def local_area(link: np.ndarray, ds_link: np.ndarray, us_area: np.ndarray,
+               ds_area: np.ndarray) -> np.ndarray:
+    """
+    Each TDX link's local catchment area (areaM2): DSContArea - USContArea below a
+    confluence, and the whole DSContArea at a headwater.
+
+    USContArea is the contributing area at the top of a link. At a headwater the top is
+    the channel head, which already drains the ~5.5 km2 TDX-Hydro needs to start a stream,
+    so subtracting it there drops that area: on region 1020000010 a headwater kept a
+    median 38% of its polygon's area, and the region's areaM2 summed to 69% of its land.
+
+    Below a confluence USContArea is usually the upstream links' DSContArea summed, but
+    not always: in endorheic basins (Lake Eyre, Lake Chad, the Puna, ...) 4,990 links
+    drain less than their two upstream links together. There DSContArea minus the
+    upstream DSContArea goes negative, to -28,000 km2, while DSContArea - USContArea
+    still matches the link's polygon (median 0.965), so USContArea is what is subtracted.
+    """
+    us_area = np.asarray(us_area, dtype=np.float64)
+    ds_area = np.asarray(ds_area, dtype=np.float64)
+    headwater = ~np.isin(np.asarray(link), np.asarray(ds_link))
+    return ds_area - np.where(headwater, 0.0, us_area)
 
 
 def add_outlet_coordinates(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:

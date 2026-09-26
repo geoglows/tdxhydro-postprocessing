@@ -15,6 +15,28 @@ import hydrography as hy
 
 HILBERT_BITS = 16
 
+# Muskingum parameters. The wave celerity ramps linearly with Strahler order, the form RFS v2 routed with:
+# v2 stretched 0.5 to 0.8 m/s across each VPU's own order range, so the same order got a different celerity in
+# different VPUs. v3 pins the ramp to the global order range instead, which is 2..10 over the whole dataset, so
+# an order is worth the same celerity everywhere and this per-region step needs no global pass to assign it. The
+# clip only guards the equation: no region reaches outside 2..10. k is the reach travel time, length / celerity.
+#
+# These replace the area-based celerity v3 started with, exp(0.10*ln(DSContArea) - 4.68) + 0.1, which ran a median
+# of 0.158 m/s. That put the median k at 7.8 hours and left only 3.5% of rivers Muskingum-stable at dt_routing=3600
+# s, since stability needs 2*k*x <= dt <= 2*k*(1-x). At these celerities the median k is 2.4 hours and about half
+# the network is stable, with the rest resolved by ~1.6x sub-reaches under network_conditioning='stabilized'.
+MIN_STRAHLER_ORDER = 2
+MAX_STRAHLER_ORDER = 10
+VELOCITY_AT_MIN_ORDER = 0.5  # m/s
+VELOCITY_AT_MAX_ORDER = 0.8  # m/s
+VELOCITY_PER_ORDER = (VELOCITY_AT_MAX_ORDER - VELOCITY_AT_MIN_ORDER) / (MAX_STRAHLER_ORDER - MIN_STRAHLER_ORDER)
+MUSKINGUM_X = 0.20
+
+# every file this step writes into the region's published mods/ directory
+MODS_FILES = ('lake_edits.json', 'zero_length_streams.json', 'coastal_orphans.json',
+              'headwater_dissolves.json', 'branches_to_prune.json',
+              'short_consolidations.json')
+
 region_root = hy.paths.region_root
 tdx_root = hy.paths.tdx_root
 network_data_root = hy.paths.network_data_root
@@ -28,13 +50,17 @@ if __name__ == '__main__':
     final_geoparquet_output = region_root / f'{region}' / f'streams_{region}.geo.parquet'
     final_metadata_output = region_root / f'{region}' / f'metadata_{region}.parquet'
     confluences_output = region_root / f'{region}' / f'confluences_{region}.geo.parquet'
+    # the edits are published, not scratch, and nothing else can regenerate them, so they count
+    # as outputs of this step: a region whose mods are gone is rebuilt rather than skipped
+    mods_dir = hy.paths.mods_dir(region)
     outputs = [final_geoparquet_output, final_metadata_output, confluences_output]
+    outputs += [mods_dir / name for name in MODS_FILES]
     if all(output.exists() for output in outputs):
         print(f'region {region}: streams exist, skipping')
         sys.exit(0)
 
-    outputs_dir = region_root / f'{region}'
-    (outputs_dir / 'mods').mkdir(parents=True, exist_ok=True)
+    (region_root / f'{region}').mkdir(parents=True, exist_ok=True)
+    mods_dir.mkdir(parents=True, exist_ok=True)
     logs_root.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(
         filename=logs_root / f'simplify_streams_{region}.log',
@@ -45,7 +71,10 @@ if __name__ == '__main__':
     gdf = gpd.read_parquet(tdx_root / f'TDX_streamnet_{region}_01.parquet')
     logging.info(f'Initial shape: {gdf.shape}')
 
-    gdf[hy.schema.area] = gdf[hy.schema.tdx_ds_area_field] - gdf[hy.schema.tdx_us_area_field]
+    gdf[hy.schema.area] = hy.streams.local_area(gdf[hy.schema.tdx_link_field].to_numpy(),
+                                                gdf[hy.schema.tdx_ds_link_field].to_numpy(),
+                                                gdf[hy.schema.tdx_us_area_field].to_numpy(),
+                                                gdf[hy.schema.tdx_ds_area_field].to_numpy())
     id_column = hy.schema.tdx_link_no_field if hy.schema.tdx_link_no_field in gdf.columns \
         else hy.schema.tdx_link_field
     gdf[hy.schema.river_id] = gdf[id_column].astype(int)
@@ -86,8 +115,15 @@ if __name__ == '__main__':
     drop_lists = natsorted(drop_dir.glob('*.csv'), key=str)
     logging.info(f'{len(drop_lists)} drop list(s) for region {region}: '
                  f'{[p.stem for p in drop_lists]}')
-    for drop_list in drop_lists:
-        drop_ids = pd.read_csv(drop_list).values.flatten()
+    # Each id may be listed once across the region's lists, so deleting it from the one list that
+    # has it is enough to bring the watershed back. A second copy would silently keep it dropped.
+    drop_tables = {p: pd.read_csv(p)['drop'].to_numpy() for p in drop_lists}
+    listed = pd.Series(np.concatenate([np.empty(0, dtype=np.int64), *drop_tables.values()]))
+    if listed.duplicated().any():
+        repeated = listed[listed.duplicated()].unique()
+        raise RuntimeError(f'{len(repeated):,} id(s) are listed more than once in {drop_dir}, '
+                           f'e.g. {repeated[:5].tolist()}')
+    for drop_list, drop_ids in drop_tables.items():
         gdf = gdf[~gdf[hy.schema.last_river_id].isin(drop_ids)]
         logging.info(f'After dropping {drop_list.stem}, shape is {gdf.shape}')
 
@@ -139,25 +175,25 @@ if __name__ == '__main__':
     logging.info(f'Ordered {len(gdf):,} reaches upstream-to-downstream, region-local riverIndex '
                  f'stamped')
 
-    with open(outputs_dir / 'mods' / 'lake_edits.json', 'w') as f:
-        json.dump(lake_edits, f)
-    with open(outputs_dir / 'mods' / 'zero_length_streams.json', 'w') as f:
-        json.dump(zero_lengths, f)
-    with open(outputs_dir / 'mods' / 'coastal_orphans.json', 'w') as f:
-        json.dump(coastal_orphans, f)
-    with open(outputs_dir / 'mods' / 'headwater_dissolves.json', 'w') as f:
-        json.dump(header_mergers, f)
-    with open(outputs_dir / 'mods' / 'branches_to_prune.json', 'w') as f:
-        json.dump(branches_to_prune, f)
-    with open(outputs_dir / 'mods' / 'short_consolidations.json', 'w') as f:
-        json.dump(consolidations, f)
+    # published provenance: the record of what this step did to the source TDX-Hydro, written
+    # once, in the place it is published from. Step 4 reads it back from there.
+    for name, edit in (('lake_edits.json', lake_edits),
+                       ('zero_length_streams.json', zero_lengths),
+                       ('coastal_orphans.json', coastal_orphans),
+                       ('headwater_dissolves.json', header_mergers),
+                       ('branches_to_prune.json', branches_to_prune),
+                       ('short_consolidations.json', consolidations)):
+        with open(mods_dir / name, 'w') as f:
+            json.dump(edit, f)
+    logging.info(f'Edits written to {mods_dir}')
 
-    gdf[hy.schema.static_velocity_factor] = (
-            np.exp(0.10 * np.log(gdf[hy.schema.tdx_ds_area_field]) - 4.68).round(3) + 0.1
+    gdf[hy.schema.static_velocity_factor] = np.clip(
+        VELOCITY_AT_MIN_ORDER + VELOCITY_PER_ORDER * (gdf[hy.schema.strahler_order] - MIN_STRAHLER_ORDER),
+        VELOCITY_AT_MIN_ORDER, VELOCITY_AT_MAX_ORDER,
     )
     gdf[hy.schema.static_musk_k] = gdf[hy.schema.length] / gdf[hy.schema.static_velocity_factor]
     gdf[hy.schema.static_musk_k] = gdf[hy.schema.static_musk_k].round(0).astype(int)
-    gdf[hy.schema.static_musk_x] = 0.20
+    gdf[hy.schema.static_musk_x] = MUSKINGUM_X
 
     gdf = hy.schema.enforce_int32(gdf)
 

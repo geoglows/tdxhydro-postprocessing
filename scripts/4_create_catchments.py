@@ -130,7 +130,7 @@ def simplify_chunk(geometries: np.ndarray, start: int) -> np.ndarray:
 
 def build_leaf_catchments(region_number: int, order: pd.DataFrame) -> gpd.GeoDataFrame:
     outputs_dir = region_root / f'{region_number}'
-    mods_dir = outputs_dir / 'mods'
+    mods_dir = hy.paths.mods_dir(region_number)
 
     basins_src = tdx_root / f'TDX_streamreach_basins_{region_number}_01.parquet'
     id_column = hy.schema.tdx_link_no_field \
@@ -226,7 +226,7 @@ if __name__ == '__main__':
     region_number = int(args[0])
 
     outputs_dir = region_root / f'{region_number}'
-    mods_dir = outputs_dir / 'mods'
+    mods_dir = hy.paths.mods_dir(region_number)
 
     catchments_output = outputs_dir / f'catchments_{region_number}.geo.parquet'
     if catchments_output.exists():
@@ -234,7 +234,14 @@ if __name__ == '__main__':
         sys.stdout.flush()
         os._exit(0)
 
-    mods_dir.mkdir(parents=True, exist_ok=True)
+    # every _load_json below treats a missing file as "no edits of that kind" which is right
+    # for an edit that found nothing to do and catastrophically wrong for the whole directory
+    # being gone: the catchments would be dissolved against an unedited network and silently
+    # disagree with the streams. The edits live in the published tree now, which is wiped and
+    # synced on its own schedule, so this is worth checking rather than assuming.
+    if not mods_dir.is_dir():
+        sys.exit(f'region {region_number}: no edits at {mods_dir}. Step 3 writes them there and '
+                 f'they cannot be reconstructed from the streams; rerun step 3 for this region.')
     logs_root.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(
         filename=logs_root / f'create_catchments_{region_number}.log',

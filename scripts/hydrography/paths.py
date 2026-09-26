@@ -14,13 +14,19 @@ matter of changing the one export in that script.
 
 Under the data root, the published dataset and the working files are kept apart:
 
-    hydrography/region=<id>/    the deliverable - one directory per HydroBASINS level-2
-                                region, in the hive-style naming the published dataset uses
-    hydrography/global/         the products that span every region - metadata.parquet,
-                                metadata.zarr, the joined pmtiles
-    hydrography-scratchfiles/   per-region intermediates, per-region pmtiles and
-                                logs - everything the published files are built from,
-                                which no consumer of the dataset needs
+    hydrography/region=<id>/        the deliverable - one directory per HydroBASINS level-2
+                                    region, in the hive-style naming the published dataset uses
+    hydrography/region=<id>/mods/   the edits step 3 made to the source TDX-Hydro, published
+                                    rather than kept as scratch: they are the provenance of a
+                                    network that is a modification of a previous dataset, and
+                                    they are the only record of which source reach a published
+                                    reach absorbed. Written once, where they are published - see
+                                    mods_dir() below.
+    hydrography/global/             the products that span every region - metadata.parquet,
+                                    metadata.zarr, the joined pmtiles
+    hydrography-scratchfiles/       per-region intermediates, per-region pmtiles and
+                                    logs - everything the published files are built from,
+                                    which no consumer of the dataset needs
 
 The level-2 region is the only partition the dataset has. It is the unit the raw TDX-Hydro
 comes in, the unit every step processes, and the unit the release publishes, so a reach's
@@ -73,6 +79,20 @@ def publish_dir(region) -> Path:
     """The directory a region's published files go in. Hive-style so a reader can partition
     on the level-2 region without reading a column to do it."""
     return publish_root / f'region={region}'
+
+
+def mods_dir(region) -> Path:
+    """Where step 3 records the edits it made to the source TDX-Hydro, and the only copy of
+    them there is.
+
+    They are written straight into the published region directory instead of into scratch and
+    copied out later, because two copies of a provenance record is one copy too many - the
+    question "which source reach does this published reach stand for" has to have a single
+    answer. Step 4 reads them back from here, so the published tree does hold one build input;
+    that is the price of not duplicating them, and it is the reason step 4 refuses to run when
+    they are missing rather than treating an absent file as "nothing was edited".
+    """
+    return publish_dir(region) / 'mods'
 
 
 # working files: everything the published files are built from, kept out of the deliverable

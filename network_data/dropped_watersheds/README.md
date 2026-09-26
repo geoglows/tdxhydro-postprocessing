@@ -13,7 +13,13 @@ name a watershed in one of them: the id is `LINKNO + header * 1e7`, and each of 
 TDX headers belongs to exactly one level-2 region. Step 3 globs only its own region's
 directory. A region with nothing dropped has no directory.
 
-These were six flat global files until the split; the union is unchanged. The flat form
+**Each id is listed at most once per region.** Deleting an id from the list that holds it
+is then enough to bring the watershed back; step 3 refuses to run if an id is repeated.
+Where two reasons both applied, the id was kept in the more specific one, in the order
+manually_excluded, island_table, *_no_runoff, noncoastal, small_ocean — so regenerating
+a list from its rule has to subtract the ids already listed elsewhere in the region.
+
+These were six flat global files until the split. The flat form
 made a region read 204k ids to use a few thousand, and gave no way to see what had been
 decided for a region without filtering every file by id prefix — which is how region
 1020027430 came to be dropped from `pipeline_env.sh` wholesale instead of by list.

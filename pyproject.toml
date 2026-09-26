@@ -24,6 +24,7 @@ dependencies = [
     "fastapi",
     "uvicorn",
     "websockets",
+    "matplotlib>=3.11.2",
 ]
 
 [tool.uv]

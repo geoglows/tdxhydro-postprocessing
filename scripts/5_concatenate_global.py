@@ -37,6 +37,7 @@ region_root = hy.paths.region_root
 publish_root = hy.paths.publish_root
 global_root = hy.paths.global_root
 logs_root = hy.paths.logs_root
+pmtiles_root = hy.paths.pmtiles_root
 
 WORKERS = max(1, int(os.environ.get('CONCAT_WORKERS', 8)))
 
@@ -53,6 +54,12 @@ LEAF_CHUNK = 20_000
 index_start = 'riverIndexStart'
 index_end = 'riverIndexEnd'
 reach_count = 'reachCount'
+
+
+def leaf_band_path(region: str) -> Path:
+    """The leaf band is a tiler input, not a deliverable, so it lands beside every other
+    tiling intermediate rather than in the region's scratch directory."""
+    return pmtiles_root / f'catchments_tile_{region}.fgb'
 
 
 def out_name(kind: str, region: str) -> str:
@@ -139,7 +146,7 @@ def region_outputs(region: str, has_catchments: bool) -> list:
     kinds = REGION_KINDS + (['catchments'] if has_catchments else [])
     paths = [hy.paths.publish_dir(region) / out_name(kind, region) for kind in kinds]
     if has_catchments:
-        leaf = region_root / region / f'catchments_tile_{region}.fgb'
+        leaf = leaf_band_path(region)
         paths += [leaf, lines_path(leaf)]
     return paths
 
@@ -206,7 +213,8 @@ def publish_region(region: str, meta: pd.DataFrame, has_catchments: bool) -> boo
     logging.info(f'region {region}: ' + ', '.join(f'{n:,} {k}' for k, n in counts.items()))
 
     if has_catchments:
-        cut_leaf_band(parts['catchments'], region_dir / f'catchments_tile_{region}.fgb')
+        pmtiles_root.mkdir(parents=True, exist_ok=True)
+        cut_leaf_band(parts['catchments'], leaf_band_path(region))
     print(f'region {region}: {counts["metadata"]:,} reaches, {counts["watersheds"]:,} watersheds'
           + ('' if not has_catchments else ' + leaf band'))
     return True

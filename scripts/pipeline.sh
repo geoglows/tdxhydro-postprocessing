@@ -8,7 +8,7 @@ source "pipeline_env.sh"
 
 ################## prepare global tdxhydro baseline, basins - one-time steps, not per build
 "$PYTHON" 1_translate_tdxhydro.py "${REGIONS[@]}"
-"$PYTHON" 2_global_basins.py
+#"$PYTHON" 2_global_basins.py
 
 ################## analyze streams to correct and simplify representation (region-local outputs)
 ################## populates the scratch/regions directory with regionally unique indices and ids
@@ -27,5 +27,5 @@ printf '%s\n' "${REGIONS[@]}" | xargs -P "$CATCHMENT_JOBS" -I{} "$PYTHON" 4_crea
 #./tile_regions.sh
 
 ################## Optional extra things to generate
-#"$PYTHON" extras_identify_id_map.py
+"$PYTHON" extras_identify_id_map.py
 "$PYTHON" extras_river_name_ranges.py

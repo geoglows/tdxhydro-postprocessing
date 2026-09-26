@@ -17,7 +17,7 @@ band_paths() {
     local region="$1" level="$2" minzoom="$3" maxzoom="$4"
     if [ "$level" = leaf ]; then
         local work="$SCRATCH_ROOT/pmtiles/catchment_leaf"
-        BAND_SRC="$SCRATCH_ROOT/regions/$region/catchments_tile_${region}.fgb"
+        BAND_SRC="$SCRATCH_ROOT/pmtiles/catchments_tile_${region}.fgb"
         BAND_POLY="$work/leaf_${region}.z$minzoom-$maxzoom.pmtiles"
         BAND_LINE="$work/leaf_${region}.z$minzoom-$maxzoom.lines.pmtiles"
         BAND_MAKER="run 5_concatenate_global.py"

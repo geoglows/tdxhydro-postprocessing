@@ -19,7 +19,7 @@ An original reach lands in one of three buckets:
     region
 
 The keeper mapping is reconstructed by replaying the edits recorded in each
-processed region's `mods/` directory - see hydrography/edits.py, which owns that
+published region's `mods/` directory - see hydrography/edits.py, which owns that
 replay and is also what resolves the ids in network_data/river_names.csv. Reaches
 removed outright (dropped watersheds, sub-250 km^2 outlets, zero-length reaches)
 are recorded nowhere as a keeper, so they correctly fall through to <NA>.
@@ -83,8 +83,8 @@ if __name__ == '__main__':
     logging.info(f'{len(survivors):,} surviving v3 reaches')
 
     # reconstruct the original -> keeper mapping from every processed region's edits
-    mods_dirs = hy.edits.mods_dirs(region_root)
-    logging.info(f'Replaying edits from {len(mods_dirs)} processed regions')
+    mods_dirs = hy.edits.mods_dirs()
+    logging.info(f'Replaying edits from {len(mods_dirs)} published regions')
     terminal_of = hy.edits.resolve_terminals(hy.edits.member_to_keeper(mods_dirs))
 
     # a member is only usable if its terminal keeper actually survives in v3; a
@@ -128,7 +128,7 @@ if __name__ == '__main__':
     hy.parquet.write_parquet(out, lookup_out, index=False)
 
     # ---- summary / sanity checks ----------------------------------------------
-    unprocessed = [r for r in region_row_counts if not (region_root / r / 'mods').is_dir()]
+    unprocessed = [r for r in region_row_counts if not hy.paths.mods_dir(r).is_dir()]
     n_self = int(is_survivor.sum())
     n_mapped = int(out[v3_id_col].notna().sum())
     n_merged = n_mapped - n_self

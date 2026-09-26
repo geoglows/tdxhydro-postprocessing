@@ -4,10 +4,14 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/pipeline_env.sh"
 
-OUTPUT_REGIONS=($(find "$PUBLISH_ROOT" -maxdepth 1 -type d -name "region=*" \
-    | sed 's|.*/region=||' | sort -n))
+# a published region is one step 5 wrote metadata for, not merely one with a directory:
+# step 3 publishes mods/ into region=<id>/ long before step 5 fills it, and that half-made
+# directory is a normal mid-pipeline state rather than something to tile or complain about.
+# A region WITH metadata but without streams is still an error - see MISSING below.
+OUTPUT_REGIONS=($(find "$PUBLISH_ROOT" -maxdepth 2 -name "metadata_*.parquet" -path "*/region=*" \
+    | sed 's|.*/region=\([0-9]*\)/.*|\1|' | sort -n))
 if [ "${#OUTPUT_REGIONS[@]}" -eq 0 ]; then
-    echo "no region=* directories under $PUBLISH_ROOT - run step 5 first" >&2
+    echo "no published regions under $PUBLISH_ROOT - run step 5 first" >&2
     exit 1
 fi
 

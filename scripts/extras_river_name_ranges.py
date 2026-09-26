@@ -115,9 +115,9 @@ def resolve_ids(names: pd.DataFrame, published) -> pd.DataFrame:
     if not hy.edits.mods_dirs():
         raise SystemExit(
             f'{len(unresolved)} row(s) in {NAMES_CSV.name} name a reach that is not in the '
-            f'published network, and {hy.paths.region_root} is empty so the edits that would say '
-            f'what replaced them cannot be read. The scratch tree from the build that produced '
-            f'this network has to be present.')
+            f'published network, and no region under {hy.paths.publish_root} has a mods/ '
+            f'directory, so the edits that would say what replaced them cannot be read. Step 3 '
+            f'publishes them per region; rerun it for a region that is missing them.')
     survivor = hy.edits.survivors()
     moved = {i: survivor[i] for i in unresolved if survivor.get(i) in ids}
     for column in ID_COLUMNS:
