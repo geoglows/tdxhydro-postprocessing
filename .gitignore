@@ -1,4 +1,8 @@
-*.json
+data/
 *.gpkg
 *.log
 .idea
+test
+*__pycache__*
+.DS_Store
+scripts/scratch/
