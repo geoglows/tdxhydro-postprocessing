@@ -20,6 +20,9 @@ dependencies = [
     "xarray",
     "zarr>=3.2.1",
     "s3fs>=2026.6.0",
+    # koppen_classifications.py: the Koppen-Geiger raster overlay
+    "exactextract",
+    "rasterio",
     # the lake revision app: a shared review server behind a Cloudflare tunnel
     "fastapi",
     "uvicorn",
