@@ -14,7 +14,7 @@ dependencies = [
     "openpyxl",
     "pandas",
     "shapely>=2",
-    "pyarrow",
+    "pyarrow>=26.0.0",
     "pyproj",
     "dask",
     "xarray",
@@ -23,11 +23,6 @@ dependencies = [
     # raw_processing/koppen_classifications.py: the Koppen-Geiger raster overlay
     "exactextract",
     "rasterio",
-    # the lake revision app: a shared review server behind a Cloudflare tunnel
-    "fastapi",
-    "uvicorn",
-    "websockets",
-    "matplotlib>=3.11.2",
 ]
 
 [build-system]

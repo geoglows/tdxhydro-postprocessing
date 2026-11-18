@@ -33,7 +33,7 @@ union_chunk_size = 256
 
 # Threads for the per-geometry calls below. These are single GEOS calls over the whole array, so
 # they run on one core however many threads exist - and on a big band they are most of the wall
-# clock: measured on raw_processing/global_basins.py's level-8 band, the threaded dissolve took 80 s and the
+# clock: measured on the retired global basins step's level-8 band, the threaded dissolve took 80 s and the
 # single-threaded chain after it took 106 s of a 196 s region.
 #
 # They are independent per polygon, so splitting them across threads is a scheduling change and

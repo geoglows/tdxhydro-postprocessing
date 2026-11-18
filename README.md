@@ -13,7 +13,7 @@ $TDXHYDRO_GEOPARQUET_RAW/               TDX-Hydro as published: put the geopacka
     TDX_streamnet_<region>_01.gpkg      untouched, as a geoparquet beside it (the geopackage may then be deleted)
     TDX_streamnet_<region>_01.parquet
     TDX_streamreach_basins_<region>_01.parquet
-$TDXHYDRO_GEOPARQUET_FINISHED/          the conditioned TDX-Hydro every build reads, plus global_basins/, global_koppen/, global_countries/
+$TDXHYDRO_GEOPARQUET_FINISHED/          the conditioned TDX-Hydro every build reads, plus global_koppen/, global_countries/
     TDX_streamnet_<region>_01.parquet
     TDX_streamreach_basins_<region>_01.parquet
 $OUTPUTS_ROOT/
@@ -24,7 +24,7 @@ $OUTPUTS_ROOT/
 
 The code is three directories at the repository root: `raw_processing/` and `final_processing/` hold the two stages' scripts and drivers, and `hydrography/` is the library they share. `uv sync` installs `hydrography` into `.venv` in editable mode, so every script imports it directly and edits to it take effect without reinstalling.
 
-Version controlled inputs live in the repository's `network_data/`: `lake_table.csv` (inlet, outlet, lake id, endorheic flag, trace flag), `dropped_watersheds/*.csv` (outlets to remove),
+Version controlled inputs live in the repository's `network_data/`: `lake_table.csv` (inlet, outlet, lake id, region, endorheic flag, trace flag, HydroLAKES and GDW ids; every inlet drains to its outlet in raw TDX-Hydro), `lake_outlet_links.csv` (riverId, nextRiverId, note: the connectivity overrides, all explicit, each repointing a lake's terminal arm at the lake's outlet; the build stops if any `lake_id` still has more than one outlet once they are applied), `dropped_watersheds/*.csv` (outlets to remove),
 and `tdxhydro_splits/` (the per region id offsets and the duplicated watersheds to drop where regions overlap).
 
 The published tree holds one build input: `region=<id>/mods/`, which simplify_streams.py writes and create_catchments.py reads back. That is the price of the edit records having exactly one copy rather than a scratch original
@@ -40,7 +40,6 @@ supplemental tables, never part of the GIS files, for whoever wants to join them
 | # | Script                           | Produces                                                                                                                                                                                                                                                                                       |
 |---|----------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | 1 | `1_translate_tdxhydro.py`        | TDX-Hydro geopackages to raw geoparquet, then the finished set. Offsets `LINKNO` by a per region constant so ids are globally unique, adds the geodesic length, region id, and outlet lon/lat, drops watersheds duplicated between overlapping regions, and nodes the source basin coverage so later dissolves are exact          |
-| - | `global_basins.py`         | `global_basins/`: the frozen global basin definition (Pfafstetter levels and the tile zoom bands `tile_catchments.sh` reads with `--bands`). Built once and **not rerun**, since rerunning can change the frozen basin codes; commented out of the driver |
 | - | `koppen_classifications.py`    | `global_koppen/parts/koppen_<period>_<region>.parquet`: each raw catchment's land area per Koppen-Geiger class, which `simplify_streams.py` sums into the published `koppenClass`. And `global_koppen/koppen_upstream_<period>.parquet`, supplemental: each reach's dominant upstream class and main-group fractions |
 | - | `country_classifications.py`   | `global_countries/parts/country_<region>.parquet`: each raw catchment's land per country (geoBoundaries CGAZ ADM0, CC BY 4.0; disputed areas by their own names), which `simplify_streams.py` sums into the published `country`. And `global_countries/country_upstream.parquet`, supplemental: ISO3, disputed flag, outlet country, upstream countries and shares, transboundary flag |
 

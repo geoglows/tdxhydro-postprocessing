@@ -30,9 +30,13 @@ __all__ = [
     'apply_lake_edits',
 ]
 
+# Which reaches enter each lake and where it drains, as raw TDX-Hydro routes them: every inlet drains to
+# its row's outlet in the source network, unmodified. A lake TDX ends on several terminal reaches therefore
+# has several outlets here, one per terminal, until lake_outlet_links.csv joins them.
 lake_table_path = paths.network_data_root / 'lake_table.csv'
 
-# Hand-written links across a lake's own water surface. See :func:`apply_outlet_links`.
+# The connectivity overrides, and only those: each repoints a terminal reach (DSLINKNO -1) of a lake at
+# the lake's outlet, so the lake drains and dissolves as one. See :func:`apply_outlet_links`.
 outlet_links_path = paths.network_data_root / 'lake_outlet_links.csv'
 
 # An inlet whose drainage area (DSContArea, the contributing area at its downstream
@@ -100,28 +104,84 @@ def _generalize(geometries: gpd.GeoSeries, tolerance_meters: float) -> gpd.GeoSe
     return gpd.GeoSeries(simplified, index=geometries.index, crs=mercator.crs).to_crs(geometries.crs)
 
 
-def lake_outlets(gdf: gpd.GeoDataFrame) -> set:
-    """Every lake outlet in the table that is a reach of ``gdf``.
+def _read_lake_table() -> pd.DataFrame:
+    """lake_table.csv as written: every inlet drains to its row's outlet in raw TDX-Hydro."""
+    return pd.read_csv(lake_table_path)
+
+
+def _hand_links() -> dict:
+    """``lake_outlet_links.csv`` as ``{riverId: nextRiverId}``."""
+    if not outlet_links_path.exists():
+        return {}
+    links = pd.read_csv(outlet_links_path)
+    if links[schema.river_id].duplicated().any():
+        repeated = links.loc[links[schema.river_id].duplicated(), schema.river_id].unique()
+        raise RuntimeError(f'{outlet_links_path.name} repoints {repeated[:5].tolist()} more than once')
+    return dict(zip(links[schema.river_id], links[schema.next_river_id]))
+
+
+def _resolve(links: dict) -> dict:
+    """Each linked reach's final target, following targets that are themselves linked onward, so every
+    arm points straight at the reach its lake drains through. Refuses a cycle."""
+    resolved = {}
+    for source in links:
+        node, seen = source, {source}
+        while node in links:
+            node = links[node]
+            if node in seen:
+                raise RuntimeError(f'lake outlet links form a cycle through {sorted(seen)[:5]}')
+            seen.add(node)
+        resolved[source] = node
+    return resolved
+
+
+def outlet_links(gdf: gpd.GeoDataFrame) -> dict:
+    """The rows of ``lake_outlet_links.csv`` for this gdf, as ``{riverId: lake outlet}``.
+
+    Read from the raw network, before :func:`apply_outlet_links` changes it, and handed to every other
+    function here. Every override is explicit in the file; none is inferred. Chains are resolved so
+    every arm points at its lake's final outlet.
+
+    Raises unless every ``lake_id`` of lake_table.csv with an outlet in ``gdf`` drains through exactly
+    one outlet once the links are applied. A lake the links leave with two or more outlets is either
+    missing an override (a terminal arm that should be linked to the lake's outlet) or is not one lake
+    (separate water bodies under one id); either way it is fixed in the tables, not guessed at here.
+    """
+    here = set(gdf[schema.river_id])
+    links = _resolve({s: t for s, t in _hand_links().items() if s in here and t in here})
+
+    lake_table = _read_lake_table()
+    lake_table = lake_table[lake_table[schema.outlet_field].isin(here)]
+    effective = _effective_outlets(lake_table, links)
+    outlets = effective.groupby(lake_table[schema.lake_id_field]).unique()
+    several = outlets[outlets.map(len) > 1]
+    if not several.empty:
+        listing = '; '.join(f'lake {lake}: {sorted(int(o) for o in found)}' for lake, found in several.items())
+        raise RuntimeError(
+            f'{len(several)} lake(s) in {lake_table_path.name} still have more than one outlet after '
+            f'{outlet_links_path.name} is applied. Link each extra terminal outlet to the lake\'s outlet '
+            f'in {outlet_links_path.name}, or give separate water bodies their own lake_id. {listing}')
+    return links
+
+
+def _effective_outlets(lake_table: pd.DataFrame, links: dict) -> pd.Series:
+    """Each row's outlet once the links are applied: a linked arm's inlets drain on to its lake's outlet."""
+    outlet = lake_table[schema.outlet_field]
+    return outlet.map(links).fillna(outlet).astype(outlet.dtype)
+
+
+def lake_outlets(gdf: gpd.GeoDataFrame, links: dict) -> set:
+    """Every lake outlet in the table that is a reach of ``gdf``, after the links (:func:`outlet_links`).
 
     This is the protected set the simplification steps are given, and it is taken from the table
     rather than from :func:`find_lake_edits` because a lake whose inlets are all below
     ``min_inlet_area`` produces no edit at all and would otherwise go unprotected.
     """
-    lake_table = pd.read_csv(lake_table_path)
-    return set(lake_table[schema.outlet_field]) & set(gdf[schema.river_id])
+    return set(_effective_outlets(_read_lake_table(), links)) & set(gdf[schema.river_id])
 
 
-def outlet_links(gdf: gpd.GeoDataFrame) -> pd.DataFrame:
-    """The rows of ``lake_outlet_links.csv`` that apply to this gdf, both ends present."""
-    if not outlet_links_path.exists():
-        return pd.DataFrame(columns=[schema.river_id, schema.next_river_id])
-    links = pd.read_csv(outlet_links_path)
-    here = set(gdf[schema.river_id])
-    return links[links[schema.river_id].isin(here) & links[schema.next_river_id].isin(here)]
-
-
-def apply_outlet_links(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
-    """Join the separate terminal arms of one lake into a single drainage, by hand.
+def apply_outlet_links(gdf: gpd.GeoDataFrame, links: dict) -> gpd.GeoDataFrame:
+    """Join the separate terminal arms of one lake into a single drainage.
 
     A lake sitting in a closed basin often reaches the network as several terminal reaches
     rather than one. Lake Van arrives as four, within sixty metres of each other; Uvs Nuur as
@@ -130,39 +190,32 @@ def apply_outlet_links(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     collapse builds a separate lake on each one. One lake becomes four.
 
     Nothing in the source data is wrong, and nothing here corrects it: the arms really do end
-    where TDX says they end. What the source cannot know is that they end in the *same water*,
-    which is a judgement about a lake polygon rather than about a flow path, and so it is
-    recorded by hand in ``lake_outlet_links.csv`` and applied to the working copy only. The
-    parquet under ``$TDXHYDRO_GEOPARQUET_FINISHED`` is a faithful translation of the source and stays that way.
+    where TDX says they end, and lake_table.csv records them that way, each arm the outlet of the
+    inlets that reach it. What the source cannot know is that they end in the *same water*. That
+    is recorded by the lake table's ``lake_id`` and, for arms the table has no rows for, by hand in
+    ``lake_outlet_links.csv``; :func:`outlet_links` combines the two. The links are applied to the
+    working copy only. The parquet under ``$TDXHYDRO_GEOPARQUET_FINISHED`` is a faithful translation
+    of the source and stays that way.
 
-    Each row repoints one terminal reach at another reach of the same lake - by convention the
-    arm with the largest contributing area, which is the one the lake would drain through if it
-    drained at all. Applied before the topology is computed, so accumulation, the sub-250 km²
-    terminal drop and the lake collapse all see one lake.
+    Each link repoints one terminal reach at the outlet of its lake. Applied before the topology is
+    computed, so accumulation, the sub-250 km² terminal drop and the lake collapse all see one lake:
+    :func:`find_lake_edits` reads each arm's inlets as the outlet's, and the arm, no longer an outlet
+    or an inlet, dissolves into it.
 
-    Refuses to touch a reach that already flows somewhere. A row that redirects live drainage
-    is not this file's business and is far more likely to be a mistake than an intention; the
-    check is what makes an override table safe to hand-edit.
+    Refuses to touch a reach that already flows somewhere. A link that redirects live drainage
+    is far more likely to be a mistake than an intention; the check is what makes the override
+    table safe to hand-edit.
     """
-    links = outlet_links(gdf)
-    if links.empty:
+    if not links:
         return gdf
 
     next_river = gdf.set_index(schema.river_id)[schema.next_river_id]
-    live = links[next_river.reindex(links[schema.river_id]).to_numpy() != -1]
-    if not live.empty:
+    live = [source for source in links if next_river[source] != -1]
+    if live:
         raise RuntimeError(
-            f'{outlet_links_path.name} repoints {len(live)} reach(es) that already flow '
-            f'somewhere: {live[schema.river_id].tolist()[:5]}. Only a terminal reach '
-            f'(DSLINKNO -1) may be linked across a lake.')
-
-    targets = dict(zip(links[schema.river_id], links[schema.next_river_id]))
-    # A target that is itself linked onward would make the order of application matter, and a
-    # cycle would hang the topology walk rather than fail it.
-    chained = [source for source in targets if source in set(targets.values())]
-    if chained:
-        raise RuntimeError(f'{outlet_links_path.name}: {chained[:5]} are both a source and a '
-                           f'target. Point every arm of a lake at one reach, not at each other.')
+            f'lake outlet links repoint {len(live)} reach(es) that already flow somewhere: '
+            f'{live[:5]}. Only a terminal reach (DSLINKNO -1) may be linked across a lake.')
+    targets = links
 
     gdf = gdf.copy()
     column = gdf[schema.next_river_id]
@@ -182,9 +235,13 @@ def apply_outlet_links(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     us_area = gdf[schema.tdx_us_area_field].to_numpy(dtype=float, copy=True)
     ds_area = gdf[schema.tdx_ds_area_field].to_numpy(dtype=float, copy=True)
     strahler = gdf[schema.strahler_order].to_numpy(copy=True)
+    # each arm adds its own area as TDX gives it, read from the unmodified columns, so the result does
+    # not depend on the order the arms are applied in
+    raw_area = gdf[schema.tdx_ds_area_field].to_numpy(dtype=float)
+    raw_order = gdf[schema.strahler_order].to_numpy()
     for source, target in targets.items():
         arm = row[source]
-        added, order = ds_area[arm], strahler[arm]
+        added, order = raw_area[arm], raw_order[arm]
         node = row[target]
         while True:
             us_area[node] += added
@@ -199,7 +256,7 @@ def apply_outlet_links(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     return gdf
 
 
-def find_lake_edits(gdf: gpd.GeoDataFrame, min_inlet_area: float = min_lake_inlet_area) -> dict:
+def find_lake_edits(gdf: gpd.GeoDataFrame, links: dict, min_inlet_area: float = min_lake_inlet_area) -> dict:
     """
     Analyze the network against the lake table and describe the edits to make,
     without mutating the gdf.
@@ -227,7 +284,8 @@ def find_lake_edits(gdf: gpd.GeoDataFrame, min_inlet_area: float = min_lake_inle
     nested inside another (or the lake table fragments one lake across several
     outlets). That must be resolved in lake_table.csv, not here.
     """
-    lake_table = pd.read_csv(lake_table_path)
+    lake_table = _read_lake_table()
+    lake_table[schema.outlet_field] = _effective_outlets(lake_table, links)
     lake_table = lake_table[lake_table[schema.inlet_field].isin(gdf[schema.river_id])]
     if lake_table.empty:
         return {}
@@ -257,9 +315,11 @@ def find_lake_edits(gdf: gpd.GeoDataFrame, min_inlet_area: float = min_lake_inle
 
     edits = {}
     all_to_delete = set()
-    unique_outlets = lake_table[schema.outlet_field].unique()
-    for outlet in unique_outlets:
-        group = lake_table[lake_table[schema.outlet_field] == outlet]
+    # one lake per outlet the links leave. outlet_links has checked that each lake_id drains through
+    # exactly one, so this is one group per lake_id, except that lake_ids sharing an outlet (77 outlets
+    # are shared, 8 lake_ids on the Lake Huron one) are kept together: they are one water surface
+    # draining through one reach, and built apart each would claim the outlet with a partial inlet list
+    for outlet, group in lake_table.groupby(schema.outlet_field, sort=False):
         inlets = group[schema.inlet_field].tolist()
         if outlet not in ids_present:
             raise ValueError(f'Lake outlet {outlet} not found in gdf, which should not be possible')

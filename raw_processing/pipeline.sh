@@ -19,7 +19,6 @@ select_regions "$@"
 ################## unique ids, geodesic lengths, duplicated watersheds dropped, basin coverage noded
 "$PYTHON" 1_translate_tdxhydro.py "${REGIONS[@]}"
 
-#"$PYTHON" global_basins.py
 "$PYTHON" koppen_classifications.py "$@"
 
 "$PYTHON" country_classifications.py "$@"

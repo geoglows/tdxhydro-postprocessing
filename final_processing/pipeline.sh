@@ -22,7 +22,6 @@ printf '%s\n' "${REGIONS[@]}" | xargs -P "$CATCHMENT_JOBS" -I{} "$PYTHON" create
 "$PYTHON" publish_regions.py "$BOUNDARY_JOBS"
 
 ./tile_streams.sh
-./tile_catchments.sh
 ./tile_regions.sh
 
 ##### Optional extra things to generate

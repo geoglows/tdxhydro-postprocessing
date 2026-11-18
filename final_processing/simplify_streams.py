@@ -85,10 +85,11 @@ if __name__ == '__main__':
     # Before the topology, not after: repointing a terminal arm at the rest of its own lake
     # changes what accumulates where, which tree a reach belongs to, and whether the sub-250 km²
     # terminal drop below takes it. All of those read the topology this line builds.
-    linked = len(hy.lakes.outlet_links(gdf))
-    if linked:
-        gdf = hy.lakes.apply_outlet_links(gdf)
-        logging.info(f'{linked} lake arm(s) linked across their own water surface by hand')
+    # read from the raw network: once applied, the arms are no longer terminal and cannot be found again
+    lake_links = hy.lakes.outlet_links(gdf)
+    if lake_links:
+        gdf = hy.lakes.apply_outlet_links(gdf, lake_links)
+        logging.info(f'{len(lake_links)} lake arm(s) linked across their own water surface')
 
     gdf = hy.topology.compute_topology(gdf)
 
@@ -122,10 +123,10 @@ if __name__ == '__main__':
     )
     gdf = gdf[~gdf[hy.schema.last_river_id].isin(to_drop)]
 
-    protected = hy.lakes.lake_outlets(gdf)
+    protected = hy.lakes.lake_outlets(gdf, lake_links)
     logging.info(f'{len(protected):,} lake outlets are protected from simplification')
 
-    lake_edits = hy.lakes.find_lake_edits(gdf, min_inlet_area=100_000_000)
+    lake_edits = hy.lakes.find_lake_edits(gdf, lake_links, min_inlet_area=100_000_000)
     gdf = hy.lakes.apply_lake_edits(gdf, lake_edits)
     logging.info(f'After applying lake edits, shape is {gdf.shape}')
     hy.topology.assert_topology_is_valid(gdf)

@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Assemble the release: global ordering, published region files, global products, leaf tile band.
+"""Assemble the release: global ordering, published region files, global products.
 
 The release has exactly one partition, the HydroBASINS level-2 region, and it is not a choice this
 step makes - it is the unit the raw TDX-Hydro arrives in and the unit every step before this one
@@ -19,14 +19,11 @@ import os
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 
 import geopandas as gpd
 import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
-import pyogrio
-import shapely
 from natsort import natsorted
 from zarr.codecs import BloscCodec
 
@@ -36,7 +33,6 @@ region_root = hy.paths.region_root
 publish_root = hy.paths.publish_root
 global_root = hy.paths.global_root
 logs_root = hy.paths.logs_root
-pmtiles_root = hy.paths.pmtiles_root
 
 WORKERS = max(1, int(os.environ.get('CONCAT_WORKERS', 8)))
 
@@ -45,9 +41,6 @@ GEOMETRY_KINDS = LARGE_GEOMETRY_KINDS | {'confluences'}
 SUFFIXES = {'metadata': '.parquet', 'watersheds': '.parquet'}
 REGION_KINDS = ['metadata', 'streams', 'confluences', 'watersheds']
 
-LEAF_TOLERANCE = max(hy.basins.zoom_tolerance(hy.basins.LEAF_ZOOMS[1]), 1.0)
-LEAF_CHUNK = 20_000
-
 # watersheds.parquet column names. riverIndexStart/riverIndexEnd are inclusive bounds in the
 # GLOBAL riverIndex, which is what the published files carry.
 index_start = 'riverIndexStart'
@@ -55,56 +48,8 @@ index_end = 'riverIndexEnd'
 reach_count = 'reachCount'
 
 
-def leaf_band_path(region: str) -> Path:
-    """The leaf band is a tiler input, not a deliverable, so it lands beside every other
-    tiling intermediate rather than in the region's scratch directory."""
-    return pmtiles_root / f'catchments_tile_{region}.fgb'
-
-
 def out_name(kind: str, region: str) -> str:
     return f'{kind}_{region}{SUFFIXES.get(kind, ".geo.parquet")}'
-
-
-def lines_path(path: Path) -> Path:
-    return path.with_name(path.name.replace('.fgb', '.lines.fgb'))
-
-
-def write_band(gdf: gpd.GeoDataFrame, path: Path) -> None:
-    frame = gdf.copy()
-    for column in frame.columns:
-        if pd.api.types.is_integer_dtype(frame[column]):
-            frame[column] = frame[column].astype('float64')
-    options = dict(driver='FlatGeobuf', promote_to_multi=True, SPATIAL_INDEX='NO')
-    for target, geometry_type in ((path, 'MultiPolygon'), (lines_path(path), 'MultiLineString')):
-        partial = target.with_name(target.name.replace('.fgb', '.partial.fgb'))
-        pyogrio.write_dataframe(frame, partial, geometry_type=geometry_type, **options)
-        partial.replace(target)
-        frame = frame.set_geometry(frame.geometry.boundary)
-
-
-def cut_leaf_band(catchments: gpd.GeoDataFrame, path: Path) -> None:
-    started = time.time()
-    parts = catchments.geometry.to_numpy()
-    before = after = held = 0
-    for start in range(0, len(parts), LEAF_CHUNK):
-        block = slice(start, start + LEAF_CHUNK)
-        raw = parts[block]
-        before += int(shapely.get_num_coordinates(raw).sum())
-        clean, lost = hy.geometry.repair(
-            hy.geometry.simplify_coverage(raw, LEAF_TOLERANCE), fallback=raw)
-        snapped, collapsed = hy.geometry.snap(clean, LEAF_TOLERANCE)
-        clean, lost_again = hy.geometry.repair(snapped, fallback=clean)
-        after += int(shapely.get_num_coordinates(clean).sum())
-        held += lost + collapsed + lost_again
-        parts[block] = clean
-    leaf = gpd.GeoDataFrame(
-        catchments[[hy.schema.river_id, hy.schema.river_index]].copy(),
-        geometry=parts, crs=catchments.crs)
-    write_band(leaf, path)
-    lo, hi = hy.basins.LEAF_ZOOMS
-    logging.info(f'leaf band (z{lo}-{hi}): {len(leaf):,} catchments, {before:,} -> {after:,} '
-                 f'vertices at {LEAF_TOLERANCE:,.0f} m, {held:,} kept an earlier geometry, '
-                 f'{time.time() - started:.0f}s -> {path.name}')
 
 
 def check_region_ordering(meta: pd.DataFrame, region: str) -> None:
@@ -143,11 +88,7 @@ def watershed_table(meta: pd.DataFrame) -> pd.DataFrame:
 
 def region_outputs(region: str, has_catchments: bool) -> list:
     kinds = REGION_KINDS + (['catchments'] if has_catchments else [])
-    paths = [hy.paths.publish_dir(region) / out_name(kind, region) for kind in kinds]
-    if has_catchments:
-        leaf = leaf_band_path(region)
-        paths += [leaf, lines_path(leaf)]
-    return paths
+    return [hy.paths.publish_dir(region) / out_name(kind, region) for kind in kinds]
 
 
 def publish_region(region: str, meta: pd.DataFrame, has_catchments: bool) -> bool:
@@ -211,11 +152,7 @@ def publish_region(region: str, meta: pd.DataFrame, has_catchments: bool) -> boo
 
     logging.info(f'region {region}: ' + ', '.join(f'{n:,} {k}' for k, n in counts.items()))
 
-    if has_catchments:
-        pmtiles_root.mkdir(parents=True, exist_ok=True)
-        cut_leaf_band(parts['catchments'], leaf_band_path(region))
-    print(f'region {region}: {counts["metadata"]:,} reaches, {counts["watersheds"]:,} watersheds'
-          + ('' if not has_catchments else ' + leaf band'))
+    print(f'region {region}: {counts["metadata"]:,} reaches, {counts["watersheds"]:,} watersheds')
     return True
 
 

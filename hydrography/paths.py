@@ -8,7 +8,7 @@ stage drivers source before any step:
     TDXHYDRO_GEOPARQUET_FINISHED    the conditioned TDX-Hydro geoparquet every release is built
                                     from (globally unique ids, duplicated watersheds dropped,
                                     basin coverage noded), plus the one-time products derived
-                                    from it (global_basins/, global_koppen/, global_countries/)
+                                    from it (global_koppen/, global_countries/)
     TDXHYDRO_GEOPARQUET_RAW         TDX-Hydro as published, untouched except converted from
                                     geopackage to geoparquet - by raw_processing/
                                     1_translate_tdxhydro.py, which reads the geopackages put here
@@ -113,17 +113,8 @@ region_root = scratch_root / 'regions'
 pmtiles_root = scratch_root / 'pmtiles'
 logs_root = scratch_root / 'logs'
 
-# The frozen basin definition raw_processing/global_basins.py generates once from the raw inputs. It lives
-# INSIDE the raw tree, not under the outputs root, because it shares the raw data's lifecycle
-# exactly: derived from nothing but those files, consumed by every release, regenerated only if
-# the raw data itself changes. Keeping it beside its source is also what keeps it safe - the
-# scratch tree is wiped and rebuilt as a matter of course, and a permanent artifact parked there
-# was destroyed by exactly such a wipe once.
-global_basins_root = tdx_root / 'global_basins'
-
-# The Koppen-Geiger class areas raw_processing/koppen_classifications.py derives from the raw catchments. Like
-# the global basins they are derived from nothing but the raw data (plus the climate raster), so
-# they live beside it and outlast every rebuild of the scratch tree. Two products per period:
+# The Koppen-Geiger class areas raw_processing/koppen_classifications.py derives from the raw catchments. They
+# are derived from nothing but the raw data (plus the climate raster), so they live beside it and outlast every rebuild of the scratch tree. Two products per period:
 #   parts/koppen_<period>_<region>.parquet           each raw catchment's land area per class -
 #                                                     working data simplify_streams.py sums into koppenClass
 #   koppen_upstream_<period>.parquet                 supplemental, never in the GIS files: the

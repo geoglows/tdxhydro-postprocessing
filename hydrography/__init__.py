@@ -1,4 +1,3 @@
-import hydrography.basins
 import hydrography.console
 import hydrography.countries
 import hydrography.coverage
@@ -16,7 +15,6 @@ import hydrography.topology
 
 __all__ = [
     'streams',
-    'basins',
     'console',
     'countries',
     'coverage',

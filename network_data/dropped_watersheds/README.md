@@ -40,7 +40,7 @@ decided for a region without filtering every file by id prefix — which is how 
 
 ## Hand decisions that a regeneration would revert
 
-`noncoastal.csv` for region 1020027430 is generated from a geometric rule, with four
+`noncoastal.csv` for region 1020027430 is generated from a geometric rule, with three
 exceptions kept coastal by hand. Each reaches the sea but ends in a coastal sabkha a few
 km past the line, and each is far too large to lose. Loosening the rule to 10 km instead
 would sweep in fourteen more sabkhas nobody has looked at.
@@ -50,12 +50,16 @@ would sweep in fourteen more sabkhas nobody has looked at.
 | 150889372 | 50,584 | 6.1 km out | 16.00E 31.23N, Gulf of Sirte |
 | 151014345 | 32,556 | 4.7 km out | 15.61E 31.45N, Gulf of Sirte |
 | 150811921 | 31,036 | 4.6 km out | 15.31E 32.10N, Gulf of Sirte |
-| 150227960 | 29,488 | 8.7 km out | 16.39W 16.51N, Mauritanian shore |
 
-The first and last of those were also lifted from `1020027430/sahara_no_runoff.csv`,
-which had dropped them on Q80 < 5. That criterion knowingly sweeps basins that flood
-rarely rather than never — 150889372 peaks at 633 m³/s in the v2 retrospective — so the
-two decisions genuinely disagreed, and reaching the coast won.
+The first of those was also lifted from `1020027430/sahara_no_runoff.csv`, which had
+dropped it on Q80 < 5. That criterion knowingly sweeps basins that flood rarely rather
+than never — 150889372 peaks at 633 m³/s in the v2 retrospective — so the two decisions
+genuinely disagreed, and reaching the coast won.
+
+150227960 (29,488 km², outlet 8.7 km out at 16.39W 16.51N on the Mauritanian shore) was a
+fourth such exception, also lifted from `sahara_no_runoff.csv`. It is now dropped, by hand,
+in `1020027430/manually_excluded.csv`, so a regeneration of `noncoastal.csv` or
+`sahara_no_runoff.csv` must still leave it out of both (each id is listed once).
 
 Measuring the distance needs one thing the source does not advertise: TDX linestrings run
 **downstream → upstream**, so an outlet is vertex 0, not the last vertex (`streams.py:91`
