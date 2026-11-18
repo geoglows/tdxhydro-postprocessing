@@ -1,6 +1,6 @@
 [project]
-name = "tdxhydro-postprocessing"
-version = "0.1.0"
+name = "tdxhydro-processing"
+version = "2026.11.18"
 description = "Post-processing tools for TDX-Hydro hydrography datasets"
 readme = "README.md"
 license = "BSD-3-Clause-Clear"
