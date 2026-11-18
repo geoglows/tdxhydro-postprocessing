@@ -1,0 +1,38 @@
+[project]
+name = "tdxhydro-processing"
+version = "2026.11.18"
+description = "Post-processing tools for TDX-Hydro hydrography datasets"
+readme = "README.md"
+license = "BSD-3-Clause-Clear"
+requires-python = ">=3.14"
+dependencies = [
+    "geopandas>=1.0",
+    "natsort",
+    "netCDF4",
+    "networkx",
+    "numpy",
+    "openpyxl",
+    "pandas",
+    "shapely>=2",
+    "pyarrow>=26.0.0",
+    "pyproj",
+    "dask",
+    "xarray",
+    "zarr>=3.2.1",
+    "s3fs>=2026.6.0",
+    # raw_processing/koppen_classifications.py: the Koppen-Geiger raster overlay
+    "exactextract",
+    "rasterio",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+# the pipeline's shared library, installed into the venv (editable, by `uv sync`) so every script
+# in raw_processing/ and final_processing/ imports it without touching sys.path
+[tool.hatch.build.targets.wheel]
+packages = ["hydrography"]
+
+[tool.uv]
+package = true
